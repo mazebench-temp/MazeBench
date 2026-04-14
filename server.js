@@ -326,15 +326,13 @@ function renderGamePage(game) {
   return renderPage({
     title: game.name,
     body: `<main class="shell">
+      <nav class="page-nav">
+        <a class="back-link" href="/">Back</a>
+      </nav>
       <h1>${escapeHtml(game.name)}</h1>
       <section class="stack">
         <h2>Levels</h2>
         <ul class="level-list">${levels}</ul>
-      </section>
-      <section class="stack">
-        <h2>Level parsing JSON</h2>
-        <p><a href="${escapeHtml(game.parserUrl)}">Open raw JSON</a></p>
-        <pre>${escapeHtml(JSON.stringify(game.parser, null, 2))}</pre>
       </section>
     </main>`
   });
@@ -355,6 +353,56 @@ function renderPlayPage(game, level) {
             ></canvas>
           </div>
         </section>
+        <section class="play-controls" aria-label="Display effects">
+          <div class="render-mode-toggle" role="group" aria-label="Render mode">
+            <button
+              type="button"
+              class="render-mode-button"
+              data-mode="smooth"
+              aria-pressed="false"
+              aria-label="No pixels mode"
+              title="No pixels"
+            >
+              <span class="render-mode-icon render-mode-icon--smooth" aria-hidden="true"></span>
+            </button>
+            <button
+              type="button"
+              class="render-mode-button is-active"
+              data-mode="pixelated"
+              aria-pressed="true"
+              aria-label="Pixelated mode"
+              title="Pixelated"
+            >
+              <span class="render-mode-icon render-mode-icon--pixelated" aria-hidden="true"></span>
+            </button>
+          </div>
+          <label class="effect-slider" for="crt-input" title="CRT">
+            <span class="effect-icon effect-icon--crt" aria-hidden="true"></span>
+            <input
+              id="crt-input"
+              class="effect-range"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value="0"
+              aria-label="CRT intensity"
+            >
+          </label>
+          <label class="effect-slider" for="fuzzy-input" title="Fuzzy">
+            <span class="effect-icon effect-icon--fuzzy" aria-hidden="true"></span>
+            <input
+              id="fuzzy-input"
+              class="effect-range"
+              type="range"
+              min="0"
+              max="0.1"
+              step="0.005"
+              value="0.1"
+              aria-label="Fuzzy noise"
+            >
+          </label>
+        </section>
         <script>window.__PLAY_DATA__ = ${serializeForScript(levelState)};</script>
         <script src="/play.js" defer></script>`
       : `<section class="play-stage"><p>This level is empty.</p></section>`;
@@ -363,10 +411,12 @@ function renderPlayPage(game, level) {
     title: `${game.name} ${level.label}`,
     bodyClass: "play-body",
     body: `<main class="play-shell">
+      <nav class="play-nav">
+        <a class="back-link" href="/games/${encodeURIComponent(game.id)}">Back</a>
+      </nav>
       <header class="play-header">
         <h1>${escapeHtml(game.name)}</h1>
         <p>${escapeHtml(level.label)}</p>
-        <p>${escapeHtml(game.player)}</p>
       </header>
       ${boardMarkup}
     </main>`
