@@ -6,11 +6,17 @@
     return;
   }
 
+  const TILE_SIZE = 64;
+  const MOVE_DURATION_MS = 98;
   const state = {
     width: playData.width,
     height: playData.height,
     terrain: playData.terrain,
-    actors: playData.actors.map((actor) => ({ ...actor }))
+    actors: playData.actors.map((actor) => ({
+      ...actor,
+      renderX: actor.x,
+      renderY: actor.y
+    }))
   };
 
   const imageUrls = new Set();
@@ -30,12 +36,21 @@
   const imageCache = new Map();
   const ctx = canvas.getContext("2d");
   const boardRect = {
-    width: state.width * 64,
-    height: state.height * 64
+    width: state.width * TILE_SIZE,
+    height: state.height * TILE_SIZE
   };
+  const initialPositions = state.actors.map((actor) => ({ x: actor.x, y: actor.y }));
+  const moveHistory = [];
+  let animationFrameId = null;
+  let isAnimating = false;
+  let queuedAction = null;
 
   function posKey(x, y) {
     return `${x},${y}`;
+  }
+
+  function cloneActorPositions() {
+    return state.actors.map((actor) => ({ x: actor.x, y: actor.y }));
   }
 
   function isInsideBoard(x, y) {
@@ -92,7 +107,7 @@
   }
 
   function paintFloorTile(x, y, cell) {
-    const tileSize = 64;
+    const tileSize = TILE_SIZE;
     const left = x * tileSize;
     const top = y * tileSize;
     const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
@@ -111,10 +126,12 @@
   }
 
   function paintWallTile(x, y, cell) {
-    const tileSize = 64;
+    const tileSize = TILE_SIZE;
     const left = x * tileSize;
     const top = y * tileSize;
     const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
+
+    paintFloorTile(x, y, { imageUrl: null });
 
     if (image) {
       ctx.drawImage(image, left, top, tileSize, tileSize);
@@ -128,6 +145,19 @@
       br: !isWall(x, y + 1) && !isWall(x + 1, y) ? radius : 0,
       bl: !isWall(x, y + 1) && !isWall(x - 1, y) ? radius : 0
     };
+
+    if (x === 0 && y === 0) {
+      radii.tl = 0;
+    }
+    if (x === state.width - 1 && y === 0) {
+      radii.tr = 0;
+    }
+    if (x === state.width - 1 && y === state.height - 1) {
+      radii.br = 0;
+    }
+    if (x === 0 && y === state.height - 1) {
+      radii.bl = 0;
+    }
 
     roundRectPath(left, top, tileSize, tileSize, radii);
     ctx.fillStyle = "#262b34";
@@ -148,7 +178,7 @@
   function paintExit(x, y, cell) {
     paintFloorTile(x, y, cell);
 
-    const tileSize = 64;
+    const tileSize = TILE_SIZE;
     const left = x * tileSize + tileSize / 2;
     const top = y * tileSize + tileSize / 2;
     const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
@@ -198,9 +228,9 @@
   }
 
   function paintActor(actor) {
-    const tileSize = 64;
-    const left = actor.x * tileSize;
-    const top = actor.y * tileSize;
+    const tileSize = TILE_SIZE;
+    const left = actor.renderX * tileSize;
+    const top = actor.renderY * tileSize;
     const image = actor.imageUrl ? imageCache.get(actor.imageUrl) : null;
 
     if (image) {
@@ -211,12 +241,12 @@
     if (actor.type === "player") {
       ctx.fillStyle = "#2d6637";
       ctx.beginPath();
-      ctx.arc(left + tileSize / 2, top + tileSize / 2, tileSize * 0.26, 0, Math.PI * 2);
+      ctx.arc(left + tileSize / 2, top + tileSize / 2, tileSize * 0.338, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = "#6ba562";
       ctx.beginPath();
-      ctx.arc(left + tileSize / 2, top + tileSize / 2, tileSize * 0.21, 0, Math.PI * 2);
+      ctx.arc(left + tileSize / 2, top + tileSize / 2, tileSize * 0.273, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -239,6 +269,65 @@
     return !occupied.has(posKey(x, y));
   }
 
+  function easeInOutQuad(progress) {
+    if (progress < 0.5) {
+      return 2 * progress * progress;
+    }
+
+    return 1 - Math.pow(-2 * progress + 2, 2) / 2;
+  }
+
+  function finishAnimation(moves) {
+    moves.forEach(({ actor, toX, toY }) => {
+      actor.renderX = toX;
+      actor.renderY = toY;
+    });
+
+    isAnimating = false;
+    animationFrameId = null;
+    render();
+
+    if (queuedAction) {
+      const nextAction = queuedAction;
+      queuedAction = null;
+      runAction(nextAction);
+    }
+  }
+
+  function animateMoves(moves) {
+    if (moves.length === 0) {
+      return;
+    }
+
+    isAnimating = true;
+    const startTime = performance.now();
+
+    function step(now) {
+      const progress = Math.min(1, (now - startTime) / MOVE_DURATION_MS);
+      const eased = easeInOutQuad(progress);
+
+      moves.forEach(({ actor, fromX, fromY, toX, toY }) => {
+        actor.renderX = fromX + (toX - fromX) * eased;
+        actor.renderY = fromY + (toY - fromY) * eased;
+      });
+
+      render();
+
+      if (progress < 1) {
+        animationFrameId = window.requestAnimationFrame(step);
+        return;
+      }
+
+      finishAnimation(moves);
+    }
+
+    if (animationFrameId !== null) {
+      window.cancelAnimationFrame(animationFrameId);
+    }
+
+    animationFrameId = window.requestAnimationFrame(step);
+  }
+
   function sortActorsForMove(dx, dy) {
     return function (left, right) {
       if (dx > 0) {
@@ -254,13 +343,53 @@
     };
   }
 
+  function buildMovesToPositions(targetPositions) {
+    const moves = [];
+
+    state.actors.forEach((actor, index) => {
+      const target = targetPositions[index];
+      if (!target) {
+        return;
+      }
+
+      const fromX = actor.x;
+      const fromY = actor.y;
+      actor.x = target.x;
+      actor.y = target.y;
+
+      if (fromX === target.x && fromY === target.y) {
+        actor.renderX = target.x;
+        actor.renderY = target.y;
+        return;
+      }
+
+      moves.push({
+        actor,
+        fromX,
+        fromY,
+        toX: target.x,
+        toY: target.y
+      });
+    });
+
+    return moves;
+  }
+
   function movePlayers(dx, dy) {
+    if (isAnimating) {
+      queuedAction = { type: "move", dx, dy };
+      return;
+    }
+
     const players = state.actors.filter((actor) => actor.type === "player");
     const occupied = new Set(state.actors.map((actor) => posKey(actor.x, actor.y)));
     const orderedPlayers = players.slice().sort(sortActorsForMove(dx, dy));
-    let changed = false;
+    const previousPositions = cloneActorPositions();
+    const moves = [];
 
     orderedPlayers.forEach((player) => {
+      const fromX = player.x;
+      const fromY = player.y;
       occupied.delete(posKey(player.x, player.y));
 
       const nextX = player.x + dx;
@@ -269,32 +398,107 @@
       if (canMoveInto(nextX, nextY, occupied)) {
         player.x = nextX;
         player.y = nextY;
-        changed = true;
+        moves.push({
+          actor: player,
+          fromX,
+          fromY,
+          toX: nextX,
+          toY: nextY
+        });
       }
 
       occupied.add(posKey(player.x, player.y));
     });
 
-    if (changed) {
-      render();
+    if (moves.length > 0) {
+      moveHistory.push(previousPositions);
+      animateMoves(moves);
+    }
+  }
+
+  function undoMove() {
+    if (isAnimating) {
+      queuedAction = { type: "undo" };
+      return;
+    }
+
+    const previousPositions = moveHistory.pop();
+    if (!previousPositions) {
+      return;
+    }
+
+    const moves = buildMovesToPositions(previousPositions);
+    if (moves.length > 0) {
+      animateMoves(moves);
+      return;
+    }
+
+    render();
+  }
+
+  function resetPositions() {
+    if (isAnimating) {
+      queuedAction = { type: "reset" };
+      return;
+    }
+
+    moveHistory.length = 0;
+    const moves = buildMovesToPositions(initialPositions);
+
+    if (moves.length > 0) {
+      animateMoves(moves);
+      return;
+    }
+
+    render();
+  }
+
+  function runAction(action) {
+    if (!action) {
+      return;
+    }
+
+    if (action.type === "move") {
+      movePlayers(action.dx, action.dy);
+      return;
+    }
+
+    if (action.type === "undo") {
+      undoMove();
+      return;
+    }
+
+    if (action.type === "reset") {
+      resetPositions();
     }
   }
 
   function handleKeydown(event) {
-    const moves = {
+    const directionalMoves = {
       ArrowUp: [0, -1],
       ArrowDown: [0, 1],
       ArrowLeft: [-1, 0],
       ArrowRight: [1, 0]
     };
+    const key = event.key.toLowerCase();
 
-    if (!moves[event.key]) {
+    if (directionalMoves[event.key]) {
+      event.preventDefault();
+      const [dx, dy] = directionalMoves[event.key];
+      movePlayers(dx, dy);
       return;
     }
 
-    event.preventDefault();
-    const [dx, dy] = moves[event.key];
-    movePlayers(dx, dy);
+    if (key === "z" || key === "u") {
+      event.preventDefault();
+      undoMove();
+      return;
+    }
+
+    if (key === "r") {
+      event.preventDefault();
+      resetPositions();
+    }
   }
 
   function preventScroll(event) {
