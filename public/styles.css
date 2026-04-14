@@ -261,7 +261,7 @@ pre {
   max-width: 100%;
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
   align-items: center;
   gap: 10px;
   padding: 10px;
@@ -348,6 +348,15 @@ pre {
   background:
     repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0 1px, transparent 1px 4px),
     linear-gradient(90deg, #ff7b72 0 34%, #7ee0a1 34% 67%, #8dc7ff 67% 100%);
+}
+
+.effect-icon--pixelate {
+  background:
+    linear-gradient(#000000 0 0) 33% 0 / 2px 100% no-repeat,
+    linear-gradient(#000000 0 0) 66% 0 / 2px 100% no-repeat,
+    linear-gradient(#000000 0 0) 0 33% / 100% 2px no-repeat,
+    linear-gradient(#000000 0 0) 0 66% / 100% 2px no-repeat,
+    conic-gradient(from 90deg, #ffd84d 0 25%, #8dc7ff 0 50%, #7ee0a1 0 75%, #ff7b72 0 100%);
 }
 
 .effect-icon--fuzzy {

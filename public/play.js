@@ -7,8 +7,7 @@
   }
 
   const TILE_SIZE = 64;
-  const PIXELS_PER_TILE = 8;
-  const PIXEL_BLOCK_SIZE = TILE_SIZE / PIXELS_PER_TILE;
+  const DEFAULT_PIXELS_PER_TILE = 8;
   const MOVE_DURATION_MS = 98;
   const playShell = document.querySelector(".play-shell");
   const playNav = document.querySelector(".play-nav");
@@ -16,6 +15,7 @@
   const mazeFrame = document.querySelector(".maze-frame");
   const playControls = document.querySelector(".play-controls");
   const modeButtons = Array.from(document.querySelectorAll(".render-mode-button"));
+  const pixelInput = document.getElementById("pixel-input");
   const crtInput = document.getElementById("crt-input");
   const fuzzyInput = document.getElementById("fuzzy-input");
 
@@ -30,6 +30,7 @@
     })),
     effects: {
       mode: "pixelated",
+      pixelsPerTile: pixelInput ? Number(pixelInput.value) : DEFAULT_PIXELS_PER_TILE,
       crt: crtInput ? Number(crtInput.value) : 0,
       fuzzy: fuzzyInput ? Number(fuzzyInput.value) : 0
     }
@@ -345,8 +346,8 @@
     canvas.style.aspectRatio = `${state.width} / ${state.height}`;
     sceneCanvas.width = boardRect.width;
     sceneCanvas.height = boardRect.height;
-    pixelCanvas.width = state.width * PIXELS_PER_TILE;
-    pixelCanvas.height = state.height * PIXELS_PER_TILE;
+    pixelCanvas.width = state.width * state.effects.pixelsPerTile;
+    pixelCanvas.height = state.height * state.effects.pixelsPerTile;
     sceneCtx.setTransform(1, 0, 0, 1, 0, 0);
     pixelCtx.setTransform(1, 0, 0, 1, 0, 0);
     sceneCtx.imageSmoothingEnabled = false;
@@ -633,6 +634,7 @@
     const crt = clamp(state.effects.crt, 0, 1);
     const fuzzy = clamp(state.effects.fuzzy, 0, 0.1);
     const fuzzyMix = clamp(fuzzy / 0.1, 0, 1);
+    const pixelsPerTile = clamp(state.effects.pixelsPerTile, 1, 16);
 
     return {
       bleed: clamp(0.28 * crt + 0.78 * fuzzyMix, 0, 1),
@@ -644,7 +646,7 @@
       noise: Math.min(0.1, fuzzy + crt * 0.018),
       slotMask: fuzzyMix > crt ? 1 : 0,
       vignetteStrength: Math.max(crt, fuzzyMix),
-      blockSize: state.effects.mode === "pixelated" ? PIXEL_BLOCK_SIZE : 1
+      blockSize: state.effects.mode === "pixelated" ? TILE_SIZE / pixelsPerTile : 1
     };
   }
 
@@ -979,6 +981,14 @@
       render();
     });
   });
+
+  if (pixelInput) {
+    pixelInput.addEventListener("input", function () {
+      state.effects.pixelsPerTile = Number(pixelInput.value);
+      setupCanvas();
+      render();
+    });
+  }
 
   if (crtInput) {
     crtInput.addEventListener("input", function () {

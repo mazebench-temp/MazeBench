@@ -376,6 +376,19 @@ function renderPlayPage(game, level) {
               <span class="render-mode-icon render-mode-icon--pixelated" aria-hidden="true"></span>
             </button>
           </div>
+          <label class="effect-slider" for="pixel-input" title="Pixelation">
+            <span class="effect-icon effect-icon--pixelate" aria-hidden="true"></span>
+            <input
+              id="pixel-input"
+              class="effect-range"
+              type="range"
+              min="1"
+              max="16"
+              step="1"
+              value="8"
+              aria-label="Pixelation amount"
+            >
+          </label>
           <label class="effect-slider" for="crt-input" title="CRT">
             <span class="effect-icon effect-icon--crt" aria-hidden="true"></span>
             <input
