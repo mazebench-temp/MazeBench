@@ -9,6 +9,7 @@
   const TILE_SIZE = 64;
   const FUZZY_AMOUNT = 0.1;
   const NOISE_FPS = 8;
+  const NOISE_FRAME_MS = 1000 / NOISE_FPS;
   const MOVE_DURATION_MS = 98;
   const playShell = document.querySelector(".play-shell");
   const playHeader = document.querySelector(".play-header");
@@ -26,7 +27,8 @@
       renderY: actor.y
     })),
     effects: {
-      fuzzyEnabled: fuzzyToggle ? fuzzyToggle.getAttribute("aria-pressed") === "true" : true
+      fuzzyEnabled: fuzzyToggle ? fuzzyToggle.getAttribute("aria-pressed") === "true" : true,
+      noisePhase: 0
     }
   };
 
@@ -63,7 +65,8 @@
   let isAnimating = false;
   let queuedAction = null;
   let renderer = null;
-  let noiseIntervalId = null;
+  let noiseFrameId = null;
+  let lastNoiseTickMs = 0;
 
   if (!sceneCtx || (!gl && !fallbackCtx)) {
     return;
@@ -94,7 +97,7 @@
     uniform float u_ghosting;
     uniform float u_noise;
     uniform float u_vignetteStrength;
-    uniform float u_time;
+    uniform float u_noisePhase;
 
     float hashNoise(vec2 point) {
       return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
@@ -164,9 +167,8 @@
       float vignette = mix(1.0, 1.0 - pow(edgeDistance, 2.2) * 0.32, u_vignetteStrength);
       color *= vignette;
 
-      float noisePhase = floor(u_time * 8.0);
       float grain = (
-        hashNoise(floor(logicalCoord) + vec2(noisePhase * 17.0, noisePhase * 31.0)) - 0.5
+        hashNoise(floor(logicalCoord) + vec2(u_noisePhase * 17.0, u_noisePhase * 31.0)) - 0.5
       ) * u_noise;
       color += grain;
 
@@ -271,7 +273,7 @@
         ghosting: glContext.getUniformLocation(program, "u_ghosting"),
         noise: glContext.getUniformLocation(program, "u_noise"),
         vignetteStrength: glContext.getUniformLocation(program, "u_vignetteStrength"),
-        time: glContext.getUniformLocation(program, "u_time")
+        noisePhase: glContext.getUniformLocation(program, "u_noisePhase")
       }
     };
   }
@@ -312,20 +314,60 @@
   }
 
   function syncNoiseTicker() {
-    if (noiseIntervalId !== null) {
-      window.clearInterval(noiseIntervalId);
-      noiseIntervalId = null;
+    if (noiseFrameId !== null) {
+      window.cancelAnimationFrame(noiseFrameId);
+      noiseFrameId = null;
     }
 
     if (!state.effects.fuzzyEnabled) {
+      lastNoiseTickMs = 0;
       return;
     }
 
-    noiseIntervalId = window.setInterval(function () {
+    lastNoiseTickMs = performance.now();
+
+    function step(now) {
+      const elapsed = now - lastNoiseTickMs;
+      const phaseStep = Math.floor(elapsed / NOISE_FRAME_MS);
+
+      if (phaseStep > 0) {
+        state.effects.noisePhase += phaseStep;
+        lastNoiseTickMs += phaseStep * NOISE_FRAME_MS;
+
+        if (!isAnimating) {
+          render();
+        }
+      }
+
+      if (state.effects.fuzzyEnabled) {
+        noiseFrameId = window.requestAnimationFrame(step);
+      } else {
+        noiseFrameId = null;
+      }
+    }
+
+    noiseFrameId = window.requestAnimationFrame(step);
+  }
+
+  if (gl) {
+    canvas.addEventListener("webglcontextlost", function (event) {
+      event.preventDefault();
+      renderer = null;
+
+      if (noiseFrameId !== null) {
+        window.cancelAnimationFrame(noiseFrameId);
+        noiseFrameId = null;
+      }
+    });
+
+    canvas.addEventListener("webglcontextrestored", function () {
+      renderer = initializeRenderer(gl);
+      setupCanvas();
+      syncNoiseTicker();
       if (!isAnimating) {
         render();
       }
-    }, 1000 / NOISE_FPS);
+    });
   }
 
   function setupCanvas() {
@@ -667,7 +709,7 @@
   }
 
   function renderWithShader(sourceCanvas, settings) {
-    if (!gl || !renderer) {
+    if (!gl || !renderer || (typeof gl.isContextLost === "function" && gl.isContextLost())) {
       return false;
     }
 
@@ -702,7 +744,7 @@
     gl.uniform1f(renderer.uniforms.ghosting, settings.ghosting);
     gl.uniform1f(renderer.uniforms.noise, settings.noise);
     gl.uniform1f(renderer.uniforms.vignetteStrength, settings.vignetteStrength);
-    gl.uniform1f(renderer.uniforms.time, performance.now() * 0.001);
+    gl.uniform1f(renderer.uniforms.noisePhase, state.effects.noisePhase);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return true;
   }
