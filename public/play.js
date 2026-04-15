@@ -78,7 +78,7 @@
     gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT)?.precision > 0
       ? "highp"
       : "mediump";
-  const NOISE_PHASE_CYCLE = FRAGMENT_PRECISION === "highp" ? 4096 : 128;
+  const NOISE_PHASE_CYCLE = 10;
 
   const VERTEX_SHADER_SOURCE = `
     attribute vec2 a_position;
@@ -175,9 +175,9 @@
       float vignette = mix(1.0, 1.0 - pow(edgeDistance, 2.2) * 0.32, u_vignetteStrength);
       color *= vignette;
 
-      float grain = (
-        hashNoise(floor(logicalCoord) + vec2(u_noisePhase * 17.0, u_noisePhase * 31.0)) - 0.5
-      ) * u_noise;
+      float phase = mod(floor(u_noisePhase + 0.5), 10.0);
+      vec2 phaseOffset = vec2(phase * 7.0, phase * 13.0);
+      float grain = (hashNoise(floor(logicalCoord) + phaseOffset) - 0.5) * u_noise;
       color += grain;
 
       gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
