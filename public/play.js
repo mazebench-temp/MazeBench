@@ -57,6 +57,8 @@
   };
   const sceneCanvas = document.createElement("canvas");
   const sceneCtx = sceneCanvas.getContext("2d");
+  const weightlessGroupCanvas = document.createElement("canvas");
+  const weightlessGroupCtx = weightlessGroupCanvas.getContext("2d");
   const gl = canvas.getContext("webgl", {
     alpha: false,
     antialias: false,
@@ -886,15 +888,9 @@
     }
   }
 
-  function paintWeightlessBox(actor) {
-    const groupState = weightlessGroupRenderState(actor.groupId);
-
-    if (groupState.scale <= 0.001) {
-      return;
-    }
-
-    const left = actor.x * TILE_SIZE + groupState.offsetX;
-    const top = actor.y * TILE_SIZE + groupState.offsetY;
+  function paintWeightlessBoxTile(actor, offsetX = 0, offsetY = 0, context = sceneCtx) {
+    const left = actor.x * TILE_SIZE + offsetX;
+    const top = actor.y * TILE_SIZE + offsetY;
     const right = left + TILE_SIZE;
     const bottom = top + TILE_SIZE;
     const openTop = !isWeightlessBoxAt(actor.groupId, actor.x, actor.y - 1);
@@ -932,16 +928,11 @@
         ? bottom - faceHeight
         : bottom - radii.bl;
 
-    sceneCtx.save();
-    sceneCtx.translate(groupState.centerX, groupState.centerY + groupState.sink);
-    sceneCtx.scale(groupState.scale, groupState.scale);
-    sceneCtx.translate(-groupState.centerX, -groupState.centerY);
-
-    roundRectPath(sceneCtx, left, wallTop, TILE_SIZE, wallHeight, radii);
-    sceneCtx.save();
-    sceneCtx.clip();
-    sceneCtx.fillStyle = "#315991";
-    sceneCtx.fillRect(left, wallTop, TILE_SIZE, wallHeight);
+    roundRectPath(context, left, wallTop, TILE_SIZE, wallHeight, radii);
+    context.save();
+    context.clip();
+    context.fillStyle = "#315991";
+    context.fillRect(left, wallTop, TILE_SIZE, wallHeight);
 
     if (openBottom) {
       const shineTop = bottom - faceHeight;
@@ -954,74 +945,139 @@
         actor.x < state.width - 1 &&
         isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y) &&
         !isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y + 1);
-      sceneCtx.fillStyle = "#79abeb";
-      sceneCtx.fillRect(left, shineTop, TILE_SIZE, faceHeight);
-      sceneCtx.lineWidth = shineBorderWidth;
-      sceneCtx.strokeStyle = "#000000";
-      sceneCtx.beginPath();
-      sceneCtx.moveTo(left, shineTop + shineBorderWidth / 2);
-      sceneCtx.lineTo(right, shineTop + shineBorderWidth / 2);
-      sceneCtx.stroke();
-      sceneCtx.fillStyle = "#000000";
+      context.fillStyle = "#79abeb";
+      context.fillRect(left, shineTop, TILE_SIZE, faceHeight);
+      context.lineWidth = shineBorderWidth;
+      context.strokeStyle = "#000000";
+      context.beginPath();
+      context.moveTo(left, shineTop + shineBorderWidth / 2);
+      context.lineTo(right, shineTop + shineBorderWidth / 2);
+      context.stroke();
+      context.fillStyle = "#000000";
       if (!openLeft && !leftNeighborHasShine) {
-        sceneCtx.fillRect(left, shineTop, shineBorderWidth, faceHeight);
+        context.fillRect(left, shineTop, shineBorderWidth, faceHeight);
       }
       if (!openRight && !rightNeighborHasShine) {
-        sceneCtx.fillRect(right - shineBorderWidth, shineTop, shineBorderWidth, faceHeight);
+        context.fillRect(right - shineBorderWidth, shineTop, shineBorderWidth, faceHeight);
       }
     }
-    sceneCtx.restore();
+    context.restore();
 
-    sceneCtx.lineWidth = 3;
-    sceneCtx.strokeStyle = "#000000";
-    sceneCtx.beginPath();
+    context.lineWidth = 3;
+    context.strokeStyle = "#000000";
+    context.beginPath();
 
     if (openTop) {
-      sceneCtx.moveTo(left + radii.tl, wallTop);
-      sceneCtx.lineTo(right - radii.tr, wallTop);
+      context.moveTo(left + radii.tl, wallTop);
+      context.lineTo(right - radii.tr, wallTop);
     }
 
     if (openRight) {
-      sceneCtx.moveTo(right, wallTop + radii.tr);
-      sceneCtx.lineTo(right, rightCornerWallTop);
+      context.moveTo(right, wallTop + radii.tr);
+      context.lineTo(right, rightCornerWallTop);
     }
 
     if (openBottom) {
-      sceneCtx.moveTo(right - radii.br, bottom);
-      sceneCtx.lineTo(left + radii.bl, bottom);
+      context.moveTo(right - radii.br, bottom);
+      context.lineTo(left + radii.bl, bottom);
     }
 
     if (openLeft) {
-      sceneCtx.moveTo(left, leftCornerWallTop);
-      sceneCtx.lineTo(left, wallTop + radii.tl);
+      context.moveTo(left, leftCornerWallTop);
+      context.lineTo(left, wallTop + radii.tl);
     }
 
     if (radii.tl > 0) {
-      sceneCtx.moveTo(left + radii.tl, wallTop);
-      sceneCtx.quadraticCurveTo(left, wallTop, left, wallTop + radii.tl);
+      context.moveTo(left + radii.tl, wallTop);
+      context.quadraticCurveTo(left, wallTop, left, wallTop + radii.tl);
     }
 
     if (radii.tr > 0) {
-      sceneCtx.moveTo(right - radii.tr, wallTop);
-      sceneCtx.quadraticCurveTo(right, wallTop, right, wallTop + radii.tr);
+      context.moveTo(right - radii.tr, wallTop);
+      context.quadraticCurveTo(right, wallTop, right, wallTop + radii.tr);
     }
 
     if (radii.br > 0) {
-      sceneCtx.moveTo(right, bottom - radii.br);
-      sceneCtx.quadraticCurveTo(right, bottom, right - radii.br, bottom);
+      context.moveTo(right, bottom - radii.br);
+      context.quadraticCurveTo(right, bottom, right - radii.br, bottom);
     }
 
     if (radii.bl > 0) {
-      sceneCtx.moveTo(left + radii.bl, bottom);
-      sceneCtx.quadraticCurveTo(left, bottom, left, bottom - radii.bl);
+      context.moveTo(left + radii.bl, bottom);
+      context.quadraticCurveTo(left, bottom, left, bottom - radii.bl);
     }
 
-    sceneCtx.stroke();
+    context.stroke();
+  }
+
+  function animatedWeightlessGroupMembers(groupId) {
+    return weightlessGroupMembers(groupId, { includeRemoved: true }).filter(
+      (member) => !member.removed || member.renderScale > 0.001
+    );
+  }
+
+  function paintWeightlessGroup(groupId) {
+    const groupState = weightlessGroupRenderState(groupId);
+
+    if (groupState.scale <= 0.001) {
+      return;
+    }
+
+    const members = animatedWeightlessGroupMembers(groupId).sort((left, right) => {
+      if (left.y !== right.y) {
+        return left.y - right.y;
+      }
+
+      return left.x - right.x;
+    });
+
+    if (members.length === 0) {
+      return;
+    }
+
+    if (!weightlessGroupCtx) {
+      members.forEach((member) => {
+        paintWeightlessBoxTile(member, groupState.offsetX, groupState.offsetY);
+      });
+      return;
+    }
+
+    const faceHeight = Math.round(TILE_SIZE * 0.26);
+    const minX = Math.min(...members.map((member) => member.x));
+    const maxX = Math.max(...members.map((member) => member.x));
+    const minY = Math.min(...members.map((member) => member.y));
+    const maxY = Math.max(...members.map((member) => member.y));
+    const bitmapWidth = (maxX - minX + 1) * TILE_SIZE;
+    const bitmapHeight = (maxY - minY + 1) * TILE_SIZE + faceHeight;
+    const tileOffsetX = -minX * TILE_SIZE;
+    const tileOffsetY = faceHeight - minY * TILE_SIZE;
+    const drawLeft = minX * TILE_SIZE + groupState.offsetX;
+    const drawTop = minY * TILE_SIZE - faceHeight + groupState.offsetY;
+
+    if (weightlessGroupCanvas.width !== bitmapWidth || weightlessGroupCanvas.height !== bitmapHeight) {
+      weightlessGroupCanvas.width = bitmapWidth;
+      weightlessGroupCanvas.height = bitmapHeight;
+    }
+
+    weightlessGroupCtx.setTransform(1, 0, 0, 1, 0, 0);
+    weightlessGroupCtx.clearRect(0, 0, bitmapWidth, bitmapHeight);
+    weightlessGroupCtx.imageSmoothingEnabled = false;
+    members.forEach((member) => {
+      paintWeightlessBoxTile(member, tileOffsetX, tileOffsetY, weightlessGroupCtx);
+    });
+
+    sceneCtx.save();
+    sceneCtx.translate(groupState.centerX, groupState.centerY + groupState.sink);
+    sceneCtx.scale(groupState.scale, groupState.scale);
+    sceneCtx.translate(-groupState.centerX, -groupState.centerY);
+    sceneCtx.imageSmoothingEnabled = false;
+    sceneCtx.drawImage(weightlessGroupCanvas, drawLeft, drawTop);
     sceneCtx.restore();
   }
 
   function paintDepthSortedScene() {
     const drawItems = [];
+    const animatedWeightlessGroups = new Set();
 
     for (let y = 0; y < state.height; y += 1) {
       for (let x = 0; x < state.width; x += 1) {
@@ -1045,6 +1101,35 @@
     state.actors.forEach((actor, index) => {
       if (actor.removed) {
         return;
+      }
+
+      if (actor.type === "weightless_box") {
+        const groupState = weightlessGroupRenderState(actor.groupId);
+        const isGroupedAnimation =
+          Math.abs((groupState.scale ?? 1) - 1) > 0.001 || Math.abs(groupState.sink ?? 0) > 0.001;
+
+        if (isGroupedAnimation) {
+          if (animatedWeightlessGroups.has(actor.groupId)) {
+            return;
+          }
+
+          animatedWeightlessGroups.add(actor.groupId);
+          const members = animatedWeightlessGroupMembers(actor.groupId);
+
+          if (members.length === 0) {
+            return;
+          }
+
+          drawItems.push({
+            depth: Math.max(...members.map((member) => member.renderY)) + 1,
+            tieBreaker: 1,
+            order: index,
+            paint: function () {
+              paintWeightlessGroup(actor.groupId);
+            }
+          });
+          return;
+        }
       }
 
       drawItems.push({
@@ -1089,7 +1174,8 @@
     const image = actor.imageUrl ? imageCache.get(actor.imageUrl) : null;
 
     if (actor.type === "weightless_box") {
-      paintWeightlessBox(actor);
+      const groupState = weightlessGroupRenderState(actor.groupId);
+      paintWeightlessBoxTile(actor, groupState.offsetX, groupState.offsetY);
       return;
     }
 
