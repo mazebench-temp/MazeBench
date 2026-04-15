@@ -11,6 +11,7 @@
   const NOISE_FPS = 8;
   const NOISE_FRAME_MS = 1000 / NOISE_FPS;
   const MOVE_DURATION_MS = 98;
+  const HOLE_SINK_DISTANCE = TILE_SIZE * 0.42;
   const playShell = document.querySelector(".play-shell");
   const playHeader = document.querySelector(".play-header");
   const playStage = document.querySelector(".play-stage");
@@ -24,7 +25,10 @@
     actors: playData.actors.map((actor) => ({
       ...actor,
       renderX: actor.x,
-      renderY: actor.y
+      renderY: actor.y,
+      renderScale: 1,
+      renderSink: 0,
+      removed: false
     })),
     effects: {
       fuzzyEnabled: fuzzyToggle ? fuzzyToggle.getAttribute("aria-pressed") === "true" : true,
@@ -59,7 +63,11 @@
   });
   const fallbackCtx = gl ? null : canvas.getContext("2d");
   const imageCache = new Map();
-  const initialPositions = state.actors.map((actor) => ({ x: actor.x, y: actor.y }));
+  const initialPositions = state.actors.map((actor) => ({
+    x: actor.x,
+    y: actor.y,
+    removed: actor.removed
+  }));
   const moveHistory = [];
   let animationFrameId = null;
   let isAnimating = false;
@@ -293,7 +301,11 @@
   }
 
   function cloneActorPositions() {
-    return state.actors.map((actor) => ({ x: actor.x, y: actor.y }));
+    return state.actors.map((actor) => ({
+      x: actor.x,
+      y: actor.y,
+      removed: actor.removed
+    }));
   }
 
   function restoreActorPositions(positions) {
@@ -306,13 +318,22 @@
 
       actor.x = target.x;
       actor.y = target.y;
+      actor.removed = Boolean(target.removed);
+      actor.renderX = target.x;
+      actor.renderY = target.y;
+      actor.renderScale = actor.removed ? 0 : 1;
+      actor.renderSink = actor.removed ? HOLE_SINK_DISTANCE : 0;
     });
   }
 
   function buildOccupiedSet(excludedActor = null) {
-    const occupied = new Set(state.actors.map((actor) => posKey(actor.x, actor.y)));
+    const occupied = new Set(
+      state.actors
+        .filter((actor) => !actor.removed)
+        .map((actor) => posKey(actor.x, actor.y))
+    );
 
-    if (excludedActor) {
+    if (excludedActor && !excludedActor.removed) {
       occupied.delete(posKey(excludedActor.x, excludedActor.y));
     }
 
@@ -322,6 +343,10 @@
   function actorAt(x, y, predicate = null) {
     return (
       state.actors.find((actor) => {
+        if (actor.removed) {
+          return false;
+        }
+
         if (actor.x !== x || actor.y !== y) {
           return false;
         }
@@ -347,26 +372,68 @@
     return actor.type === "weightless_box" ? weightlessGroupMembers(actor.groupId) : [actor];
   }
 
-  function weightlessGroupMembers(groupId) {
-    return state.actors.filter((actor) => actor.type === "weightless_box" && actor.groupId === groupId);
+  function weightlessGroupMembers(groupId, options = {}) {
+    const includeRemoved = options.includeRemoved === true;
+
+    return state.actors.filter((actor) => {
+      if (actor.type !== "weightless_box" || actor.groupId !== groupId) {
+        return false;
+      }
+
+      return includeRemoved || !actor.removed;
+    });
   }
 
-  function weightlessGroupRenderOffset(groupId) {
-    const anchor = weightlessGroupMembers(groupId)[0];
+  function weightlessGroupRenderState(groupId) {
+    const members = weightlessGroupMembers(groupId, { includeRemoved: true });
+    const anchor = members[0];
 
     if (!anchor) {
-      return { x: 0, y: 0 };
+      return {
+        offsetX: 0,
+        offsetY: 0,
+        scale: 1,
+        sink: 0,
+        centerX: 0,
+        centerY: 0
+      };
     }
 
+    const visibleMembers = members.filter((member) => !member.removed || member.renderScale > 0.001);
+    const boundsSource = visibleMembers.length > 0 ? visibleMembers : members;
+    let minX = boundsSource[0].x;
+    let maxX = boundsSource[0].x;
+    let minY = boundsSource[0].y;
+    let maxY = boundsSource[0].y;
+
+    boundsSource.forEach((member) => {
+      minX = Math.min(minX, member.x);
+      maxX = Math.max(maxX, member.x);
+      minY = Math.min(minY, member.y);
+      maxY = Math.max(maxY, member.y);
+    });
+
+    const offsetX = Math.round(anchor.renderX * TILE_SIZE) - anchor.x * TILE_SIZE;
+    const offsetY = Math.round(anchor.renderY * TILE_SIZE) - anchor.y * TILE_SIZE;
+
     return {
-      x: Math.round(anchor.renderX * TILE_SIZE) - anchor.x * TILE_SIZE,
-      y: Math.round(anchor.renderY * TILE_SIZE) - anchor.y * TILE_SIZE
+      offsetX,
+      offsetY,
+      scale: anchor.renderScale ?? 1,
+      sink: anchor.renderSink ?? 0,
+      centerX: ((minX + maxX + 1) * TILE_SIZE) / 2 + offsetX,
+      centerY: ((minY + maxY + 1) * TILE_SIZE) / 2 + offsetY
     };
   }
 
   function isWeightlessBoxAt(groupId, x, y) {
     return state.actors.some(
-      (actor) => actor.type === "weightless_box" && actor.groupId === groupId && actor.x === x && actor.y === y
+      (actor) =>
+        !actor.removed &&
+        actor.type === "weightless_box" &&
+        actor.groupId === groupId &&
+        actor.x === x &&
+        actor.y === y
     );
   }
 
@@ -384,6 +451,14 @@
 
   function isIce(x, y) {
     return terrainAt(x, y).type === "ice";
+  }
+
+  function isHole(x, y) {
+    return terrainAt(x, y).type === "hole";
+  }
+
+  function isGroundCell(cell) {
+    return cell.type !== "wall" && cell.type !== "hole" && cell.type !== "empty";
   }
 
   function syncFuzzyToggle() {
@@ -535,6 +610,12 @@
       return;
     }
 
+    if (cell.type === "hole") {
+      sceneCtx.fillStyle = "#050608";
+      sceneCtx.fillRect(left, top, TILE_SIZE, TILE_SIZE);
+      return;
+    }
+
     if (cell.type === "ice") {
       const centerX = left + TILE_SIZE * 0.5;
       const centerY = top + TILE_SIZE * 0.5;
@@ -562,6 +643,47 @@
     sceneCtx.strokeStyle = "rgba(0, 0, 0, 0.12)";
     sceneCtx.lineWidth = 1.5;
     sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
+  }
+
+  function groundFaceColor(cell) {
+    if (cell.type === "ice") {
+      return "#7fb6db";
+    }
+
+    return "#b89c73";
+  }
+
+  function paintGroundDropFace(x, y, cell) {
+    if (y >= state.height - 1 || !isGroundCell(cell) || !isHole(x, y + 1)) {
+      return;
+    }
+
+    const left = x * TILE_SIZE;
+    const faceTop = (y + 1) * TILE_SIZE;
+    const faceHeight = Math.round(TILE_SIZE * 0.24);
+    const borderWidth = 3;
+    const leftNeighborHasFace =
+      x > 0 && isGroundCell(terrainAt(x - 1, y)) && isHole(x - 1, y + 1);
+    const rightNeighborHasFace =
+      x < state.width - 1 && isGroundCell(terrainAt(x + 1, y)) && isHole(x + 1, y + 1);
+
+    sceneCtx.fillStyle = groundFaceColor(cell);
+    sceneCtx.fillRect(left, faceTop, TILE_SIZE, faceHeight);
+    sceneCtx.lineWidth = borderWidth;
+    sceneCtx.strokeStyle = "#000000";
+    sceneCtx.beginPath();
+    sceneCtx.moveTo(left, faceTop + borderWidth / 2);
+    sceneCtx.lineTo(left + TILE_SIZE, faceTop + borderWidth / 2);
+    sceneCtx.stroke();
+    sceneCtx.fillStyle = "#000000";
+
+    if (!leftNeighborHasFace) {
+      sceneCtx.fillRect(left, faceTop, borderWidth, faceHeight);
+    }
+
+    if (!rightNeighborHasFace) {
+      sceneCtx.fillRect(left + TILE_SIZE - borderWidth, faceTop, borderWidth, faceHeight);
+    }
   }
 
   function paintWallTile(x, y, cell) {
@@ -740,6 +862,12 @@
         paintFloorTile(x, y, cell);
       }
     }
+
+    for (let y = 0; y < state.height; y += 1) {
+      for (let x = 0; x < state.width; x += 1) {
+        paintGroundDropFace(x, y, terrainAt(x, y));
+      }
+    }
   }
 
   function paintWalls() {
@@ -754,9 +882,14 @@
   }
 
   function paintWeightlessBox(actor) {
-    const groupOffset = weightlessGroupRenderOffset(actor.groupId);
-    const left = actor.x * TILE_SIZE + groupOffset.x;
-    const top = actor.y * TILE_SIZE + groupOffset.y;
+    const groupState = weightlessGroupRenderState(actor.groupId);
+
+    if (groupState.scale <= 0.001) {
+      return;
+    }
+
+    const left = actor.x * TILE_SIZE + groupState.offsetX;
+    const top = actor.y * TILE_SIZE + groupState.offsetY;
     const right = left + TILE_SIZE;
     const bottom = top + TILE_SIZE;
     const openTop = !isWeightlessBoxAt(actor.groupId, actor.x, actor.y - 1);
@@ -793,6 +926,11 @@
       !isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y)
         ? bottom - faceHeight
         : bottom - radii.bl;
+
+    sceneCtx.save();
+    sceneCtx.translate(groupState.centerX, groupState.centerY + groupState.sink);
+    sceneCtx.scale(groupState.scale, groupState.scale);
+    sceneCtx.translate(-groupState.centerX, -groupState.centerY);
 
     roundRectPath(sceneCtx, left, wallTop, TILE_SIZE, wallHeight, radii);
     sceneCtx.save();
@@ -874,6 +1012,7 @@
     }
 
     sceneCtx.stroke();
+    sceneCtx.restore();
   }
 
   function paintDepthSortedScene() {
@@ -899,6 +1038,10 @@
     }
 
     state.actors.forEach((actor, index) => {
+      if (actor.removed) {
+        return;
+      }
+
       drawItems.push({
         depth: actor.renderY + 1,
         tieBreaker: actor.type === "player" ? 2 : 1,
@@ -925,6 +1068,17 @@
   }
 
   function paintActor(actor) {
+    if (actor.removed) {
+      return;
+    }
+
+    const scale = actor.renderScale ?? 1;
+
+    if (scale <= 0.001) {
+      return;
+    }
+
+    const sink = actor.renderSink ?? 0;
     const left = actor.renderX * TILE_SIZE;
     const top = actor.renderY * TILE_SIZE;
     const image = actor.imageUrl ? imageCache.get(actor.imageUrl) : null;
@@ -936,23 +1090,34 @@
 
     if (image) {
       if (actor.type === "box") {
-        const drawWidth = TILE_SIZE;
+        const drawWidth = TILE_SIZE * scale;
         const drawHeight = drawWidth * (image.height / image.width);
-        const drawLeft = left;
-        const drawTop = top + TILE_SIZE - drawHeight;
+        const drawLeft = left + (TILE_SIZE - drawWidth) / 2;
+        const drawTop = top + TILE_SIZE - drawHeight + sink;
 
         sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
         return;
       }
 
-      sceneCtx.drawImage(image, left, top, TILE_SIZE, TILE_SIZE);
+      const drawWidth = TILE_SIZE * scale;
+      const drawHeight = TILE_SIZE * scale;
+      const drawLeft = left + (TILE_SIZE - drawWidth) / 2;
+      const drawTop = top + (TILE_SIZE - drawHeight) / 2 + sink;
+
+      sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
       return;
     }
 
     if (actor.type === "player") {
       sceneCtx.fillStyle = "#5aa95c";
       sceneCtx.beginPath();
-      sceneCtx.arc(left + TILE_SIZE / 2, top + TILE_SIZE / 2, TILE_SIZE * 0.338, 0, Math.PI * 2);
+      sceneCtx.arc(
+        left + TILE_SIZE / 2,
+        top + TILE_SIZE / 2 + sink,
+        TILE_SIZE * 0.338 * scale,
+        0,
+        Math.PI * 2
+      );
       sceneCtx.fill();
       sceneCtx.lineWidth = 3;
       sceneCtx.strokeStyle = "#000000";
@@ -961,6 +1126,10 @@
     }
 
     if (actor.type === "box") {
+      sceneCtx.save();
+      sceneCtx.translate(left + TILE_SIZE / 2, top + TILE_SIZE + sink);
+      sceneCtx.scale(scale, scale);
+      sceneCtx.translate(-(left + TILE_SIZE / 2), -(top + TILE_SIZE));
       const inset = TILE_SIZE * 0.19;
       const boxLeft = left + inset;
       const boxTop = top + inset;
@@ -989,6 +1158,7 @@
       sceneCtx.lineWidth = 3;
       sceneCtx.strokeStyle = "#000000";
       sceneCtx.stroke();
+      sceneCtx.restore();
     }
   }
 
@@ -1279,6 +1449,41 @@
     return remainingBudget;
   }
 
+  function applyHoleFalls(moves) {
+    const moveByActor = new Map(moves.map((move) => [move.actor, move]));
+    const handledGroups = new Set();
+
+    moves.forEach((move) => {
+      move.fromRemoved = Boolean(move.fromRemoved);
+      move.toRemoved = Boolean(move.toRemoved);
+
+      if (move.actor.type === "weightless_box") {
+        if (handledGroups.has(move.actor.groupId)) {
+          return;
+        }
+
+        handledGroups.add(move.actor.groupId);
+        const members = weightlessGroupMembers(move.actor.groupId);
+
+        if (members.length > 0 && members.every((member) => isHole(member.x, member.y))) {
+          members.forEach((member) => {
+            const memberMove = moveByActor.get(member);
+
+            if (memberMove) {
+              memberMove.toRemoved = true;
+            }
+          });
+        }
+
+        return;
+      }
+
+      if (isHole(move.actor.x, move.actor.y)) {
+        move.toRemoved = true;
+      }
+    });
+  }
+
   function easeInOutQuad(progress) {
     if (progress < 0.5) {
       return 2 * progress * progress;
@@ -1288,9 +1493,12 @@
   }
 
   function finishAnimation(moves) {
-    moves.forEach(({ actor, toX, toY }) => {
+    moves.forEach(({ actor, toX, toY, toRemoved = false }) => {
       actor.renderX = toX;
       actor.renderY = toY;
+      actor.renderScale = toRemoved ? 0 : 1;
+      actor.renderSink = toRemoved ? HOLE_SINK_DISTANCE : 0;
+      actor.removed = Boolean(toRemoved);
     });
 
     isAnimating = false;
@@ -1324,9 +1532,13 @@
       const progress = Math.min(1, (now - startTime) / moveDuration);
       const eased = easeInOutQuad(progress);
 
-      moves.forEach(({ actor, fromX, fromY, toX, toY }) => {
+      moves.forEach(({ actor, fromX, fromY, toX, toY, fromRemoved = false, toRemoved = false }) => {
         actor.renderX = fromX + (toX - fromX) * eased;
         actor.renderY = fromY + (toY - fromY) * eased;
+        actor.renderScale = (fromRemoved ? 0 : 1) + ((toRemoved ? 0 : 1) - (fromRemoved ? 0 : 1)) * eased;
+        actor.renderSink =
+          (fromRemoved ? HOLE_SINK_DISTANCE : 0) +
+          ((toRemoved ? HOLE_SINK_DISTANCE : 0) - (fromRemoved ? HOLE_SINK_DISTANCE : 0)) * eased;
       });
 
       render();
@@ -1373,21 +1585,36 @@
 
       const fromX = actor.x;
       const fromY = actor.y;
+      const fromRemoved = Boolean(actor.removed);
+      const toRemoved = Boolean(target.removed);
       actor.x = target.x;
       actor.y = target.y;
 
-      if (fromX === target.x && fromY === target.y) {
+      if (!toRemoved) {
+        actor.removed = false;
+      }
+
+      if (fromX === target.x && fromY === target.y && fromRemoved === toRemoved) {
         actor.renderX = target.x;
         actor.renderY = target.y;
+        actor.renderScale = toRemoved ? 0 : 1;
+        actor.renderSink = toRemoved ? HOLE_SINK_DISTANCE : 0;
+        actor.removed = toRemoved;
         return;
       }
 
+      actor.renderX = fromX;
+      actor.renderY = fromY;
+      actor.renderScale = fromRemoved ? 0 : 1;
+      actor.renderSink = fromRemoved ? HOLE_SINK_DISTANCE : 0;
       moves.push({
         actor,
         fromX,
         fromY,
         toX: target.x,
-        toY: target.y
+        toY: target.y,
+        fromRemoved,
+        toRemoved
       });
     });
 
@@ -1400,7 +1627,7 @@
       return;
     }
 
-    const players = state.actors.filter((actor) => actor.type === "player");
+    const players = state.actors.filter((actor) => actor.type === "player" && !actor.removed);
     let occupied = buildOccupiedSet();
     const orderedPlayers = players.slice().sort(sortActorsForMove(dx, dy));
     const previousPositions = cloneActorPositions();
@@ -1474,6 +1701,7 @@
     });
 
     if (moves.length > 0) {
+      applyHoleFalls(moves);
       moveHistory.push(previousPositions);
       animateMoves(moves);
     }

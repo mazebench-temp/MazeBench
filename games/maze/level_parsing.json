@@ -23,6 +23,9 @@
     "ice": {
       "token": "i"
     },
+    "hole": {
+      "token": "h"
+    },
     "floor": {
       "token": "."
     }

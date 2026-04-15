@@ -63,6 +63,13 @@ class Ice(MazeSprite):
         super().__init__(x, y, name="ice")
 
 
+class Hole(MazeSprite):
+    token = "h"
+
+    def __init__(self, x: int, y: int) -> None:
+        super().__init__(x, y, name="hole")
+
+
 class Box(MazeSprite):
     token = "b"
     solid = True
@@ -116,6 +123,7 @@ class MazeWorld(GridWorld):
         "weightless_box": WeightlessBox,
         "exit": Exit,
         "ice": Ice,
+        "hole": Hole,
         "floor": Floor,
     }
 
@@ -171,6 +179,17 @@ class MazeWorld(GridWorld):
         super().add_sprite(sprite)
         self.tiles.setdefault(sprite.position, []).append(sprite)
         return sprite
+
+    def remove_sprite(self, sprite: MazeSprite) -> None:
+        tile = self.tiles.get(sprite.position, [])
+
+        if sprite in tile:
+            tile.remove(sprite)
+
+        if not tile and sprite.position in self.tiles:
+            del self.tiles[sprite.position]
+
+        super().remove_sprite(sprite)
 
     def tile_has_name(self, x: int, y: int, name: str) -> bool:
         return any(sprite.name == name for sprite in self.tiles.get((x, y), []))
@@ -229,11 +248,12 @@ class MazeWorld(GridWorld):
         return [(sprite, sprite.position) for sprite in self.sprites]
 
     def restore_state(self, snapshot: list[tuple[Sprite, tuple[int, int]]]) -> None:
+        self.sprites.clear()
         self.tiles.clear()
 
         for sprite, position in snapshot:
             sprite.x, sprite.y = position
-            self.tiles.setdefault(sprite.position, []).append(sprite)
+            self.add_sprite(sprite)
 
     def can_move_weightless_group(self, members: list[WeightlessBox], dx: int, dy: int) -> bool:
         for member in members:
@@ -281,6 +301,10 @@ class MazeWorld(GridWorld):
 
             if not all(self.tile_has_name(member.x, member.y, "ice") for member in members):
                 break
+
+        if moved and all(self.tile_has_name(member.x, member.y, "hole") for member in members):
+            for member in list(members):
+                self.remove_sprite(member)
 
         return moved
 
@@ -357,6 +381,10 @@ class MazeWorld(GridWorld):
         self.sync_sprite_tile(sprite, old_position)
 
         if isinstance(sprite, WeightlessBox):
+            return
+
+        if self.tile_has_name(sprite.x, sprite.y, "hole"):
+            self.remove_sprite(sprite)
             return
 
         dx = sprite.x - old_position[0]
