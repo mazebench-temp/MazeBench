@@ -11,6 +11,7 @@
   const NOISE_FPS = 8;
   const NOISE_FRAME_MS = 1000 / NOISE_FPS;
   const MOVE_DURATION_MS = 98;
+  const HOLE_FALL_DURATION_MS = 300;
   const HOLE_SINK_DISTANCE = TILE_SIZE * 0.42;
   const playShell = document.querySelector(".play-shell");
   const playHeader = document.querySelector(".play-header");
@@ -455,6 +456,10 @@
 
   function isHole(x, y) {
     return terrainAt(x, y).type === "hole";
+  }
+
+  function isIceOrHole(x, y) {
+    return isIce(x, y) || isHole(x, y);
   }
 
   function isGroundCell(cell) {
@@ -1352,7 +1357,11 @@
 
       moved = true;
 
-      if (!members.every((member) => isIce(member.x, member.y))) {
+      if (members.every((member) => isHole(member.x, member.y))) {
+        break;
+      }
+
+      if (!members.every((member) => isIceOrHole(member.x, member.y))) {
         break;
       }
     }
@@ -1519,6 +1528,9 @@
 
     isAnimating = true;
     const startTime = performance.now();
+    const holeStateMoves = moves.filter(
+      ({ fromRemoved = false, toRemoved = false }) => fromRemoved !== toRemoved
+    );
     const moveDuration =
       typeof durationMs === "number"
         ? durationMs
@@ -1528,6 +1540,51 @@
             ...moves.map(({ fromX, fromY, toX, toY }) => Math.abs(toX - fromX) + Math.abs(toY - fromY))
           );
 
+    function startFallPhase() {
+      if (holeStateMoves.length === 0) {
+        finishAnimation(moves);
+        return;
+      }
+
+      const fallStartTime = performance.now();
+
+      function stepFall(now) {
+        const progress = Math.min(1, (now - fallStartTime) / HOLE_FALL_DURATION_MS);
+        const eased = easeInOutQuad(progress);
+
+        moves.forEach(({ actor, toX, toY, fromRemoved = false, toRemoved = false }) => {
+          actor.renderX = toX;
+          actor.renderY = toY;
+
+          if (fromRemoved && !toRemoved) {
+            actor.renderScale = eased;
+            actor.renderSink = HOLE_SINK_DISTANCE * (1 - eased);
+            return;
+          }
+
+          if (!fromRemoved && toRemoved) {
+            actor.renderScale = 1 - eased;
+            actor.renderSink = HOLE_SINK_DISTANCE * eased;
+            return;
+          }
+
+          actor.renderScale = toRemoved ? 0 : 1;
+          actor.renderSink = toRemoved ? HOLE_SINK_DISTANCE : 0;
+        });
+
+        render();
+
+        if (progress < 1) {
+          animationFrameId = window.requestAnimationFrame(stepFall);
+          return;
+        }
+
+        finishAnimation(moves);
+      }
+
+      animationFrameId = window.requestAnimationFrame(stepFall);
+    }
+
     function step(now) {
       const progress = Math.min(1, (now - startTime) / moveDuration);
       const eased = easeInOutQuad(progress);
@@ -1535,10 +1592,15 @@
       moves.forEach(({ actor, fromX, fromY, toX, toY, fromRemoved = false, toRemoved = false }) => {
         actor.renderX = fromX + (toX - fromX) * eased;
         actor.renderY = fromY + (toY - fromY) * eased;
-        actor.renderScale = (fromRemoved ? 0 : 1) + ((toRemoved ? 0 : 1) - (fromRemoved ? 0 : 1)) * eased;
-        actor.renderSink =
-          (fromRemoved ? HOLE_SINK_DISTANCE : 0) +
-          ((toRemoved ? HOLE_SINK_DISTANCE : 0) - (fromRemoved ? HOLE_SINK_DISTANCE : 0)) * eased;
+
+        if (fromRemoved) {
+          actor.renderScale = 0;
+          actor.renderSink = HOLE_SINK_DISTANCE;
+          return;
+        }
+
+        actor.renderScale = 1;
+        actor.renderSink = 0;
       });
 
       render();
@@ -1548,7 +1610,7 @@
         return;
       }
 
-      finishAnimation(moves);
+      startFallPhase();
     }
 
     if (animationFrameId !== null) {

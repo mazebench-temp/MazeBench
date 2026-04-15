@@ -299,7 +299,14 @@ class MazeWorld(GridWorld):
 
             moved = True
 
-            if not all(self.tile_has_name(member.x, member.y, "ice") for member in members):
+            if all(self.tile_has_name(member.x, member.y, "hole") for member in members):
+                break
+
+            if not all(
+                self.tile_has_name(member.x, member.y, "ice")
+                or self.tile_has_name(member.x, member.y, "hole")
+                for member in members
+            ):
                 break
 
         if moved and all(self.tile_has_name(member.x, member.y, "hole") for member in members):
