@@ -815,7 +815,14 @@
 
     isAnimating = true;
     const startTime = performance.now();
-    const moveDuration = typeof durationMs === "number" ? durationMs : MOVE_DURATION_MS;
+    const moveDuration =
+      typeof durationMs === "number"
+        ? durationMs
+        : MOVE_DURATION_MS *
+          Math.max(
+            1,
+            ...moves.map(({ fromX, fromY, toX, toY }) => Math.abs(toX - fromX) + Math.abs(toY - fromY))
+          );
 
     function step(now) {
       const progress = Math.min(1, (now - startTime) / moveDuration);
