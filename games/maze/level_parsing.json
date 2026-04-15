@@ -10,6 +10,10 @@
     "player": {
       "token": "p"
     },
+    "gem": {
+      "token": "G",
+      "image": "images/gem.png"
+    },
     "circle_player": {
       "token": "cp"
     },

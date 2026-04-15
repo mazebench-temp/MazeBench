@@ -22,7 +22,7 @@ def config_tokens(config: dict[str, Any]) -> list[str]:
 
 
 def is_actor_object_name(object_name: str) -> bool:
-    return object_name in {"player", "circle_player", "box", "floating_floor", "weightless_box"}
+    return object_name in {"player", "circle_player", "box", "gem", "floating_floor", "weightless_box"}
 
 
 class MazeSprite(Sprite):
@@ -87,6 +87,13 @@ class Box(MazeSprite):
 
     def __init__(self, x: int, y: int) -> None:
         super().__init__(x, y, name="box")
+
+
+class Gem(MazeSprite):
+    token = "G"
+
+    def __init__(self, x: int, y: int) -> None:
+        super().__init__(x, y, name="gem")
 
 
 class FloatingFloor(MazeSprite):
@@ -158,6 +165,7 @@ class MazeWorld(GridWorld):
         "circle_player": CirclePlayer,
         "player_gate": PlayerGate,
         "box": Box,
+        "gem": Gem,
         "floating_floor": FloatingFloor,
         "weightless_box": WeightlessBox,
         "exit": Exit,
@@ -346,6 +354,11 @@ class MazeWorld(GridWorld):
         if not self.tile_has_name(x, y, "floor"):
             self.add_sprite(Floor(x, y))
 
+    def collect_gems_at(self, x: int, y: int) -> None:
+        for sprite in list(self.tiles.get((x, y), [])):
+            if sprite.name == "gem":
+                self.remove_sprite(sprite)
+
     def snapshot_state(self) -> list[tuple[Sprite, tuple[int, int]]]:
         return [(sprite, sprite.position) for sprite in self.sprites]
 
@@ -503,6 +516,9 @@ class MazeWorld(GridWorld):
                 self.fill_hole_with_floor(sprite.x, sprite.y)
             self.remove_sprite(sprite)
             return
+
+        if isinstance(sprite, Player):
+            self.collect_gems_at(sprite.x, sprite.y)
 
         dx = sprite.x - old_position[0]
         dy = sprite.y - old_position[1]

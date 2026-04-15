@@ -11,10 +11,17 @@
   const NOISE_FPS = 8;
   const NOISE_FRAME_MS = 1000 / NOISE_FPS;
   const MOVE_DURATION_MS = 98;
+  const ICE_SLIDE_DURATION_MULTIPLIER = 0.82;
   const GATE_RISE_DURATION_MS = 220;
   const GATE_FALL_DURATION_MS = 180;
   const HOLE_FALL_DURATION_MS = 300;
   const HOLE_SINK_DISTANCE = TILE_SIZE * 0.42;
+  const GEM_HOVER_BASE = TILE_SIZE * 0.035;
+  const GEM_HOVER_BOB = TILE_SIZE * 0.028;
+  const GEM_HOVER_PERIOD_MS = 1800;
+  const GEM_DRAW_WIDTH = TILE_SIZE * 0.56;
+  const GEM_SHADOW_WIDTH = TILE_SIZE * 0.3;
+  const GEM_SHADOW_HEIGHT = TILE_SIZE * 0.1;
   const FLOATING_FLOOR_HOVER_BASE = TILE_SIZE * 0.18;
   const FLOATING_FLOOR_HOVER_BOB = TILE_SIZE * 0.045;
   const FLOATING_FLOOR_SHADOW_INSET = TILE_SIZE * 0.16;
@@ -372,7 +379,7 @@
   function buildOccupiedSet(excludedActor = null) {
     const occupied = new Set(
       state.actors
-        .filter((actor) => !actor.removed)
+        .filter((actor) => !actor.removed && !isCollectibleActor(actor))
         .map((actor) => posKey(actor.x, actor.y))
     );
 
@@ -383,20 +390,22 @@
     return occupied;
   }
 
+  function actorsAt(x, y, predicate = null) {
+    return state.actors.filter((actor) => {
+      if (actor.removed) {
+        return false;
+      }
+
+      if (actor.x !== x || actor.y !== y) {
+        return false;
+      }
+
+      return typeof predicate === "function" ? predicate(actor) : true;
+    });
+  }
+
   function actorAt(x, y, predicate = null) {
-    return (
-      state.actors.find((actor) => {
-        if (actor.removed) {
-          return false;
-        }
-
-        if (actor.x !== x || actor.y !== y) {
-          return false;
-        }
-
-        return typeof predicate === "function" ? predicate(actor) : true;
-      }) || null
-    );
+    return actorsAt(x, y, predicate)[0] || null;
   }
 
   function pushEntityKey(actor) {
@@ -409,6 +418,10 @@
 
   function isPlayerActor(actor) {
     return isPlayerActorType(actor?.type);
+  }
+
+  function isCollectibleActor(actor) {
+    return actor?.type === "gem";
   }
 
   function pushWeight(actor) {
@@ -517,7 +530,9 @@
 
   function computeRaisedPlayerGateSet(actors = state.actors) {
     const activeActors = actors.filter((actor) => !actor.removed);
-    const occupied = new Set(activeActors.map((actor) => posKey(actor.x, actor.y)));
+    const occupied = new Set(
+      activeActors.filter((actor) => !isCollectibleActor(actor)).map((actor) => posKey(actor.x, actor.y))
+    );
     const players = activeActors.filter((actor) => isPlayerActor(actor));
     const raised = new Set();
 
@@ -580,15 +595,18 @@
   function hasVisibleFloatingFloorActors() {
     return state.actors.some(
       (actor) =>
-        actor.type === "floating_floor" && (!actor.removed || (actor.renderScale ?? 0) > 0.001)
+        (actor.type === "floating_floor" || actor.type === "gem") &&
+        (!actor.removed || (actor.renderScale ?? 0) > 0.001)
     );
   }
 
   function floatingFloorHoverOffset(actor, now = performance.now()) {
+    const hoverBase = actor?.type === "gem" ? GEM_HOVER_BASE : FLOATING_FLOOR_HOVER_BASE;
+    const hoverBob = actor?.type === "gem" ? GEM_HOVER_BOB : FLOATING_FLOOR_HOVER_BOB;
+    const hoverPeriod = actor?.type === "gem" ? GEM_HOVER_PERIOD_MS : FLOATING_FLOOR_HOVER_PERIOD_MS;
     const oscillation =
-      Math.sin((now / FLOATING_FLOOR_HOVER_PERIOD_MS) * Math.PI * 2 + (actor.hoverSeed || 0)) *
-      FLOATING_FLOOR_HOVER_BOB;
-    return FLOATING_FLOOR_HOVER_BASE + oscillation;
+      Math.sin((now / hoverPeriod) * Math.PI * 2 + (actor.hoverSeed || 0)) * hoverBob;
+    return hoverBase + oscillation;
   }
 
   function easeOutBack(progress) {
@@ -1677,7 +1695,7 @@
 
       drawItems.push({
         depth: actor.renderY + (actor.renderInHole ? 0 : 1),
-        tieBreaker: actor.renderInHole ? -1 : isPlayerActor(actor) ? 2 : 1,
+        tieBreaker: actor.renderInHole ? -1 : isCollectibleActor(actor) ? 0 : isPlayerActor(actor) ? 2 : 1,
         order: index,
         paint: function () {
           paintActor(actor, now);
@@ -1735,6 +1753,47 @@
 
     if (actor.type === "floating_floor") {
       paintFloatingFloor(actor, sceneCtx, now);
+      if (clipToHole) {
+        sceneCtx.restore();
+      }
+      return;
+    }
+
+    if (actor.type === "gem") {
+      const hover = Math.max(0, floatingFloorHoverOffset(actor, now));
+      const drawWidth = GEM_DRAW_WIDTH * scale;
+      const drawHeight = image ? drawWidth * (image.height / image.width) : drawWidth;
+      const drawLeft = left + (TILE_SIZE - drawWidth) / 2;
+      const drawTop = top + TILE_SIZE * 0.66 - drawHeight + sink - hover;
+      const shadowWidth = GEM_SHADOW_WIDTH * scale;
+      const shadowHeight = GEM_SHADOW_HEIGHT * scale;
+
+      sceneCtx.fillStyle = "rgba(0, 0, 0, 0.18)";
+      sceneCtx.beginPath();
+      sceneCtx.ellipse(
+        left + TILE_SIZE / 2,
+        top + TILE_SIZE * 0.76 + sink,
+        shadowWidth / 2,
+        shadowHeight / 2,
+        0,
+        0,
+        Math.PI * 2
+      );
+      sceneCtx.fill();
+
+      if (image) {
+        sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
+      } else {
+        sceneCtx.fillStyle = "#6cd7ff";
+        sceneCtx.beginPath();
+        sceneCtx.moveTo(left + TILE_SIZE / 2, drawTop);
+        sceneCtx.lineTo(drawLeft + drawWidth, drawTop + drawHeight * 0.45);
+        sceneCtx.lineTo(left + TILE_SIZE / 2, drawTop + drawHeight);
+        sceneCtx.lineTo(drawLeft, drawTop + drawHeight * 0.45);
+        sceneCtx.closePath();
+        sceneCtx.fill();
+      }
+
       if (clipToHole) {
         sceneCtx.restore();
       }
@@ -1989,6 +2048,45 @@
     return count;
   }
 
+  function collectGemsAt(x, y, moves, collectedGems) {
+    actorsAt(x, y, (actor) => isCollectibleActor(actor) && !collectedGems.has(actor)).forEach((gem) => {
+      collectedGems.add(gem);
+      moves.push({
+        actor: gem,
+        fromX: gem.x,
+        fromY: gem.y,
+        toX: gem.x,
+        toY: gem.y,
+        fromRemoved: false,
+        toRemoved: true,
+        skipHoleFall: true,
+        visibleDuringMove: true
+      });
+    });
+  }
+
+  function collectGemsAlongPath(fromX, fromY, toX, toY, moves, collectedGems) {
+    if (fromX === toX && fromY === toY) {
+      return;
+    }
+
+    const stepX = Math.sign(toX - fromX);
+    const stepY = Math.sign(toY - fromY);
+    let currentX = fromX + stepX;
+    let currentY = fromY + stepY;
+
+    while (true) {
+      collectGemsAt(currentX, currentY, moves, collectedGems);
+
+      if (currentX === toX && currentY === toY) {
+        return;
+      }
+
+      currentX += stepX;
+      currentY += stepY;
+    }
+  }
+
   function canMoveWeightlessGroup(members, dx, dy, occupied, gateState = liveRaisedPlayerGates) {
     return members.every((member) => {
       const targetX = member.x + dx;
@@ -2098,7 +2196,11 @@
         return null;
       }
 
-      const blocker = actorAt(targetX, targetY, (candidate) => !memberSet.has(candidate));
+      const blocker = actorAt(
+        targetX,
+        targetY,
+        (candidate) => !memberSet.has(candidate) && !isCollectibleActor(candidate)
+      );
 
       if (!blocker) {
         continue;
@@ -2270,7 +2372,12 @@
         : MOVE_DURATION_MS *
           Math.max(
             1,
-            ...moves.map(({ fromX, fromY, toX, toY }) => Math.abs(toX - fromX) + Math.abs(toY - fromY))
+            ...moves.map(
+              ({ fromX, fromY, toX, toY, timingDistance = null }) =>
+                typeof timingDistance === "number"
+                  ? timingDistance
+                  : Math.abs(toX - fromX) + Math.abs(toY - fromY)
+            )
           );
 
     function startFallPhase() {
@@ -2466,6 +2573,7 @@
       terrain: cloneTerrainState(state.terrain)
     };
     const moves = [];
+    const collectedGems = new Set();
 
     orderedPlayers.forEach((player) => {
       const fromX = player.x;
@@ -2484,7 +2592,11 @@
           break;
         }
 
-        const blockingActor = actorAt(targetX, targetY, (actor) => actor !== player);
+        const blockingActor = actorAt(
+          targetX,
+          targetY,
+          (actor) => actor !== player && !isCollectibleActor(actor)
+        );
 
         if (blockingActor) {
           let didMoveBlockingActor = false;
@@ -2531,13 +2643,19 @@
       if (nextX !== fromX || nextY !== fromY) {
         player.x = nextX;
         player.y = nextY;
+        const travelDistance = Math.abs(nextX - fromX) + Math.abs(nextY - fromY);
         moves.push({
           actor: player,
           fromX,
           fromY,
           toX: nextX,
-          toY: nextY
+          toY: nextY,
+          timingDistance:
+            travelDistance > 1
+              ? 1 + (travelDistance - 1) * ICE_SLIDE_DURATION_MULTIPLIER
+              : travelDistance
         });
+        collectGemsAlongPath(fromX, fromY, nextX, nextY, moves, collectedGems);
       }
 
       occupied.add(posKey(player.x, player.y));

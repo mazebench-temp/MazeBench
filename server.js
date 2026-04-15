@@ -184,6 +184,7 @@ function isActorDefinition(definition) {
     definition?.name === "player" ||
     definition?.name === "circle_player" ||
     definition?.name === "box" ||
+    definition?.name === "gem" ||
     definition?.name === "floating_floor" ||
     definition?.name === "weightless_box"
   );
