@@ -15,8 +15,10 @@
   const GATE_FALL_DURATION_MS = 180;
   const HOLE_FALL_DURATION_MS = 300;
   const HOLE_SINK_DISTANCE = TILE_SIZE * 0.42;
-  const FLOATING_FLOOR_HOVER_BASE = TILE_SIZE * 0.12;
+  const FLOATING_FLOOR_HOVER_BASE = TILE_SIZE * 0.18;
   const FLOATING_FLOOR_HOVER_BOB = TILE_SIZE * 0.045;
+  const FLOATING_FLOOR_SHADOW_INSET = TILE_SIZE * 0.16;
+  const FLOATING_FLOOR_SHADOW_HEIGHT = TILE_SIZE * 0.12;
   const FLOATING_FLOOR_HOVER_PERIOD_MS = 2400;
   const FLOATING_FLOOR_HOVER_FPS = 30;
   const FLOATING_FLOOR_HOVER_FRAME_MS = 1000 / FLOATING_FLOOR_HOVER_FPS;
@@ -1473,6 +1475,22 @@
     context.translate(left + TILE_SIZE / 2, bottom + sink);
     context.scale(scale, scale);
     context.translate(-(left + TILE_SIZE / 2), -(bottom + sink));
+
+    roundRectPath(
+      context,
+      left + FLOATING_FLOOR_SHADOW_INSET,
+      bottom - FLOATING_FLOOR_SHADOW_HEIGHT * 0.5 + sink,
+      TILE_SIZE - FLOATING_FLOOR_SHADOW_INSET * 2,
+      FLOATING_FLOOR_SHADOW_HEIGHT,
+      {
+        tl: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5,
+        tr: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5,
+        br: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5,
+        bl: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5
+      }
+    );
+    context.fillStyle = "rgba(0, 0, 0, 0.18)";
+    context.fill();
 
     roundRectPath(context, left, platformTop, TILE_SIZE, TILE_SIZE + hover, {
       tl: radius,
