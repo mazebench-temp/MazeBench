@@ -8,7 +8,7 @@
 
   const TILE_SIZE = 64;
   const FUZZY_AMOUNT = 0.1;
-  const NOISE_FPS = 12;
+  const NOISE_FPS = 8;
   const MOVE_DURATION_MS = 98;
   const playShell = document.querySelector(".play-shell");
   const playHeader = document.querySelector(".play-header");
@@ -164,7 +164,7 @@
       float vignette = mix(1.0, 1.0 - pow(edgeDistance, 2.2) * 0.32, u_vignetteStrength);
       color *= vignette;
 
-      float noisePhase = floor(u_time * 12.0);
+      float noisePhase = floor(u_time * 8.0);
       float grain = (
         hashNoise(floor(logicalCoord) + vec2(noisePhase * 17.0, noisePhase * 31.0)) - 0.5
       ) * u_noise;
