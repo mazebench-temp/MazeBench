@@ -691,6 +691,54 @@
     }
   }
 
+  function paintDepthSortedScene() {
+    const drawItems = [];
+
+    for (let y = 0; y < state.height; y += 1) {
+      for (let x = 0; x < state.width; x += 1) {
+        const cell = terrainAt(x, y);
+
+        if (cell.type !== "wall") {
+          continue;
+        }
+
+        drawItems.push({
+          depth: y + 1,
+          tieBreaker: 0,
+          order: drawItems.length,
+          paint: function () {
+            paintWallTile(x, y, cell);
+          }
+        });
+      }
+    }
+
+    state.actors.forEach((actor, index) => {
+      drawItems.push({
+        depth: actor.renderY + 1,
+        tieBreaker: 1,
+        order: index,
+        paint: function () {
+          paintActor(actor);
+        }
+      });
+    });
+
+    drawItems.sort((left, right) => {
+      if (left.depth !== right.depth) {
+        return left.depth - right.depth;
+      }
+
+      if (left.tieBreaker !== right.tieBreaker) {
+        return left.tieBreaker - right.tieBreaker;
+      }
+
+      return left.order - right.order;
+    });
+
+    drawItems.forEach((item) => item.paint());
+  }
+
   function paintActor(actor) {
     const left = actor.renderX * TILE_SIZE;
     const top = actor.renderY * TILE_SIZE;
@@ -824,8 +872,7 @@
   function render() {
     sceneCtx.clearRect(0, 0, boardRect.width, boardRect.height);
     paintGround();
-    state.actors.forEach(paintActor);
-    paintWalls();
+    paintDepthSortedScene();
     const settings = getEffectSettings();
 
     if (!renderWithShader(sceneCanvas, settings)) {
