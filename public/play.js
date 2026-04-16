@@ -575,6 +575,80 @@
     return isTerrainWall(x, y) || isRaisedPlayerGate(x, y, gateState);
   }
 
+  function elevatedBlockFamiliesAt(x, y, gateState = liveRaisedPlayerGates) {
+    const families = new Set();
+
+    if (isTerrainWall(x, y)) {
+      families.add("terrain:wall");
+    }
+
+    if (isRaisedPlayerGate(x, y, gateState)) {
+      families.add("terrain:player_gate");
+    }
+
+    state.actors.forEach((actor) => {
+      if (actor.removed || actor.x !== x || actor.y !== y) {
+        return;
+      }
+
+      if (
+        actor.type === "player" ||
+        actor.type === "floating_floor" ||
+        actor.type === "weightless_box"
+      ) {
+        families.add(`actor:${actor.type}`);
+      }
+    });
+
+    return families;
+  }
+
+  function sharedElevatedBlockFamily(positions, gateState = liveRaisedPlayerGates) {
+    let sharedFamilies = null;
+
+    for (const position of positions) {
+      const families = elevatedBlockFamiliesAt(position.x, position.y, gateState);
+
+      if (families.size === 0) {
+        return false;
+      }
+
+      if (sharedFamilies === null) {
+        sharedFamilies = new Set(families);
+        continue;
+      }
+
+      sharedFamilies = new Set(
+        Array.from(sharedFamilies).filter((family) => families.has(family))
+      );
+
+      if (sharedFamilies.size === 0) {
+        return false;
+      }
+    }
+
+    return sharedFamilies.size > 0;
+  }
+
+  function shouldHideElevatedSideStroke(x, y, dx, gateState = liveRaisedPlayerGates) {
+    if (dx !== -1 && dx !== 1) {
+      return false;
+    }
+
+    if (y >= state.height - 1) {
+      return false;
+    }
+
+    return sharedElevatedBlockFamily(
+      [
+        { x: x + dx, y },
+        { x, y: y + 1 },
+        { x: x + dx, y: y + 1 }
+      ],
+      gateState
+    );
+  }
+
   function isIce(x, y) {
     return terrainAt(x, y).type === "ice";
   }
@@ -1060,6 +1134,8 @@
       !isTerrainWall(x - 1, y)
         ? bottom - faceHeight
         : bottom - radii.bl;
+    const hideRightLiftStroke = liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(x, y, 1);
+    const hideLeftLiftStroke = liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(x, y, -1);
 
     if (x === 0 && y === 0) {
       radii.tl = 0;
@@ -1116,7 +1192,7 @@
 
     if (openRight) {
       sceneCtx.moveTo(right, wallTop + radii.tr);
-      sceneCtx.lineTo(right, rightCornerWallTop);
+      sceneCtx.lineTo(right, hideRightLiftStroke ? bottom - faceHeight : rightCornerWallTop);
     }
 
     if (openBottom) {
@@ -1125,8 +1201,13 @@
     }
 
     if (openLeft) {
-      sceneCtx.moveTo(left, leftCornerWallTop);
-      sceneCtx.lineTo(left, wallTop + radii.tl);
+      if (hideLeftLiftStroke) {
+        sceneCtx.moveTo(left, wallTop + radii.tl);
+        sceneCtx.lineTo(left, bottom - faceHeight);
+      } else {
+        sceneCtx.moveTo(left, leftCornerWallTop);
+        sceneCtx.lineTo(left, wallTop + radii.tl);
+      }
     }
 
     if (radii.tl > 0) {
@@ -1177,6 +1258,8 @@
       br: 0,
       bl: 0
     };
+    const hideRightLiftStroke = travel > 0.001 && shouldHideElevatedSideStroke(x, y, 1);
+    const hideLeftLiftStroke = travel > 0.001 && shouldHideElevatedSideStroke(x, y, -1);
 
     if (x === 0 && y === 0) {
       radii.tl = 0;
@@ -1203,11 +1286,16 @@
     sceneCtx.moveTo(left + radii.tl, platformTop);
     sceneCtx.lineTo(right - radii.tr, platformTop);
     sceneCtx.moveTo(right, platformTop + radii.tr);
-    sceneCtx.lineTo(right, bottom);
+    sceneCtx.lineTo(right, hideRightLiftStroke ? platformBottom : bottom);
     sceneCtx.moveTo(right, bottom);
     sceneCtx.lineTo(left, bottom);
-    sceneCtx.moveTo(left, bottom);
-    sceneCtx.lineTo(left, platformTop + radii.tl);
+    if (hideLeftLiftStroke) {
+      sceneCtx.moveTo(left, platformTop + radii.tl);
+      sceneCtx.lineTo(left, platformBottom);
+    } else {
+      sceneCtx.moveTo(left, bottom);
+      sceneCtx.lineTo(left, platformTop + radii.tl);
+    }
     sceneCtx.moveTo(left + radii.tl, platformTop);
     sceneCtx.quadraticCurveTo(left, platformTop, left, platformTop + radii.tl);
     sceneCtx.moveTo(right - radii.tr, platformTop);
@@ -1326,6 +1414,10 @@
       !isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y)
         ? bottom - faceHeight
         : bottom - radii.bl;
+    const hideRightLiftStroke =
+      liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(actor.x, actor.y, 1);
+    const hideLeftLiftStroke =
+      liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(actor.x, actor.y, -1);
 
     roundRectPath(context, left, wallTop, TILE_SIZE, wallHeight, radii);
     context.save();
@@ -1372,7 +1464,7 @@
 
       if (openRight) {
         context.moveTo(right, wallTop + radii.tr);
-        context.lineTo(right, rightCornerWallTop);
+        context.lineTo(right, hideRightLiftStroke ? bottom - faceHeight : rightCornerWallTop);
       }
 
       if (openBottom) {
@@ -1381,8 +1473,13 @@
       }
 
       if (openLeft) {
-        context.moveTo(left, leftCornerWallTop);
-        context.lineTo(left, wallTop + radii.tl);
+        if (hideLeftLiftStroke) {
+          context.moveTo(left, wallTop + radii.tl);
+          context.lineTo(left, bottom - faceHeight);
+        } else {
+          context.moveTo(left, leftCornerWallTop);
+          context.lineTo(left, wallTop + radii.tl);
+        }
       }
 
       if (radii.tl > 0) {
@@ -1437,6 +1534,10 @@
       br: 0,
       bl: 0
     };
+    const hideRightLiftStroke =
+      liftHeight > 0 && shouldHideElevatedSideStroke(actor.x, actor.y, 1);
+    const hideLeftLiftStroke =
+      liftHeight > 0 && shouldHideElevatedSideStroke(actor.x, actor.y, -1);
 
     context.save();
     context.translate(left + TILE_SIZE / 2, bottom + sink);
@@ -1466,15 +1567,29 @@
       context.moveTo(left + radii.tl, blockTop);
       context.lineTo(left + TILE_SIZE - radii.tr, blockTop);
       context.moveTo(left + TILE_SIZE, blockTop + radii.tr);
-      context.lineTo(left + TILE_SIZE, bottom);
+      context.lineTo(left + TILE_SIZE, hideRightLiftStroke ? bottom - faceHeight : bottom);
       context.moveTo(left + TILE_SIZE, bottom);
       context.lineTo(left, bottom);
-      context.moveTo(left, bottom);
-      context.lineTo(left, blockTop + radii.tl);
-      context.moveTo(left + radii.tl, blockTop);
-      context.quadraticCurveTo(left, blockTop, left, blockTop + radii.tl);
-      context.moveTo(left + TILE_SIZE - radii.tr, blockTop);
-      context.quadraticCurveTo(left + TILE_SIZE, blockTop, left + TILE_SIZE, blockTop + radii.tr);
+      if (hideLeftLiftStroke) {
+        context.moveTo(left, blockTop + radii.tl);
+        context.lineTo(left, bottom - faceHeight);
+      } else {
+        context.moveTo(left, bottom);
+        context.lineTo(left, blockTop + radii.tl);
+      }
+      if (radii.tl > 0) {
+        context.moveTo(left + radii.tl, blockTop);
+        context.quadraticCurveTo(left, blockTop, left, blockTop + radii.tl);
+      }
+      if (radii.tr > 0) {
+        context.moveTo(left + TILE_SIZE - radii.tr, blockTop);
+        context.quadraticCurveTo(
+          left + TILE_SIZE,
+          blockTop,
+          left + TILE_SIZE,
+          blockTop + radii.tr
+        );
+      }
     }
 
     context.lineWidth = 3;
@@ -1503,6 +1618,10 @@
     const platformTop = top - hover + sink;
     const platformBottom = bottom - hover + sink;
     const radius = Math.min(7, TILE_SIZE * 0.11);
+    const hideRightLiftStroke =
+      hover > 0.001 && shouldHideElevatedSideStroke(actor.x, actor.y, 1);
+    const hideLeftLiftStroke =
+      hover > 0.001 && shouldHideElevatedSideStroke(actor.x, actor.y, -1);
 
     context.save();
     context.translate(left + TILE_SIZE / 2, bottom + sink);
@@ -1551,11 +1670,16 @@
     context.moveTo(left + radius, platformTop);
     context.lineTo(right - radius, platformTop);
     context.moveTo(right, platformTop + radius);
-    context.lineTo(right, bottom + sink);
+    context.lineTo(right, hideRightLiftStroke ? platformBottom : bottom + sink);
     context.moveTo(right, bottom + sink);
     context.lineTo(left, bottom + sink);
-    context.moveTo(left, bottom + sink);
-    context.lineTo(left, platformTop + radius);
+    if (hideLeftLiftStroke) {
+      context.moveTo(left, platformTop + radius);
+      context.lineTo(left, platformBottom);
+    } else {
+      context.moveTo(left, bottom + sink);
+      context.lineTo(left, platformTop + radius);
+    }
     context.moveTo(left + radius, platformTop);
     context.quadraticCurveTo(left, platformTop, left, platformTop + radius);
     context.moveTo(right - radius, platformTop);
