@@ -448,9 +448,9 @@
       }
 
       app.isAnimating = true;
-      const startTime = performance.now();
       const startLiftPhaseCallback =
         typeof options.startLiftPhase === "function" ? options.startLiftPhase : null;
+      const liftPhaseFirst = options.liftPhaseFirst === true;
       const holeStateMoves = moves.filter(
         ({
           fromRemoved = false,
@@ -476,14 +476,14 @@
               )
             );
 
-      function startLiftPhase() {
+      function startLiftPhase(nextPhase) {
         if (startLiftPhaseCallback) {
           startLiftPhaseCallback();
           app.render();
         }
 
         if (liftStateMoves.length === 0) {
-          startFallPhase();
+          nextPhase();
           return;
         }
 
@@ -495,6 +495,8 @@
           moves.forEach(
             ({
               actor,
+              fromX,
+              fromY,
               toX,
               toY,
               fromElevation = actor.elevation ?? 0,
@@ -502,8 +504,8 @@
               fromRemoved = false,
               visibleDuringMove = false
             }) => {
-              actor.renderX = toX;
-              actor.renderY = toY;
+              actor.renderX = liftPhaseFirst ? fromX : toX;
+              actor.renderY = liftPhaseFirst ? fromY : toY;
               actor.renderInHole = false;
 
               if (fromRemoved && !visibleDuringMove) {
@@ -542,10 +544,63 @@
             return;
           }
 
-          startFallPhase();
+          nextPhase();
         }
 
         app.animationFrameId = window.requestAnimationFrame(stepLift);
+      }
+
+      function startMovePhase(useToElevation = false) {
+        const moveStartTime = performance.now();
+
+        function step(now) {
+          const progress = Math.min(1, (now - moveStartTime) / moveDuration);
+          const eased = easeInOutQuad(progress);
+
+          moves.forEach(
+            ({
+              actor,
+              fromX,
+              fromY,
+              toX,
+              toY,
+              fromRemoved = false,
+              visibleDuringMove = false,
+              fromElevation = actor.elevation ?? 0,
+              toElevation = fromElevation
+            }) => {
+              actor.renderX = fromX + (toX - fromX) * eased;
+              actor.renderY = fromY + (toY - fromY) * eased;
+              actor.renderElevation = useToElevation ? toElevation : fromElevation;
+              actor.renderInHole = false;
+
+              if (fromRemoved && !visibleDuringMove) {
+                actor.renderScale = 0;
+                actor.renderSink = HOLE_SINK_DISTANCE;
+                return;
+              }
+
+              actor.renderScale = 1;
+              actor.renderSink = 0;
+            }
+          );
+
+          app.render();
+
+          if (progress < 1) {
+            app.animationFrameId = window.requestAnimationFrame(step);
+            return;
+          }
+
+          if (liftPhaseFirst) {
+            startFallPhase();
+            return;
+          }
+
+          startLiftPhase(startFallPhase);
+        }
+
+        app.animationFrameId = window.requestAnimationFrame(step);
       }
 
       function startFallPhase() {
@@ -611,53 +666,18 @@
         app.animationFrameId = window.requestAnimationFrame(stepFall);
       }
 
-      function step(now) {
-        const progress = Math.min(1, (now - startTime) / moveDuration);
-        const eased = easeInOutQuad(progress);
-
-        moves.forEach(
-          ({
-            actor,
-            fromX,
-            fromY,
-            toX,
-            toY,
-            fromRemoved = false,
-            visibleDuringMove = false,
-            fromElevation = actor.elevation ?? 0,
-            toElevation = fromElevation
-          }) => {
-            actor.renderX = fromX + (toX - fromX) * eased;
-            actor.renderY = fromY + (toY - fromY) * eased;
-            actor.renderElevation = fromElevation;
-            actor.renderInHole = false;
-
-            if (fromRemoved && !visibleDuringMove) {
-              actor.renderScale = 0;
-              actor.renderSink = HOLE_SINK_DISTANCE;
-              return;
-            }
-
-            actor.renderScale = 1;
-            actor.renderSink = 0;
-          }
-        );
-
-        app.render();
-
-        if (progress < 1) {
-          app.animationFrameId = window.requestAnimationFrame(step);
-          return;
-        }
-
-        startLiftPhase();
-      }
-
       if (app.animationFrameId !== null) {
         window.cancelAnimationFrame(app.animationFrameId);
       }
 
-      app.animationFrameId = window.requestAnimationFrame(step);
+      if (liftPhaseFirst) {
+        startLiftPhase(() => {
+          startMovePhase(true);
+        });
+        return;
+      }
+
+      startMovePhase(false);
     }
 
     function sortActorsForMove(dx, dy) {
@@ -890,15 +910,32 @@
         return;
       }
 
-      restoreTerrainState(previousState.terrain);
-      app.gateRenderOverride = computeRaisedPlayerGateSet();
+      const raisedPlayerGates = computeRaisedPlayerGateSet();
       const moves = buildMovesToPositions(previousState.actors);
+      const hasLiftReversal = moves.some(
+        ({ fromElevation = 0, toElevation = fromElevation }) => fromElevation !== toElevation
+      );
 
       if (moves.length > 0) {
+        if (hasLiftReversal) {
+          app.gateRenderOverride = raisedPlayerGates;
+          animateMoves(moves, null, {
+            liftPhaseFirst: true,
+            startLiftPhase: () => {
+              restoreTerrainState(previousState.terrain);
+              app.gateRenderOverride = null;
+            }
+          });
+          return;
+        }
+
+        restoreTerrainState(previousState.terrain);
+        app.gateRenderOverride = raisedPlayerGates;
         animateMoves(moves);
         return;
       }
 
+      restoreTerrainState(previousState.terrain);
       app.gateRenderOverride = null;
       syncFloatingFloorTicker();
       app.render();
