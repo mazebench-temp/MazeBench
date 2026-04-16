@@ -46,6 +46,8 @@
       FLOATING_FLOOR_SHADOW_HEIGHT: 64 * 0.12,
       FLOATING_FLOOR_HOVER_PERIOD_MS: 2400,
       FLOATING_FLOOR_HOVER_FPS: 30,
+      VIEWPORT_TILE_COUNT: 10,
+      CAMERA_FOLLOW_SMOOTHING_MS: 210,
       PLAYER_LIFT_ARROW_URL: `/assets/${encodeURIComponent(currentGameId)}/images/arrow.png`,
       state: {
         width: playData.width,
@@ -72,6 +74,7 @@
       },
       imageUrls: new Set(),
       sceneCanvas: document.createElement("canvas"),
+      viewCanvas: document.createElement("canvas"),
       weightlessGroupCanvas: document.createElement("canvas"),
       imageCache: new Map(),
       moveHistory: [],
@@ -90,7 +93,13 @@
       gateAnimations: new Map(),
       playerLiftAnimationFrameId: null,
       playerLiftAnimationsInitialized: false,
-      playerLiftAnimations: new Map()
+      playerLiftAnimations: new Map(),
+      cameraFrameId: null,
+      lastCameraTickMs: 0,
+      cameraX: 0,
+      cameraY: 0,
+      cameraTargetX: 0,
+      cameraTargetY: 0
     };
 
     app.NOISE_FRAME_MS = 1000 / app.NOISE_FPS;
@@ -118,7 +127,18 @@
       width: app.state.width * app.TILE_SIZE,
       height: app.state.height * app.TILE_SIZE
     };
+    app.viewportRect =
+      app.state.width > app.VIEWPORT_TILE_COUNT || app.state.height > app.VIEWPORT_TILE_COUNT
+        ? {
+            width: app.VIEWPORT_TILE_COUNT * app.TILE_SIZE,
+            height: app.VIEWPORT_TILE_COUNT * app.TILE_SIZE
+          }
+        : {
+            width: app.boardRect.width,
+            height: app.boardRect.height
+          };
     app.sceneCtx = app.sceneCanvas.getContext("2d");
+    app.viewCtx = app.viewCanvas.getContext("2d");
     app.weightlessGroupCtx = app.weightlessGroupCanvas.getContext("2d");
     app.gl = canvas.getContext("webgl", {
       alpha: false,
@@ -127,7 +147,7 @@
     });
     app.fallbackCtx = app.gl ? null : canvas.getContext("2d");
 
-    if (!app.sceneCtx || (!app.gl && !app.fallbackCtx)) {
+    if (!app.sceneCtx || !app.viewCtx || (!app.gl && !app.fallbackCtx)) {
       return null;
     }
 
@@ -243,6 +263,122 @@
 
     function clamp(value, min, max) {
       return Math.min(max, Math.max(min, value));
+    }
+
+    function usesScrollingViewport() {
+      return (
+        app.viewportRect.width !== app.boardRect.width || app.viewportRect.height !== app.boardRect.height
+      );
+    }
+
+    function clampCameraAxis(target, boardSpan, viewSpan) {
+      if (boardSpan <= viewSpan) {
+        return -(viewSpan - boardSpan) / 2;
+      }
+
+      return clamp(target, 0, boardSpan - viewSpan);
+    }
+
+    function cameraFocusPoint() {
+      const players = app.state.actors.filter((actor) => isPlayerActor(actor) && !actor.removed);
+
+      if (players.length === 0) {
+        return {
+          x: app.boardRect.width / 2,
+          y: app.boardRect.height / 2
+        };
+      }
+
+      const focus = players.reduce(
+        (sum, actor) => {
+          sum.x += (actor.renderX + 0.5) * app.TILE_SIZE;
+          sum.y += (actor.renderY + 0.5) * app.TILE_SIZE;
+          return sum;
+        },
+        { x: 0, y: 0 }
+      );
+
+      return {
+        x: focus.x / players.length,
+        y: focus.y / players.length
+      };
+    }
+
+    function syncCameraTarget(immediate = false) {
+      if (!usesScrollingViewport()) {
+        app.cameraX = 0;
+        app.cameraY = 0;
+        app.cameraTargetX = 0;
+        app.cameraTargetY = 0;
+        app.lastCameraTickMs = 0;
+        return false;
+      }
+
+      const focus = cameraFocusPoint();
+      app.cameraTargetX = clampCameraAxis(
+        focus.x - app.viewportRect.width / 2,
+        app.boardRect.width,
+        app.viewportRect.width
+      );
+      app.cameraTargetY = clampCameraAxis(
+        focus.y - app.viewportRect.height / 2,
+        app.boardRect.height,
+        app.viewportRect.height
+      );
+
+      if (immediate || app.lastCameraTickMs === 0) {
+        app.cameraX = app.cameraTargetX;
+        app.cameraY = app.cameraTargetY;
+        app.lastCameraTickMs = performance.now();
+        return false;
+      }
+
+      return true;
+    }
+
+    function isCameraInMotion() {
+      return (
+        Math.abs(app.cameraTargetX - app.cameraX) > 0.35 ||
+        Math.abs(app.cameraTargetY - app.cameraY) > 0.35
+      );
+    }
+
+    function advanceCamera(now = performance.now()) {
+      if (!usesScrollingViewport()) {
+        return false;
+      }
+
+      if (app.lastCameraTickMs === 0) {
+        app.lastCameraTickMs = now;
+      }
+
+      const elapsed = Math.max(0, now - app.lastCameraTickMs);
+      app.lastCameraTickMs = now;
+      const smoothing = 1 - Math.exp(-elapsed / app.CAMERA_FOLLOW_SMOOTHING_MS);
+
+      app.cameraX += (app.cameraTargetX - app.cameraX) * smoothing;
+      app.cameraY += (app.cameraTargetY - app.cameraY) * smoothing;
+
+      if (!isCameraInMotion()) {
+        app.cameraX = app.cameraTargetX;
+        app.cameraY = app.cameraTargetY;
+        return false;
+      }
+
+      return true;
+    }
+
+    function startCameraFollowLoop() {
+      if (!usesScrollingViewport() || app.isAnimating || app.cameraFrameId !== null) {
+        return;
+      }
+
+      function step() {
+        app.cameraFrameId = null;
+        app.render();
+      }
+
+      app.cameraFrameId = window.requestAnimationFrame(step);
     }
 
     function createShader(glContext, type, source) {
@@ -1133,13 +1269,17 @@
 
     function setupCanvas() {
       const dpr = window.devicePixelRatio || 1;
-      app.canvas.width = Math.round(app.boardRect.width * dpr);
-      app.canvas.height = Math.round(app.boardRect.height * dpr);
-      app.canvas.style.aspectRatio = `${app.state.width} / ${app.state.height}`;
+      app.canvas.width = Math.round(app.viewportRect.width * dpr);
+      app.canvas.height = Math.round(app.viewportRect.height * dpr);
+      app.canvas.style.aspectRatio = `${app.viewportRect.width} / ${app.viewportRect.height}`;
       app.sceneCanvas.width = app.boardRect.width;
       app.sceneCanvas.height = app.boardRect.height;
       app.sceneCtx.setTransform(1, 0, 0, 1, 0, 0);
       app.sceneCtx.imageSmoothingEnabled = false;
+      app.viewCanvas.width = app.viewportRect.width;
+      app.viewCanvas.height = app.viewportRect.height;
+      app.viewCtx.setTransform(1, 0, 0, 1, 0, 0);
+      app.viewCtx.imageSmoothingEnabled = false;
 
       if (app.renderer && app.gl) {
         app.gl.viewport(0, 0, app.canvas.width, app.canvas.height);
@@ -1192,6 +1332,11 @@
 
     Object.assign(app, {
       clamp,
+      usesScrollingViewport,
+      cameraFocusPoint,
+      syncCameraTarget,
+      advanceCamera,
+      startCameraFollowLoop,
       createShader,
       createProgram,
       initializeRenderer,
@@ -1261,6 +1406,7 @@
     });
 
     initializeActorElevations();
+    syncCameraTarget(true);
     app.initialPositions = cloneActorPositions();
     app.initialTerrain = cloneTerrainState(app.state.terrain);
     app.renderer = app.gl ? initializeRenderer(app.gl) : null;

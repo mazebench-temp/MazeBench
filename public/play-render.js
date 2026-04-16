@@ -13,10 +13,13 @@
       GEM_SHADOW_HEIGHT,
       sceneCanvas,
       sceneCtx,
+      viewCanvas,
+      viewCtx,
       weightlessGroupCanvas,
       weightlessGroupCtx,
       imageCache,
       boardRect,
+      viewportRect,
       canvas,
       gl,
       fallbackCtx
@@ -39,7 +42,10 @@
       floatingFloorHoverOffset,
       isCollectibleActor,
       isPlayerActor,
-      actorRenderElevation
+      actorRenderElevation,
+      usesScrollingViewport,
+      syncCameraTarget,
+      advanceCamera
     } = app;
 
     function roundRectPath(context, x, y, width, height, radii) {
@@ -1290,6 +1296,46 @@
       };
     }
 
+    function composeViewportSource() {
+      if (!viewCtx) {
+        return sceneCanvas;
+      }
+
+      viewCtx.clearRect(0, 0, viewportRect.width, viewportRect.height);
+      viewCtx.fillStyle = "#d6bd94";
+      viewCtx.fillRect(0, 0, viewportRect.width, viewportRect.height);
+
+      if (!usesScrollingViewport()) {
+        viewCtx.drawImage(sceneCanvas, 0, 0);
+        return viewCanvas;
+      }
+
+      const cameraX = Math.round(app.cameraX);
+      const cameraY = Math.round(app.cameraY);
+      const sourceX = Math.max(0, cameraX);
+      const sourceY = Math.max(0, cameraY);
+      const destX = Math.max(0, -cameraX);
+      const destY = Math.max(0, -cameraY);
+      const drawWidth = Math.max(0, Math.min(boardRect.width - sourceX, viewportRect.width - destX));
+      const drawHeight = Math.max(0, Math.min(boardRect.height - sourceY, viewportRect.height - destY));
+
+      if (drawWidth > 0 && drawHeight > 0) {
+        viewCtx.drawImage(
+          sceneCanvas,
+          sourceX,
+          sourceY,
+          drawWidth,
+          drawHeight,
+          destX,
+          destY,
+          drawWidth,
+          drawHeight
+        );
+      }
+
+      return viewCanvas;
+    }
+
     function renderWithShader(sourceCanvas, settings) {
       const renderer = app.renderer;
 
@@ -1311,7 +1357,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
       gl.uniform1i(renderer.uniforms.texture, 0);
-      gl.uniform2f(renderer.uniforms.logicalResolution, boardRect.width, boardRect.height);
+      gl.uniform2f(renderer.uniforms.logicalResolution, sourceCanvas.width, sourceCanvas.height);
       gl.uniform1f(renderer.uniforms.bleed, settings.bleed);
       gl.uniform1f(renderer.uniforms.bloom, settings.bloom);
       gl.uniform1f(renderer.uniforms.softness, settings.softness);
@@ -1330,14 +1376,16 @@
         return;
       }
 
-      fallbackCtx.clearRect(0, 0, boardRect.width, boardRect.height);
+      fallbackCtx.clearRect(0, 0, viewportRect.width, viewportRect.height);
       fallbackCtx.imageSmoothingEnabled = false;
-      fallbackCtx.drawImage(sourceCanvas, 0, 0, boardRect.width, boardRect.height);
+      fallbackCtx.drawImage(sourceCanvas, 0, 0, viewportRect.width, viewportRect.height);
     }
 
     function render() {
       const now = performance.now();
 
+      syncCameraTarget();
+      const isCameraActive = advanceCamera(now);
       app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
       app.syncGateAnimationTargets(now);
       app.syncPlayerLiftAnimationTargets(now);
@@ -1345,9 +1393,14 @@
       paintGround(now);
       paintDepthSortedScene(now);
       const settings = getEffectSettings();
+      const sourceCanvas = composeViewportSource();
 
-      if (!renderWithShader(sceneCanvas, settings)) {
-        renderFallback(sceneCanvas);
+      if (!renderWithShader(sourceCanvas, settings)) {
+        renderFallback(sourceCanvas);
+      }
+
+      if (isCameraActive && !app.isAnimating) {
+        app.startCameraFollowLoop();
       }
     }
 
@@ -1372,6 +1425,7 @@
       paintDepthSortedScene,
       paintActor,
       getEffectSettings,
+      composeViewportSource,
       renderWithShader,
       renderFallback,
       render

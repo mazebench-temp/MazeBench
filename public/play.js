@@ -49,6 +49,11 @@
         window.cancelAnimationFrame(app.playerLiftAnimationFrameId);
         app.playerLiftAnimationFrameId = null;
       }
+
+      if (app.cameraFrameId !== null) {
+        window.cancelAnimationFrame(app.cameraFrameId);
+        app.cameraFrameId = null;
+      }
     });
 
     app.canvas.addEventListener("webglcontextrestored", function () {
@@ -57,6 +62,7 @@
       app.syncNoiseTicker();
       app.syncFloatingFloorTicker();
       app.syncPlayerLiftAnimationTargets();
+      app.syncCameraTarget(true);
       if (!app.isAnimating) {
         app.render();
       }
@@ -74,6 +80,7 @@
 
   app.syncPlayLayout();
   app.setupCanvas();
+  app.syncCameraTarget(true);
   app.syncFuzzyToggle();
   app.syncNoiseTicker();
   app.syncFloatingFloorTicker();
@@ -83,6 +90,7 @@
   window.addEventListener("resize", function () {
     app.syncPlayLayout();
     app.setupCanvas();
+    app.syncCameraTarget(true);
     app.render();
   });
 })();
