@@ -60,6 +60,7 @@
           elevation: 0,
           renderElevation: 0,
           renderScale: 1,
+          renderAlpha: 1,
           renderSink: 0,
           renderInHole: false,
           removed: false
@@ -386,6 +387,7 @@
         actor.renderY = target.y;
         actor.renderElevation = actor.elevation;
         actor.renderScale = actor.removed ? 0 : 1;
+        actor.renderAlpha = actor.removed ? 0 : 1;
         actor.renderSink = actor.removed ? app.HOLE_SINK_DISTANCE : 0;
         actor.renderInHole = false;
       });

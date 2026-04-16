@@ -136,7 +136,13 @@
       );
     }
 
-    function collectGemsAt(x, y, moves, collectedGems) {
+    function collectGemsAt(
+      x,
+      y,
+      moves,
+      collectedGems,
+      { fadeStartProgress = 0, fadeEndProgress = 1 } = {}
+    ) {
       actorsAt(x, y, (actor) => isCollectibleActor(actor) && !collectedGems.has(actor)).forEach((gem) => {
         collectedGems.add(gem);
         moves.push({
@@ -147,6 +153,9 @@
           toY: gem.y,
           fromRemoved: false,
           toRemoved: true,
+          fadeOut: true,
+          fadeStartProgress,
+          fadeEndProgress,
           skipHoleFall: true,
           visibleDuringMove: true
         });
@@ -160,11 +169,16 @@
 
       const stepX = Math.sign(toX - fromX);
       const stepY = Math.sign(toY - fromY);
+      const totalSteps = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY), 1);
+      let stepIndex = 1;
       let currentX = fromX + stepX;
       let currentY = fromY + stepY;
 
       while (true) {
-        collectGemsAt(currentX, currentY, moves, collectedGems);
+        collectGemsAt(currentX, currentY, moves, collectedGems, {
+          fadeStartProgress: (stepIndex - 1) / totalSteps,
+          fadeEndProgress: stepIndex / totalSteps
+        });
 
         if (currentX === toX && currentY === toY) {
           return;
@@ -172,6 +186,7 @@
 
         currentX += stepX;
         currentY += stepY;
+        stepIndex += 1;
       }
     }
 
@@ -186,6 +201,20 @@
 
         return !occupied.has(posKey(targetX, targetY));
       });
+    }
+
+    function fadeAlphaForMoveProgress(progress, fadeStartProgress = 0, fadeEndProgress = 1) {
+      if (progress <= fadeStartProgress) {
+        return 1;
+      }
+
+      if (progress >= fadeEndProgress) {
+        return 0;
+      }
+
+      const duration = Math.max(0.0001, fadeEndProgress - fadeStartProgress);
+      const localProgress = (progress - fadeStartProgress) / duration;
+      return 1 - easeInOutQuad(localProgress);
     }
 
     function moveWeightlessGroup(groupId, dx, dy, occupied, moves, gateState = app.liveRaisedPlayerGates) {
@@ -416,6 +445,7 @@
         actor.elevation = toElevation;
         actor.renderElevation = toElevation;
         actor.renderScale = toRemoved ? 0 : 1;
+        actor.renderAlpha = toRemoved ? 0 : 1;
         actor.renderSink = toRemoved && !skipHoleFall ? HOLE_SINK_DISTANCE : 0;
         actor.renderInHole = false;
         actor.removed = Boolean(toRemoved);
@@ -503,7 +533,9 @@
               fromElevation = actor.elevation ?? 0,
               toElevation = fromElevation,
               fromRemoved = false,
-              visibleDuringMove = false
+              visibleDuringMove = false,
+              fadeOut = false,
+              toRemoved = false
             }) => {
               actor.renderX = liftPhaseFirst ? fromX : toX;
               actor.renderY = liftPhaseFirst ? fromY : toY;
@@ -519,6 +551,7 @@
 
               if (fromElevation === toElevation) {
                 actor.renderElevation = toElevation;
+                actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
                 return;
               }
 
@@ -531,6 +564,7 @@
                 toElevation > fromElevation ? easeOutBack(progress) : easeInOutQuad(progress);
 
               actor.renderElevation = fromElevation + (toElevation - fromElevation) * eased;
+              actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
 
               if (progress < 1) {
                 hasActiveLift = true;
@@ -568,12 +602,20 @@
               fromRemoved = false,
               visibleDuringMove = false,
               fromElevation = actor.elevation ?? 0,
-              toElevation = fromElevation
+              toElevation = fromElevation,
+              fadeOut = false,
+              toRemoved = false,
+              fadeStartProgress = 0,
+              fadeEndProgress = 1
             }) => {
               actor.renderX = fromX + (toX - fromX) * eased;
               actor.renderY = fromY + (toY - fromY) * eased;
               actor.renderElevation = useToElevation ? toElevation : fromElevation;
               actor.renderInHole = false;
+              actor.renderAlpha =
+                fadeOut && toRemoved
+                  ? fadeAlphaForMoveProgress(progress, fadeStartProgress, fadeEndProgress)
+                  : 1;
 
               if (fromRemoved && !visibleDuringMove) {
                 actor.renderScale = 0;
@@ -624,12 +666,14 @@
               fromRemoved = false,
               toRemoved = false,
               skipHoleFall = false,
-              toElevation = actor.elevation ?? 0
+              toElevation = actor.elevation ?? 0,
+              fadeOut = false
             }) => {
               actor.renderX = toX;
               actor.renderY = toY;
               actor.renderElevation = toElevation;
               actor.renderInHole = !skipHoleFall && fromRemoved !== toRemoved;
+              actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
 
               if (skipHoleFall) {
                 actor.renderScale = 1;
@@ -730,6 +774,7 @@
           actor.renderY = target.y;
           actor.renderElevation = toElevation;
           actor.renderScale = toRemoved ? 0 : 1;
+          actor.renderAlpha = toRemoved ? 0 : 1;
           actor.renderSink = toRemoved ? HOLE_SINK_DISTANCE : 0;
           actor.renderInHole = false;
           actor.removed = toRemoved;
@@ -740,6 +785,7 @@
         actor.renderY = fromY;
         actor.renderElevation = fromElevation;
         actor.renderScale = fromRemoved ? 0 : 1;
+        actor.renderAlpha = fromRemoved ? 0 : 1;
         actor.renderSink = fromRemoved ? HOLE_SINK_DISTANCE : 0;
         actor.renderInHole = false;
         moves.push({

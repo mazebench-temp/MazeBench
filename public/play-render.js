@@ -723,8 +723,9 @@
 
     function paintRaisedPlayer(actor, context = sceneCtx) {
       const scale = actor.renderScale ?? 1;
+      const alpha = actor.renderAlpha ?? 1;
 
-      if (scale <= 0.001) {
+      if (scale <= 0.001 || alpha <= 0.001) {
         return;
       }
 
@@ -814,8 +815,9 @@
 
     function paintFloatingFloor(actor, context = sceneCtx, now = performance.now()) {
       const scale = actor.renderScale ?? 1;
+      const alpha = actor.renderAlpha ?? 1;
 
-      if (scale <= 0.001) {
+      if (scale <= 0.001 || alpha <= 0.001) {
         return;
       }
 
@@ -1095,8 +1097,9 @@
       }
 
       const scale = actor.renderScale ?? 1;
+      const alpha = actor.renderAlpha ?? 1;
 
-      if (scale <= 0.001) {
+      if (scale <= 0.001 || alpha <= 0.001) {
         return;
       }
 
@@ -1140,7 +1143,7 @@
         const shadowWidth = GEM_SHADOW_WIDTH * scale;
         const shadowHeight = GEM_SHADOW_HEIGHT * scale;
 
-        sceneCtx.fillStyle = "rgba(0, 0, 0, 0.18)";
+        sceneCtx.fillStyle = "#000000";
         sceneCtx.beginPath();
         sceneCtx.ellipse(
           left + TILE_SIZE / 2,
@@ -1151,7 +1154,9 @@
           0,
           Math.PI * 2
         );
+        sceneCtx.globalAlpha = alpha * 0.3;
         sceneCtx.fill();
+        sceneCtx.globalAlpha = alpha;
 
         if (image) {
           sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
@@ -1165,6 +1170,8 @@
           sceneCtx.closePath();
           sceneCtx.fill();
         }
+
+        sceneCtx.globalAlpha = 1;
 
         if (clipToHole) {
           sceneCtx.restore();
