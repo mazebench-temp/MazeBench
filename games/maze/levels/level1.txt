@@ -5,7 +5,7 @@
 # . . . . h h h h h h h h h
 # . . . . h h h h h h h h h
 # . . . . . h h . . . . . .
-# . . . . . . h . . . G . .
+# l . . . . . h . . . G . .
 # . . . . . h h . . . . . .
 # h h h h h h h h h h h h h
 # h h h h h h h h h h h h h

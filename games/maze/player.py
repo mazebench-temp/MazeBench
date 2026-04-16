@@ -7,6 +7,7 @@ from typing import Any
 from games.shared import GridWorld, Sprite
 
 MAZE_DIR = Path(__file__).resolve().parent
+MAZE_LEVEL_GRID_SIZE = 25
 
 
 def config_tokens(config: dict[str, Any]) -> list[str]:
@@ -207,9 +208,19 @@ class MazeWorld(GridWorld):
         self.sprites.clear()
         self.tiles.clear()
 
-        rows = self.load_level(self.raw_level)
-        for y, row in enumerate(rows):
-            for x, cell in enumerate(row):
+        source_rows = self.load_level(self.raw_level)
+        normalized_rows: list[list[str]] = []
+        self.width = MAZE_LEVEL_GRID_SIZE
+        self.height = MAZE_LEVEL_GRID_SIZE
+
+        for y in range(MAZE_LEVEL_GRID_SIZE):
+            source_row = source_rows[y] if y < len(source_rows) else []
+            normalized_row: list[str] = []
+
+            for x in range(MAZE_LEVEL_GRID_SIZE):
+                has_source_cell = y < len(source_rows) and x < len(source_row)
+                cell = source_row[x] if has_source_cell else Floor.token
+                normalized_row.append(cell)
                 cell_definitions: list[dict[str, str]] = []
 
                 for token in self.tokens_from_cell(cell):
@@ -233,11 +244,13 @@ class MazeWorld(GridWorld):
                     sprite = self.build_sprite(definition["name"], x, y, token=definition["token"])
                     self.add_sprite(sprite)
 
+            normalized_rows.append(normalized_row)
+
         for sprite in self.sprites:
             if isinstance(sprite, Player):
                 sprite.elevation = 1 if self.player_surface_height(sprite.x, sprite.y) == 1 else 0
 
-        return rows
+        return normalized_rows
 
     def object_definition_for_token(self, token: str) -> dict[str, str] | None:
         for object_name, config in self.parser.get("objects", {}).items():

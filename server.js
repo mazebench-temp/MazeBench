@@ -8,6 +8,7 @@ const GAMES_DIR = path.join(ROOT_DIR, "games");
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
+const MAZE_LEVEL_GRID_SIZE = 25;
 
 function escapeHtml(value) {
   return String(value)
@@ -237,24 +238,33 @@ function buildCellState(cellDefinitions, floorDefinition, exitDefinition) {
 function getLevelState(game, level) {
   const levelPath = path.join(GAMES_DIR, game.id, "levels", level.fileName);
   const rawLevel = loadText(levelPath, "");
-  const rows = parseLevelRows(rawLevel).map((row) => parseLevelCells(game.parser, row));
-  const columnCount = rows.reduce((maxColumns, row) => Math.max(maxColumns, row.length), 0);
+  const rawRows = parseLevelRows(rawLevel).map((row) => parseLevelCells(game.parser, row));
   const definitions = getObjectDefinitions(game);
   const floorDefinition = definitions.byName.get("floor") || null;
   const exitDefinition = definitions.byName.get("exit") || null;
   const terrain = [];
   const actors = [];
+  const boardSize = game.id === "maze" ? MAZE_LEVEL_GRID_SIZE : Math.max(
+    rawRows.length,
+    rawRows.reduce((maxColumns, row) => Math.max(maxColumns, row.length), 0)
+  );
 
-  rows.forEach((row, y) => {
+  Array.from({ length: boardSize }, (_, y) => {
+    const row = rawRows[y] || [];
     const terrainRow = [];
 
-    Array.from({ length: columnCount }, (_, index) => {
-      const cell = row[index] || "";
+    Array.from({ length: boardSize }, (_, index) => {
+      const hasSourceCell = y < rawRows.length && index < row.length;
+      const cell = hasSourceCell ? row[index] : "";
       const cellDefinitions = parseCellStack(game.parser, cell)
         .map((token) => definitions.byToken.get(token))
         .filter(Boolean);
 
-      terrainRow.push(buildCellState(cellDefinitions, floorDefinition, exitDefinition));
+      terrainRow.push(
+        hasSourceCell
+          ? buildCellState(cellDefinitions, floorDefinition, exitDefinition)
+          : buildTerrainCell("floor", floorDefinition)
+      );
 
       cellDefinitions.forEach((definition) => {
         if (!isActorDefinition(definition)) {
@@ -276,8 +286,8 @@ function getLevelState(game, level) {
   });
 
   return {
-    width: columnCount,
-    height: rows.length,
+    width: boardSize,
+    height: boardSize,
     terrain,
     actors
   };
