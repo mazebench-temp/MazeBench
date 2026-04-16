@@ -34,6 +34,7 @@
       isInsideBoard,
       isWall,
       terrainSurfaceHeightAt,
+      playerSurfaceHeightAt,
       isPlayerLift,
       isRaisedPlayerLift,
       setPlayerLiftRaised,
@@ -794,9 +795,16 @@
           const targetX = nextX + dx;
           const targetY = nextY + dy;
           const isInitialStep = nextX === fromX && nextY === fromY;
-          const targetSurfaceHeight = terrainSurfaceHeightAt(targetX, targetY, raisedPlayerGates);
+          const targetSurfaceHeight =
+            fromElevation === 1
+              ? playerSurfaceHeightAt(targetX, targetY, raisedPlayerGates)
+              : terrainSurfaceHeightAt(targetX, targetY, raisedPlayerGates);
+          const canEnterHole = fromElevation === 0 && isHole(targetX, targetY);
 
-          if (!isInsideBoard(targetX, targetY) || targetSurfaceHeight !== fromElevation) {
+          if (
+            !isInsideBoard(targetX, targetY) ||
+            (!canEnterHole && targetSurfaceHeight !== fromElevation)
+          ) {
             break;
           }
 
@@ -856,7 +864,7 @@
             });
             toElevation = toRaised ? 1 : 0;
           } else {
-            toElevation = terrainSurfaceHeightAt(nextX, nextY, raisedPlayerGates) ?? fromElevation;
+            toElevation = playerSurfaceHeightAt(nextX, nextY, raisedPlayerGates) ?? fromElevation;
           }
 
           const travelDistance = Math.abs(nextX - fromX) + Math.abs(nextY - fromY);

@@ -10,6 +10,11 @@
     mazeFrame,
     fuzzyToggle
   }) {
+    const currentPathSegments = window.location.pathname.split("/").filter(Boolean);
+    const currentGameId =
+      (typeof playData?.gameId === "string" && playData.gameId) ||
+      (currentPathSegments[0] === "play" ? currentPathSegments[1] : "") ||
+      "maze";
     const app = {
       playData,
       canvas,
@@ -41,6 +46,7 @@
       FLOATING_FLOOR_SHADOW_HEIGHT: 64 * 0.12,
       FLOATING_FLOOR_HOVER_PERIOD_MS: 2400,
       FLOATING_FLOOR_HOVER_FPS: 30,
+      PLAYER_LIFT_ARROW_URL: `/assets/${encodeURIComponent(currentGameId)}/images/arrow.png`,
       state: {
         width: playData.width,
         height: playData.height,
@@ -105,6 +111,7 @@
         app.imageUrls.add(actor.imageUrl);
       }
     });
+    app.imageUrls.add(app.PLAYER_LIFT_ARROW_URL);
 
     app.boardRect = {
       width: app.state.width * app.TILE_SIZE,
@@ -604,6 +611,26 @@
       return 0;
     }
 
+    function hasElevatedActorSurfaceAt(x, y) {
+      return (
+        actorsAt(
+          x,
+          y,
+          (actor) => actor.type === "floating_floor" || actor.type === "weightless_box"
+        ).length > 0
+      );
+    }
+
+    function playerSurfaceHeightAt(x, y, gateState = app.liveRaisedPlayerGates) {
+      const terrainHeight = terrainSurfaceHeightAt(x, y, gateState);
+
+      if (terrainHeight === 1 || hasElevatedActorSurfaceAt(x, y)) {
+        return 1;
+      }
+
+      return terrainHeight;
+    }
+
     function computeRaisedPlayerGateSet(actors = app.state.actors) {
       const activeActors = actors.filter((actor) => !actor.removed);
       const occupiedGround = new Set(
@@ -1014,7 +1041,7 @@
           return;
         }
 
-        const elevation = terrainSurfaceHeightAt(actor.x, actor.y, gateState) === 1 ? 1 : 0;
+        const elevation = playerSurfaceHeightAt(actor.x, actor.y, gateState) === 1 ? 1 : 0;
         actor.elevation = elevation;
         actor.renderElevation = elevation;
       });
@@ -1197,6 +1224,8 @@
       setPlayerLiftRaised,
       togglePlayerLiftAt,
       terrainSurfaceHeightAt,
+      hasElevatedActorSurfaceAt,
+      playerSurfaceHeightAt,
       computeRaisedPlayerGateSet,
       eachPlayerGate,
       isRaisedPlayerGate,

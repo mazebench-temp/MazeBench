@@ -136,7 +136,7 @@ class Player(MazeSprite):
             gate_snapshot_owner = True
 
         try:
-            if allow_push and isinstance(self.world, MazeWorld):
+            if allow_push and isinstance(self.world, MazeWorld) and self.elevation == 0:
                 pushable = self.world.pushable_at(self.x + dx, self.y + dy)
                 if pushable is not None:
                     snapshot = self.world.snapshot_state()
@@ -233,6 +233,10 @@ class MazeWorld(GridWorld):
                     sprite = self.build_sprite(definition["name"], x, y, token=definition["token"])
                     self.add_sprite(sprite)
 
+        for sprite in self.sprites:
+            if isinstance(sprite, Player):
+                sprite.elevation = 1 if self.player_surface_height(sprite.x, sprite.y) == 1 else 0
+
         return rows
 
     def object_definition_for_token(self, token: str) -> dict[str, str] | None:
@@ -312,6 +316,20 @@ class MazeWorld(GridWorld):
             return None
 
         return 0
+
+    def has_elevated_actor_surface(self, x: int, y: int) -> bool:
+        return any(
+            isinstance(sprite, (FloatingFloor, WeightlessBox))
+            for sprite in self.tiles.get((x, y), [])
+        )
+
+    def player_surface_height(self, x: int, y: int) -> int | None:
+        terrain_height = self.terrain_surface_height(x, y)
+
+        if terrain_height == 1 or self.has_elevated_actor_surface(x, y):
+            return 1
+
+        return terrain_height
 
     def has_mobile_actor_at(self, x: int, y: int) -> bool:
         return any(
@@ -595,7 +613,7 @@ class MazeWorld(GridWorld):
                 lift.raised = not lift.raised
                 sprite.elevation = 1 if lift.raised else 0
             else:
-                sprite.elevation = 1 if self.terrain_surface_height(sprite.x, sprite.y) == 1 else 0
+                sprite.elevation = 1 if self.player_surface_height(sprite.x, sprite.y) == 1 else 0
 
         if self.tile_has_name(sprite.x, sprite.y, "hole"):
             if isinstance(sprite, FloatingFloor):
@@ -631,7 +649,13 @@ class MazeWorld(GridWorld):
 
         if isinstance(sprite, Player):
             current_elevation = self.player_elevation(sprite)
-            if self.terrain_surface_height(x, y) != current_elevation:
+            can_enter_hole = current_elevation == 0 and self.tile_has_name(x, y, "hole")
+            target_surface_height = (
+                self.player_surface_height(x, y)
+                if current_elevation == 1
+                else self.terrain_surface_height(x, y)
+            )
+            if not can_enter_hole and target_surface_height != current_elevation:
                 return False
 
             for occupant in self.tiles.get((x, y), []):

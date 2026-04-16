@@ -5,6 +5,7 @@
     const {
       state,
       TILE_SIZE,
+      PLAYER_LIFT_ARROW_URL,
       FLOATING_FLOOR_SHADOW_INSET,
       FLOATING_FLOOR_SHADOW_HEIGHT,
       GEM_DRAW_WIDTH,
@@ -55,6 +56,37 @@
       context.closePath();
     }
 
+    function paintPlayerLiftArrow(context, left, top, rotation = 0) {
+      const arrowImage = imageCache.get(PLAYER_LIFT_ARROW_URL);
+      const centerX = left + TILE_SIZE * 0.5;
+      const centerY = top + TILE_SIZE * 0.52;
+
+      context.save();
+      context.translate(centerX, centerY);
+      context.rotate(rotation);
+
+      if (arrowImage) {
+        const drawHeight = TILE_SIZE * 0.44;
+        const drawWidth = drawHeight * (arrowImage.width / arrowImage.height);
+        context.drawImage(arrowImage, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        context.restore();
+        return;
+      }
+
+      context.fillStyle = "#111111";
+      context.beginPath();
+      context.moveTo(0, -TILE_SIZE * 0.19);
+      context.lineTo(TILE_SIZE * 0.14, TILE_SIZE * 0.06);
+      context.lineTo(TILE_SIZE * 0.05, TILE_SIZE * 0.06);
+      context.lineTo(TILE_SIZE * 0.05, TILE_SIZE * 0.19);
+      context.lineTo(-TILE_SIZE * 0.05, TILE_SIZE * 0.19);
+      context.lineTo(-TILE_SIZE * 0.05, TILE_SIZE * 0.06);
+      context.lineTo(-TILE_SIZE * 0.14, TILE_SIZE * 0.06);
+      context.closePath();
+      context.fill();
+      context.restore();
+    }
+
     function paintFloorTile(x, y, cell) {
       const left = x * TILE_SIZE;
       const top = y * TILE_SIZE;
@@ -86,8 +118,7 @@
         sceneCtx.strokeStyle = "rgba(0, 0, 0, 0.2)";
         sceneCtx.lineWidth = 1.5;
         sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
-        sceneCtx.fillStyle = "rgba(255, 255, 255, 0.18)";
-        sceneCtx.fillRect(left + TILE_SIZE * 0.16, top + TILE_SIZE * 0.16, TILE_SIZE * 0.68, TILE_SIZE * 0.16);
+        paintPlayerLiftArrow(sceneCtx, left, top, 0);
         return;
       }
 
@@ -442,14 +473,7 @@
       sceneCtx.clip();
       sceneCtx.fillStyle = "#8a63d2";
       sceneCtx.fillRect(left, platformTop, TILE_SIZE, TILE_SIZE + travel);
-
-      sceneCtx.fillStyle = "rgba(255, 255, 255, 0.18)";
-      sceneCtx.fillRect(
-        left + TILE_SIZE * 0.16,
-        platformTop + TILE_SIZE * 0.16,
-        TILE_SIZE * 0.68,
-        TILE_SIZE * 0.16
-      );
+      paintPlayerLiftArrow(sceneCtx, left, platformTop, Math.PI * clamp(lift, 0, 1));
 
       if (travel > 0.001) {
         sceneCtx.fillStyle = "#6f4eb4";
@@ -1324,6 +1348,7 @@
       roundRectPath,
       paintFloorTile,
       groundFaceColor,
+      paintPlayerLiftArrow,
       paintGroundDropFace,
       paintWallTile,
       paintRaisedPlayerGateTile,
