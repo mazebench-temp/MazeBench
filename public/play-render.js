@@ -955,6 +955,20 @@
       sceneCtx.restore();
     }
 
+    function actorDepthRow(actor) {
+      const renderY = actor.renderY ?? actor.y;
+
+      if (!isPlayerActor(actor)) {
+        return renderY;
+      }
+
+      if (actorRenderElevation(actor) <= 0.001) {
+        return renderY;
+      }
+
+      return Math.ceil(renderY);
+    }
+
     function paintDepthSortedScene(now = performance.now()) {
       const drawItems = [];
       const animatedWeightlessGroups = new Set();
@@ -1025,8 +1039,9 @@
           }
         }
 
+        const depthRow = actorDepthRow(actor);
         drawItems.push({
-          depth: actor.renderY + (actor.renderInHole ? 0 : 1),
+          depth: depthRow + (actor.renderInHole ? 0 : 1),
           tieBreaker: actor.renderInHole ? -1 : isCollectibleActor(actor) ? 0 : isPlayerActor(actor) ? 2 : 1,
           order: index,
           paint: function () {
@@ -1321,6 +1336,7 @@
       paintFloatingFloor,
       animatedWeightlessGroupMembers,
       paintWeightlessGroup,
+      actorDepthRow,
       paintDepthSortedScene,
       paintActor,
       getEffectSettings,
