@@ -449,6 +449,9 @@ function renderPlayPage(game, level) {
           </div>
         </section>
         <script>window.__PLAY_DATA__ = ${serializeForScript(levelState)};</script>
+        <script src="/play-core.js" defer></script>
+        <script src="/play-render.js" defer></script>
+        <script src="/play-gameplay.js" defer></script>
         <script src="/play.js" defer></script>`
       : `<section class="play-stage"><p>This level is empty.</p></section>`;
 
@@ -489,6 +492,33 @@ const server = http.createServer((request, response) => {
 
   if (url.pathname === "/play.js") {
     sendFile(response, path.join(PUBLIC_DIR, "play.js"), "application/javascript; charset=utf-8");
+    return;
+  }
+
+  if (url.pathname === "/play-core.js") {
+    sendFile(
+      response,
+      path.join(PUBLIC_DIR, "play-core.js"),
+      "application/javascript; charset=utf-8"
+    );
+    return;
+  }
+
+  if (url.pathname === "/play-render.js") {
+    sendFile(
+      response,
+      path.join(PUBLIC_DIR, "play-render.js"),
+      "application/javascript; charset=utf-8"
+    );
+    return;
+  }
+
+  if (url.pathname === "/play-gameplay.js") {
+    sendFile(
+      response,
+      path.join(PUBLIC_DIR, "play-gameplay.js"),
+      "application/javascript; charset=utf-8"
+    );
     return;
   }
 

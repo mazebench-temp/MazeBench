@@ -1,0 +1,1207 @@
+(function () {
+  const modules = window.PlayModules || (window.PlayModules = {});
+
+  modules.registerRenderFunctions = function registerRenderFunctions(app) {
+    const {
+      state,
+      TILE_SIZE,
+      FLOATING_FLOOR_SHADOW_INSET,
+      FLOATING_FLOOR_SHADOW_HEIGHT,
+      GEM_DRAW_WIDTH,
+      GEM_SHADOW_WIDTH,
+      GEM_SHADOW_HEIGHT,
+      sceneCanvas,
+      sceneCtx,
+      weightlessGroupCanvas,
+      weightlessGroupCtx,
+      imageCache,
+      boardRect,
+      canvas,
+      gl,
+      fallbackCtx
+    } = app;
+    const {
+      clamp,
+      groundSurfaceCell,
+      isGroundCell,
+      terrainAt,
+      isHole,
+      isPlayerGate,
+      gateLiftAt,
+      isTerrainWall,
+      shouldHideElevatedSideStroke,
+      isWeightlessBoxAt,
+      weightlessGroupRenderState,
+      weightlessGroupMembers,
+      floatingFloorHoverOffset,
+      isCollectibleActor,
+      isPlayerActor
+    } = app;
+
+    function roundRectPath(context, x, y, width, height, radii) {
+      context.beginPath();
+      context.moveTo(x + radii.tl, y);
+      context.lineTo(x + width - radii.tr, y);
+      context.quadraticCurveTo(x + width, y, x + width, y + radii.tr);
+      context.lineTo(x + width, y + height - radii.br);
+      context.quadraticCurveTo(x + width, y + height, x + width - radii.br, y + height);
+      context.lineTo(x + radii.bl, y + height);
+      context.quadraticCurveTo(x, y + height, x, y + height - radii.bl);
+      context.lineTo(x, y + radii.tl);
+      context.quadraticCurveTo(x, y, x + radii.tl, y);
+      context.closePath();
+    }
+
+    function paintFloorTile(x, y, cell) {
+      const left = x * TILE_SIZE;
+      const top = y * TILE_SIZE;
+      const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
+
+      if (image) {
+        sceneCtx.drawImage(image, left, top, TILE_SIZE, TILE_SIZE);
+        return;
+      }
+
+      if (cell.type === "hole") {
+        sceneCtx.fillStyle = "#050608";
+        sceneCtx.fillRect(left, top, TILE_SIZE, TILE_SIZE);
+        return;
+      }
+
+      if (cell.type === "player_gate") {
+        sceneCtx.fillStyle = "#c75652";
+        sceneCtx.fillRect(left, top, TILE_SIZE, TILE_SIZE);
+        sceneCtx.strokeStyle = "rgba(0, 0, 0, 0.18)";
+        sceneCtx.lineWidth = 1.5;
+        sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
+        return;
+      }
+
+      if (cell.type === "ice") {
+        const centerX = left + TILE_SIZE * 0.5;
+        const centerY = top + TILE_SIZE * 0.5;
+        const shineHalfWidth = TILE_SIZE * 0.27;
+        const shineHalfHeight = TILE_SIZE * 0.12;
+
+        sceneCtx.fillStyle = "#a9d6f4";
+        sceneCtx.fillRect(left, top, TILE_SIZE, TILE_SIZE);
+        sceneCtx.strokeStyle = "rgba(110, 170, 212, 0.6)";
+        sceneCtx.lineWidth = 1.5;
+        sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
+        sceneCtx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+        sceneCtx.lineWidth = 3.5;
+        sceneCtx.lineCap = "round";
+        sceneCtx.beginPath();
+        sceneCtx.moveTo(centerX - shineHalfWidth, centerY + shineHalfHeight);
+        sceneCtx.lineTo(centerX + shineHalfWidth, centerY - shineHalfHeight);
+        sceneCtx.stroke();
+        sceneCtx.lineCap = "butt";
+        return;
+      }
+
+      sceneCtx.fillStyle = "#d6bd94";
+      sceneCtx.fillRect(left, top, TILE_SIZE, TILE_SIZE);
+      sceneCtx.strokeStyle = "rgba(0, 0, 0, 0.12)";
+      sceneCtx.lineWidth = 1.5;
+      sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
+    }
+
+    function groundFaceColor(cell) {
+      const groundCell = groundSurfaceCell(cell);
+
+      if (groundCell.type === "ice") {
+        return "#7fb6db";
+      }
+
+      if (groundCell.type === "player_gate") {
+        return "#a84d46";
+      }
+
+      return "#b89c73";
+    }
+
+    function paintGroundDropFace(x, y, cell) {
+      if (y >= state.height - 1 || !isGroundCell(cell) || !isHole(x, y + 1)) {
+        return;
+      }
+
+      const groundCell = groundSurfaceCell(cell);
+      const left = x * TILE_SIZE;
+      const faceTop = (y + 1) * TILE_SIZE;
+      const faceHeight = Math.round(TILE_SIZE * 0.24);
+      const borderWidth = 3;
+      const leftNeighborHasFace =
+        x > 0 && isGroundCell(terrainAt(x - 1, y)) && isHole(x - 1, y + 1);
+      const rightNeighborHasFace =
+        x < state.width - 1 && isGroundCell(terrainAt(x + 1, y)) && isHole(x + 1, y + 1);
+
+      sceneCtx.fillStyle = groundFaceColor(groundCell);
+      sceneCtx.fillRect(left, faceTop, TILE_SIZE, faceHeight);
+      sceneCtx.lineWidth = borderWidth;
+      sceneCtx.strokeStyle = "#000000";
+      sceneCtx.beginPath();
+      sceneCtx.moveTo(left, faceTop + borderWidth / 2);
+      sceneCtx.lineTo(left + TILE_SIZE, faceTop + borderWidth / 2);
+      sceneCtx.stroke();
+      sceneCtx.fillStyle = "#000000";
+
+      if (!leftNeighborHasFace) {
+        sceneCtx.fillRect(left, faceTop, borderWidth, faceHeight);
+      }
+
+      if (!rightNeighborHasFace) {
+        sceneCtx.fillRect(left + TILE_SIZE - borderWidth, faceTop, borderWidth, faceHeight);
+      }
+    }
+
+    function paintWallTile(x, y, cell) {
+      const left = x * TILE_SIZE;
+      const top = y * TILE_SIZE;
+      const right = left + TILE_SIZE;
+      const bottom = top + TILE_SIZE;
+      const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
+      const openTop = !isTerrainWall(x, y - 1);
+      const openRight = !isTerrainWall(x + 1, y);
+      const openBottom = !isTerrainWall(x, y + 1);
+      const openLeft = !isTerrainWall(x - 1, y);
+
+      paintFloorTile(x, y, groundSurfaceCell(cell));
+
+      if (image) {
+        sceneCtx.drawImage(image, left, top, TILE_SIZE, TILE_SIZE);
+        return;
+      }
+
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const hasFloorAbove = y > 0 && openTop;
+      const liftHeight = hasFloorAbove ? faceHeight : 0;
+      const wallTop = top - liftHeight;
+      const wallHeight = TILE_SIZE + liftHeight;
+      const radius = TILE_SIZE * 0.18;
+      const radii = {
+        tl: openTop && openLeft ? radius : 0,
+        tr: openTop && openRight ? radius : 0,
+        br: 0,
+        bl: 0
+      };
+      const rightCornerWallTop =
+        openRight &&
+        !openBottom &&
+        x < state.width - 1 &&
+        y < state.height - 1 &&
+        isTerrainWall(x + 1, y + 1) &&
+        !isTerrainWall(x + 1, y)
+          ? bottom - faceHeight
+          : bottom - radii.br;
+      const leftCornerWallTop =
+        openLeft &&
+        !openBottom &&
+        x > 0 &&
+        y < state.height - 1 &&
+        isTerrainWall(x - 1, y + 1) &&
+        !isTerrainWall(x - 1, y)
+          ? bottom - faceHeight
+          : bottom - radii.bl;
+      const hideRightLiftStroke =
+        liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(x, y, 1);
+      const hideLeftLiftStroke =
+        liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(x, y, -1);
+
+      if (x === 0 && y === 0) {
+        radii.tl = 0;
+      }
+      if (x === state.width - 1 && y === 0) {
+        radii.tr = 0;
+      }
+      if (x === state.width - 1 && y === state.height - 1) {
+        radii.br = 0;
+      }
+      if (x === 0 && y === state.height - 1) {
+        radii.bl = 0;
+      }
+
+      roundRectPath(sceneCtx, left, wallTop, TILE_SIZE, wallHeight, radii);
+      sceneCtx.save();
+      sceneCtx.clip();
+      sceneCtx.fillStyle = "#23262c";
+      sceneCtx.fillRect(left, wallTop, TILE_SIZE, wallHeight);
+
+      if (y < state.height - 1 && !isTerrainWall(x, y + 1)) {
+        const shineTop = bottom - faceHeight;
+        const shineBorderWidth = 3;
+        const leftNeighborHasShine =
+          x > 0 && isTerrainWall(x - 1, y) && !isTerrainWall(x - 1, y + 1);
+        const rightNeighborHasShine =
+          x < state.width - 1 && isTerrainWall(x + 1, y) && !isTerrainWall(x + 1, y + 1);
+        sceneCtx.fillStyle = "#4f5560";
+        sceneCtx.fillRect(left, shineTop, TILE_SIZE, faceHeight);
+        sceneCtx.lineWidth = shineBorderWidth;
+        sceneCtx.strokeStyle = "#000000";
+        sceneCtx.beginPath();
+        sceneCtx.moveTo(left, shineTop + shineBorderWidth / 2);
+        sceneCtx.lineTo(right, shineTop + shineBorderWidth / 2);
+        sceneCtx.stroke();
+        sceneCtx.fillStyle = "#000000";
+        if (!openLeft && !leftNeighborHasShine) {
+          sceneCtx.fillRect(left, shineTop, shineBorderWidth, faceHeight);
+        }
+        if (!openRight && !rightNeighborHasShine) {
+          sceneCtx.fillRect(right - shineBorderWidth, shineTop, shineBorderWidth, faceHeight);
+        }
+      }
+      sceneCtx.restore();
+
+      sceneCtx.lineWidth = 3;
+      sceneCtx.strokeStyle = "#000000";
+      sceneCtx.beginPath();
+
+      if (openTop) {
+        sceneCtx.moveTo(left + radii.tl, wallTop);
+        sceneCtx.lineTo(right - radii.tr, wallTop);
+      }
+
+      if (openRight) {
+        sceneCtx.moveTo(right, wallTop + radii.tr);
+        sceneCtx.lineTo(right, hideRightLiftStroke ? bottom - faceHeight : rightCornerWallTop);
+      }
+
+      if (openBottom) {
+        sceneCtx.moveTo(right - radii.br, bottom);
+        sceneCtx.lineTo(left + radii.bl, bottom);
+      }
+
+      if (openLeft) {
+        if (hideLeftLiftStroke) {
+          sceneCtx.moveTo(left, wallTop + radii.tl);
+          sceneCtx.lineTo(left, bottom - faceHeight);
+        } else {
+          sceneCtx.moveTo(left, leftCornerWallTop);
+          sceneCtx.lineTo(left, wallTop + radii.tl);
+        }
+      }
+
+      if (radii.tl > 0) {
+        sceneCtx.moveTo(left + radii.tl, wallTop);
+        sceneCtx.quadraticCurveTo(left, wallTop, left, wallTop + radii.tl);
+      }
+
+      if (radii.tr > 0) {
+        sceneCtx.moveTo(right - radii.tr, wallTop);
+        sceneCtx.quadraticCurveTo(right, wallTop, right, wallTop + radii.tr);
+      }
+
+      if (radii.br > 0) {
+        sceneCtx.moveTo(right, bottom - radii.br);
+        sceneCtx.quadraticCurveTo(right, bottom, right - radii.br, bottom);
+      }
+
+      if (radii.bl > 0) {
+        sceneCtx.moveTo(left + radii.bl, bottom);
+        sceneCtx.quadraticCurveTo(left, bottom, left, bottom - radii.bl);
+      }
+
+      sceneCtx.stroke();
+    }
+
+    function paintRaisedPlayerGateTile(x, y, cell, lift = 1) {
+      if (lift <= 0.001) {
+        return;
+      }
+
+      void cell;
+
+      const left = x * TILE_SIZE;
+      const top = y * TILE_SIZE;
+      const right = left + TILE_SIZE;
+      const bottom = top + TILE_SIZE;
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const liftHeight = y > 0 ? faceHeight : 0;
+      const travel = liftHeight * lift;
+      const platformTop = top - travel;
+      const platformBottom = bottom - travel;
+      const borderAlpha = clamp(lift, 0, 1);
+      const borderColor = `rgba(0, 0, 0, ${borderAlpha})`;
+      const radius = TILE_SIZE * 0.18;
+      const radii = {
+        tl: radius,
+        tr: radius,
+        br: 0,
+        bl: 0
+      };
+      const hideRightLiftStroke = travel > 0.001 && shouldHideElevatedSideStroke(x, y, 1);
+      const hideLeftLiftStroke = travel > 0.001 && shouldHideElevatedSideStroke(x, y, -1);
+
+      if (x === 0 && y === 0) {
+        radii.tl = 0;
+      }
+      if (x === state.width - 1 && y === 0) {
+        radii.tr = 0;
+      }
+
+      roundRectPath(sceneCtx, left, platformTop, TILE_SIZE, TILE_SIZE + travel, radii);
+      sceneCtx.save();
+      sceneCtx.clip();
+      sceneCtx.fillStyle = "#c75652";
+      sceneCtx.fillRect(left, platformTop, TILE_SIZE, TILE_SIZE + travel);
+
+      if (travel > 0.001) {
+        sceneCtx.fillStyle = "#d86c63";
+        sceneCtx.fillRect(left, platformBottom, TILE_SIZE, Math.min(faceHeight, travel));
+      }
+      sceneCtx.restore();
+
+      sceneCtx.lineWidth = 3;
+      sceneCtx.strokeStyle = borderColor;
+      sceneCtx.beginPath();
+      sceneCtx.moveTo(left + radii.tl, platformTop);
+      sceneCtx.lineTo(right - radii.tr, platformTop);
+      sceneCtx.moveTo(right, platformTop + radii.tr);
+      sceneCtx.lineTo(right, hideRightLiftStroke ? platformBottom : bottom);
+      sceneCtx.moveTo(right, bottom);
+      sceneCtx.lineTo(left, bottom);
+      if (hideLeftLiftStroke) {
+        sceneCtx.moveTo(left, platformTop + radii.tl);
+        sceneCtx.lineTo(left, platformBottom);
+      } else {
+        sceneCtx.moveTo(left, bottom);
+        sceneCtx.lineTo(left, platformTop + radii.tl);
+      }
+      sceneCtx.moveTo(left + radii.tl, platformTop);
+      sceneCtx.quadraticCurveTo(left, platformTop, left, platformTop + radii.tl);
+      sceneCtx.moveTo(right - radii.tr, platformTop);
+      sceneCtx.quadraticCurveTo(right, platformTop, right, platformTop + radii.tr);
+
+      if (travel > 0.001) {
+        sceneCtx.moveTo(left, platformBottom);
+        sceneCtx.lineTo(right, platformBottom);
+      }
+
+      sceneCtx.stroke();
+    }
+
+    function paintExit(x, y, cell) {
+      paintFloorTile(x, y, cell);
+
+      const left = x * TILE_SIZE + TILE_SIZE / 2;
+      const top = y * TILE_SIZE + TILE_SIZE / 2;
+      const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
+
+      if (image) {
+        sceneCtx.drawImage(image, x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        return;
+      }
+
+      sceneCtx.fillStyle = "#ff7b72";
+      sceneCtx.beginPath();
+      sceneCtx.arc(left, top, TILE_SIZE * 0.18, 0, Math.PI * 2);
+      sceneCtx.fill();
+      sceneCtx.lineWidth = 3;
+      sceneCtx.strokeStyle = "#000000";
+      sceneCtx.stroke();
+    }
+
+    function paintGround(now = performance.now()) {
+      for (let y = 0; y < state.height; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          const cell = terrainAt(x, y);
+          const gateLift = cell.type === "player_gate" ? gateLiftAt(x, y, now) : 0;
+
+          if (cell.type === "wall") {
+            continue;
+          }
+
+          if (cell.type === "player_gate" && gateLift > 0.001) {
+            continue;
+          }
+
+          if (cell.type === "exit") {
+            paintExit(x, y, cell);
+            continue;
+          }
+
+          paintFloorTile(x, y, cell);
+        }
+      }
+
+      for (let y = 0; y < state.height; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          if (isPlayerGate(x, y) && gateLiftAt(x, y, now) > 0.001) {
+            continue;
+          }
+
+          paintGroundDropFace(x, y, terrainAt(x, y));
+        }
+      }
+    }
+
+    function paintWalls() {
+      for (let y = 0; y < state.height; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          const cell = terrainAt(x, y);
+          if (cell.type === "wall") {
+            paintWallTile(x, y, cell);
+          }
+        }
+      }
+    }
+
+    function paintWeightlessBoxTile(actor, offsetX = 0, offsetY = 0, context = sceneCtx) {
+      const left = actor.x * TILE_SIZE + offsetX;
+      const top = actor.y * TILE_SIZE + offsetY;
+      const right = left + TILE_SIZE;
+      const bottom = top + TILE_SIZE;
+      const openTop = !isWeightlessBoxAt(actor.groupId, actor.x, actor.y - 1);
+      const openRight = !isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y);
+      const openBottom = !isWeightlessBoxAt(actor.groupId, actor.x, actor.y + 1);
+      const openLeft = !isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y);
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const hasFloorAbove = actor.y > 0 && openTop;
+      const liftHeight = hasFloorAbove ? faceHeight : 0;
+      const wallTop = top - liftHeight;
+      const wallHeight = TILE_SIZE + liftHeight;
+      const radius = TILE_SIZE * 0.18;
+      const radii = {
+        tl: openTop && openLeft ? radius : 0,
+        tr: openTop && openRight ? radius : 0,
+        br: 0,
+        bl: 0
+      };
+      const rightCornerWallTop =
+        openRight &&
+        !openBottom &&
+        actor.x < state.width - 1 &&
+        actor.y < state.height - 1 &&
+        isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y + 1) &&
+        !isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y)
+          ? bottom - faceHeight
+          : bottom - radii.br;
+      const leftCornerWallTop =
+        openLeft &&
+        !openBottom &&
+        actor.x > 0 &&
+        actor.y < state.height - 1 &&
+        isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y + 1) &&
+        !isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y)
+          ? bottom - faceHeight
+          : bottom - radii.bl;
+      const hideRightLiftStroke =
+        liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(actor.x, actor.y, 1);
+      const hideLeftLiftStroke =
+        liftHeight > 0 && openBottom && shouldHideElevatedSideStroke(actor.x, actor.y, -1);
+
+      roundRectPath(context, left, wallTop, TILE_SIZE, wallHeight, radii);
+      context.save();
+      context.clip();
+      context.fillStyle = "#315991";
+      context.fillRect(left, wallTop, TILE_SIZE, wallHeight);
+
+      if (openBottom) {
+        const shineTop = bottom - faceHeight;
+        const shineBorderWidth = 3;
+        const leftNeighborHasShine =
+          actor.x > 0 &&
+          isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y) &&
+          !isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y + 1);
+        const rightNeighborHasShine =
+          actor.x < state.width - 1 &&
+          isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y) &&
+          !isWeightlessBoxAt(actor.groupId, actor.x + 1, actor.y + 1);
+        context.fillStyle = "#79abeb";
+        context.fillRect(left, shineTop, TILE_SIZE, faceHeight);
+        context.lineWidth = shineBorderWidth;
+        context.strokeStyle = "#000000";
+        context.beginPath();
+        context.moveTo(left, shineTop + shineBorderWidth / 2);
+        context.lineTo(right, shineTop + shineBorderWidth / 2);
+        context.stroke();
+        context.fillStyle = "#000000";
+        if (!openLeft && !leftNeighborHasShine) {
+          context.fillRect(left, shineTop, shineBorderWidth, faceHeight);
+        }
+        if (!openRight && !rightNeighborHasShine) {
+          context.fillRect(right - shineBorderWidth, shineTop, shineBorderWidth, faceHeight);
+        }
+      }
+      context.restore();
+
+      function traceOutline() {
+        context.beginPath();
+
+        if (openTop) {
+          context.moveTo(left + radii.tl, wallTop);
+          context.lineTo(right - radii.tr, wallTop);
+        }
+
+        if (openRight) {
+          context.moveTo(right, wallTop + radii.tr);
+          context.lineTo(right, hideRightLiftStroke ? bottom - faceHeight : rightCornerWallTop);
+        }
+
+        if (openBottom) {
+          context.moveTo(right - radii.br, bottom);
+          context.lineTo(left + radii.bl, bottom);
+        }
+
+        if (openLeft) {
+          if (hideLeftLiftStroke) {
+            context.moveTo(left, wallTop + radii.tl);
+            context.lineTo(left, bottom - faceHeight);
+          } else {
+            context.moveTo(left, leftCornerWallTop);
+            context.lineTo(left, wallTop + radii.tl);
+          }
+        }
+
+        if (radii.tl > 0) {
+          context.moveTo(left + radii.tl, wallTop);
+          context.quadraticCurveTo(left, wallTop, left, wallTop + radii.tl);
+        }
+
+        if (radii.tr > 0) {
+          context.moveTo(right - radii.tr, wallTop);
+          context.quadraticCurveTo(right, wallTop, right, wallTop + radii.tr);
+        }
+
+        if (radii.br > 0) {
+          context.moveTo(right, bottom - radii.br);
+          context.quadraticCurveTo(right, bottom, right - radii.br, bottom);
+        }
+
+        if (radii.bl > 0) {
+          context.moveTo(left + radii.bl, bottom);
+          context.quadraticCurveTo(left, bottom, left, bottom - radii.bl);
+        }
+      }
+
+      context.lineWidth = 3;
+      context.strokeStyle = "#315991";
+      traceOutline();
+      context.stroke();
+      context.strokeStyle = "#000000";
+      traceOutline();
+      context.stroke();
+    }
+
+    function paintRaisedPlayer(actor, context = sceneCtx) {
+      const scale = actor.renderScale ?? 1;
+
+      if (scale <= 0.001) {
+        return;
+      }
+
+      const sink = actor.renderSink ?? 0;
+      const left = actor.renderX * TILE_SIZE;
+      const top = actor.renderY * TILE_SIZE;
+      const bottom = top + TILE_SIZE;
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const liftHeight = actor.renderY > 0 ? faceHeight : 0;
+      const blockTop = top - liftHeight;
+      const blockHeight = TILE_SIZE + liftHeight;
+      const radius = TILE_SIZE * 0.18;
+      const radii = {
+        tl: radius,
+        tr: radius,
+        br: 0,
+        bl: 0
+      };
+      const hideRightLiftStroke =
+        liftHeight > 0 && shouldHideElevatedSideStroke(actor.x, actor.y, 1);
+      const hideLeftLiftStroke =
+        liftHeight > 0 && shouldHideElevatedSideStroke(actor.x, actor.y, -1);
+
+      context.save();
+      context.translate(left + TILE_SIZE / 2, bottom + sink);
+      context.scale(scale, scale);
+      context.translate(-(left + TILE_SIZE / 2), -bottom);
+
+      roundRectPath(context, left, blockTop, TILE_SIZE, blockHeight, radii);
+      context.save();
+      context.clip();
+      context.fillStyle = "#4d8b52";
+      context.fillRect(left, blockTop, TILE_SIZE, blockHeight);
+
+      const shineTop = bottom - faceHeight;
+      const shineBorderWidth = 3;
+      context.fillStyle = "#86cb7d";
+      context.fillRect(left, shineTop, TILE_SIZE, faceHeight);
+      context.lineWidth = shineBorderWidth;
+      context.strokeStyle = "#000000";
+      context.beginPath();
+      context.moveTo(left, shineTop + shineBorderWidth / 2);
+      context.lineTo(left + TILE_SIZE, shineTop + shineBorderWidth / 2);
+      context.stroke();
+      context.restore();
+
+      function tracePlayerOutline() {
+        context.beginPath();
+        context.moveTo(left + radii.tl, blockTop);
+        context.lineTo(left + TILE_SIZE - radii.tr, blockTop);
+        context.moveTo(left + TILE_SIZE, blockTop + radii.tr);
+        context.lineTo(left + TILE_SIZE, hideRightLiftStroke ? bottom - faceHeight : bottom);
+        context.moveTo(left + TILE_SIZE, bottom);
+        context.lineTo(left, bottom);
+        if (hideLeftLiftStroke) {
+          context.moveTo(left, blockTop + radii.tl);
+          context.lineTo(left, bottom - faceHeight);
+        } else {
+          context.moveTo(left, bottom);
+          context.lineTo(left, blockTop + radii.tl);
+        }
+        if (radii.tl > 0) {
+          context.moveTo(left + radii.tl, blockTop);
+          context.quadraticCurveTo(left, blockTop, left, blockTop + radii.tl);
+        }
+        if (radii.tr > 0) {
+          context.moveTo(left + TILE_SIZE - radii.tr, blockTop);
+          context.quadraticCurveTo(
+            left + TILE_SIZE,
+            blockTop,
+            left + TILE_SIZE,
+            blockTop + radii.tr
+          );
+        }
+      }
+
+      context.lineWidth = 3;
+      context.strokeStyle = "#4d8b52";
+      tracePlayerOutline();
+      context.stroke();
+      context.strokeStyle = "#000000";
+      tracePlayerOutline();
+      context.stroke();
+      context.restore();
+    }
+
+    function paintFloatingFloor(actor, context = sceneCtx, now = performance.now()) {
+      const scale = actor.renderScale ?? 1;
+
+      if (scale <= 0.001) {
+        return;
+      }
+
+      const sink = actor.renderSink ?? 0;
+      const left = actor.renderX * TILE_SIZE;
+      const top = actor.renderY * TILE_SIZE;
+      const right = left + TILE_SIZE;
+      const bottom = top + TILE_SIZE;
+      const hover = Math.max(0, floatingFloorHoverOffset(actor, now));
+      const platformTop = top - hover + sink;
+      const platformBottom = bottom - hover + sink;
+      const radius = Math.min(7, TILE_SIZE * 0.11);
+      const hideRightLiftStroke =
+        hover > 0.001 && shouldHideElevatedSideStroke(actor.x, actor.y, 1);
+      const hideLeftLiftStroke =
+        hover > 0.001 && shouldHideElevatedSideStroke(actor.x, actor.y, -1);
+
+      context.save();
+      context.translate(left + TILE_SIZE / 2, bottom + sink);
+      context.scale(scale, scale);
+      context.translate(-(left + TILE_SIZE / 2), -(bottom + sink));
+
+      roundRectPath(
+        context,
+        left + FLOATING_FLOOR_SHADOW_INSET,
+        bottom - FLOATING_FLOOR_SHADOW_HEIGHT * 0.5 + sink,
+        TILE_SIZE - FLOATING_FLOOR_SHADOW_INSET * 2,
+        FLOATING_FLOOR_SHADOW_HEIGHT,
+        {
+          tl: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5,
+          tr: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5,
+          br: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5,
+          bl: FLOATING_FLOOR_SHADOW_HEIGHT * 0.5
+        }
+      );
+      context.fillStyle = "rgba(0, 0, 0, 0.18)";
+      context.fill();
+
+      roundRectPath(context, left, platformTop, TILE_SIZE, TILE_SIZE + hover, {
+        tl: radius,
+        tr: radius,
+        br: 0,
+        bl: 0
+      });
+      context.save();
+      context.clip();
+      context.fillStyle = "#d6bd94";
+      context.fillRect(left, platformTop, TILE_SIZE, TILE_SIZE + hover);
+      context.strokeStyle = "rgba(0, 0, 0, 0.12)";
+      context.lineWidth = 1.5;
+      context.strokeRect(left + 0.75, platformTop + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
+
+      if (hover > 0.001) {
+        context.fillStyle = "#b89c73";
+        context.fillRect(left, platformBottom, TILE_SIZE, hover);
+      }
+      context.restore();
+
+      context.lineWidth = 3;
+      context.strokeStyle = "#000000";
+      context.beginPath();
+      context.moveTo(left + radius, platformTop);
+      context.lineTo(right - radius, platformTop);
+      context.moveTo(right, platformTop + radius);
+      context.lineTo(right, hideRightLiftStroke ? platformBottom : bottom + sink);
+      context.moveTo(right, bottom + sink);
+      context.lineTo(left, bottom + sink);
+      if (hideLeftLiftStroke) {
+        context.moveTo(left, platformTop + radius);
+        context.lineTo(left, platformBottom);
+      } else {
+        context.moveTo(left, bottom + sink);
+        context.lineTo(left, platformTop + radius);
+      }
+      context.moveTo(left + radius, platformTop);
+      context.quadraticCurveTo(left, platformTop, left, platformTop + radius);
+      context.moveTo(right - radius, platformTop);
+      context.quadraticCurveTo(right, platformTop, right, platformTop + radius);
+
+      if (hover > 0.001) {
+        context.moveTo(left, platformBottom);
+        context.lineTo(right, platformBottom);
+      }
+
+      context.stroke();
+      context.restore();
+    }
+
+    function animatedWeightlessGroupMembers(groupId) {
+      return weightlessGroupMembers(groupId, { includeRemoved: true }).filter(
+        (member) => !member.removed || member.renderScale > 0.001
+      );
+    }
+
+    function paintWeightlessGroup(groupId) {
+      const groupState = weightlessGroupRenderState(groupId);
+
+      if (groupState.scale <= 0.001) {
+        return;
+      }
+
+      const members = animatedWeightlessGroupMembers(groupId).sort((left, right) => {
+        if (left.y !== right.y) {
+          return left.y - right.y;
+        }
+
+        return left.x - right.x;
+      });
+
+      if (members.length === 0) {
+        return;
+      }
+
+      if (!weightlessGroupCtx) {
+        members.forEach((member) => {
+          paintWeightlessBoxTile(member, groupState.offsetX, groupState.offsetY);
+        });
+        return;
+      }
+
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const minX = Math.min(...members.map((member) => member.x));
+      const maxX = Math.max(...members.map((member) => member.x));
+      const minY = Math.min(...members.map((member) => member.y));
+      const maxY = Math.max(...members.map((member) => member.y));
+      const bitmapWidth = (maxX - minX + 1) * TILE_SIZE;
+      const bitmapHeight = (maxY - minY + 1) * TILE_SIZE + faceHeight;
+      const tileOffsetX = -minX * TILE_SIZE;
+      const tileOffsetY = faceHeight - minY * TILE_SIZE;
+      const drawLeft = minX * TILE_SIZE + groupState.offsetX;
+      const drawTop = minY * TILE_SIZE - faceHeight + groupState.offsetY;
+
+      if (
+        weightlessGroupCanvas.width !== bitmapWidth ||
+        weightlessGroupCanvas.height !== bitmapHeight
+      ) {
+        weightlessGroupCanvas.width = bitmapWidth;
+        weightlessGroupCanvas.height = bitmapHeight;
+      }
+
+      weightlessGroupCtx.setTransform(1, 0, 0, 1, 0, 0);
+      weightlessGroupCtx.clearRect(0, 0, bitmapWidth, bitmapHeight);
+      weightlessGroupCtx.imageSmoothingEnabled = false;
+      members.forEach((member) => {
+        paintWeightlessBoxTile(member, tileOffsetX, tileOffsetY, weightlessGroupCtx);
+      });
+
+      sceneCtx.save();
+      if (groupState.sink > 0.001) {
+        sceneCtx.beginPath();
+        members.forEach((member) => {
+          sceneCtx.rect(member.x * TILE_SIZE, member.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        });
+        sceneCtx.clip();
+      }
+      sceneCtx.translate(groupState.centerX, groupState.centerY + groupState.sink);
+      sceneCtx.scale(groupState.scale, groupState.scale);
+      sceneCtx.translate(-groupState.centerX, -groupState.centerY);
+      sceneCtx.imageSmoothingEnabled = false;
+      sceneCtx.drawImage(weightlessGroupCanvas, drawLeft, drawTop);
+      sceneCtx.restore();
+    }
+
+    function paintDepthSortedScene(now = performance.now()) {
+      const drawItems = [];
+      const animatedWeightlessGroups = new Set();
+
+      for (let y = 0; y < state.height; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          const cell = terrainAt(x, y);
+          const gateLift = cell.type === "player_gate" ? gateLiftAt(x, y, now) : 0;
+
+          if (cell.type !== "wall" && gateLift <= 0.001) {
+            continue;
+          }
+
+          drawItems.push({
+            depth: y + 1,
+            tieBreaker: 0,
+            order: drawItems.length,
+            paint: function () {
+              if (cell.type === "player_gate") {
+                paintRaisedPlayerGateTile(x, y, cell, gateLift);
+                return;
+              }
+
+              paintWallTile(x, y, cell);
+            }
+          });
+        }
+      }
+
+      state.actors.forEach((actor, index) => {
+        if (actor.removed) {
+          return;
+        }
+
+        if (actor.type === "weightless_box") {
+          const groupState = weightlessGroupRenderState(actor.groupId);
+          const isGroupedAnimation =
+            Math.abs((groupState.scale ?? 1) - 1) > 0.001 || Math.abs(groupState.sink ?? 0) > 0.001;
+
+          if (isGroupedAnimation) {
+            if (animatedWeightlessGroups.has(actor.groupId)) {
+              return;
+            }
+
+            animatedWeightlessGroups.add(actor.groupId);
+            const members = animatedWeightlessGroupMembers(actor.groupId);
+
+            if (members.length === 0) {
+              return;
+            }
+
+            drawItems.push({
+              depth:
+                (actor.renderInHole ? 0 : 1) + Math.max(...members.map((member) => member.renderY)),
+              tieBreaker: actor.renderInHole ? -1 : 1,
+              order: index,
+              paint: function () {
+                paintWeightlessGroup(actor.groupId);
+              }
+            });
+            return;
+          }
+        }
+
+        drawItems.push({
+          depth: actor.renderY + (actor.renderInHole ? 0 : 1),
+          tieBreaker: actor.renderInHole ? -1 : isCollectibleActor(actor) ? 0 : isPlayerActor(actor) ? 2 : 1,
+          order: index,
+          paint: function () {
+            paintActor(actor, now);
+          }
+        });
+      });
+
+      drawItems.sort((left, right) => {
+        if (left.depth !== right.depth) {
+          return left.depth - right.depth;
+        }
+
+        if (left.tieBreaker !== right.tieBreaker) {
+          return left.tieBreaker - right.tieBreaker;
+        }
+
+        return left.order - right.order;
+      });
+
+      drawItems.forEach((item) => item.paint());
+    }
+
+    function paintActor(actor, now = performance.now()) {
+      if (actor.removed) {
+        return;
+      }
+
+      const scale = actor.renderScale ?? 1;
+
+      if (scale <= 0.001) {
+        return;
+      }
+
+      const sink = actor.renderSink ?? 0;
+      const left = actor.renderX * TILE_SIZE;
+      const top = actor.renderY * TILE_SIZE;
+      const image = actor.imageUrl ? imageCache.get(actor.imageUrl) : null;
+      const clipToHole = sink > 0.001;
+
+      if (clipToHole) {
+        sceneCtx.save();
+        sceneCtx.beginPath();
+        sceneCtx.rect(left, top, TILE_SIZE, TILE_SIZE);
+        sceneCtx.clip();
+      }
+
+      if (actor.type === "weightless_box") {
+        const groupState = weightlessGroupRenderState(actor.groupId);
+        paintWeightlessBoxTile(actor, groupState.offsetX, groupState.offsetY);
+        if (clipToHole) {
+          sceneCtx.restore();
+        }
+        return;
+      }
+
+      if (actor.type === "floating_floor") {
+        paintFloatingFloor(actor, sceneCtx, now);
+        if (clipToHole) {
+          sceneCtx.restore();
+        }
+        return;
+      }
+
+      if (actor.type === "gem") {
+        const hover = Math.max(0, floatingFloorHoverOffset(actor, now));
+        const drawWidth = GEM_DRAW_WIDTH * scale;
+        const drawHeight = image ? drawWidth * (image.height / image.width) : drawWidth;
+        const drawLeft = left + (TILE_SIZE - drawWidth) / 2;
+        const drawTop = top + TILE_SIZE * 0.66 - drawHeight + sink - hover;
+        const shadowWidth = GEM_SHADOW_WIDTH * scale;
+        const shadowHeight = GEM_SHADOW_HEIGHT * scale;
+
+        sceneCtx.fillStyle = "rgba(0, 0, 0, 0.18)";
+        sceneCtx.beginPath();
+        sceneCtx.ellipse(
+          left + TILE_SIZE / 2,
+          top + TILE_SIZE * 0.76 + sink,
+          shadowWidth / 2,
+          shadowHeight / 2,
+          0,
+          0,
+          Math.PI * 2
+        );
+        sceneCtx.fill();
+
+        if (image) {
+          sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
+        } else {
+          sceneCtx.fillStyle = "#6cd7ff";
+          sceneCtx.beginPath();
+          sceneCtx.moveTo(left + TILE_SIZE / 2, drawTop);
+          sceneCtx.lineTo(drawLeft + drawWidth, drawTop + drawHeight * 0.45);
+          sceneCtx.lineTo(left + TILE_SIZE / 2, drawTop + drawHeight);
+          sceneCtx.lineTo(drawLeft, drawTop + drawHeight * 0.45);
+          sceneCtx.closePath();
+          sceneCtx.fill();
+        }
+
+        if (clipToHole) {
+          sceneCtx.restore();
+        }
+        return;
+      }
+
+      if (image) {
+        if (actor.type === "box") {
+          const drawWidth = TILE_SIZE * scale;
+          const drawHeight = drawWidth * (image.height / image.width);
+          const drawLeft = left + (TILE_SIZE - drawWidth) / 2;
+          const drawTop = top + TILE_SIZE - drawHeight + sink;
+
+          sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
+          if (clipToHole) {
+            sceneCtx.restore();
+          }
+          return;
+        }
+
+        const drawWidth = TILE_SIZE * scale;
+        const drawHeight = TILE_SIZE * scale;
+        const drawLeft = left + (TILE_SIZE - drawWidth) / 2;
+        const drawTop = top + (TILE_SIZE - drawHeight) / 2 + sink;
+
+        sceneCtx.drawImage(image, drawLeft, drawTop, drawWidth, drawHeight);
+        if (clipToHole) {
+          sceneCtx.restore();
+        }
+        return;
+      }
+
+      if (actor.type === "circle_player") {
+        sceneCtx.fillStyle = "#5aa95c";
+        sceneCtx.beginPath();
+        sceneCtx.arc(
+          left + TILE_SIZE / 2,
+          top + TILE_SIZE / 2 + sink,
+          TILE_SIZE * 0.338 * scale,
+          0,
+          Math.PI * 2
+        );
+        sceneCtx.fill();
+        sceneCtx.lineWidth = 3;
+        sceneCtx.strokeStyle = "#000000";
+        sceneCtx.stroke();
+        if (clipToHole) {
+          sceneCtx.restore();
+        }
+        return;
+      }
+
+      if (actor.type === "player") {
+        paintRaisedPlayer(actor);
+        if (clipToHole) {
+          sceneCtx.restore();
+        }
+        return;
+      }
+
+      if (actor.type === "box") {
+        sceneCtx.save();
+        sceneCtx.translate(left + TILE_SIZE / 2, top + TILE_SIZE + sink);
+        sceneCtx.scale(scale, scale);
+        sceneCtx.translate(-(left + TILE_SIZE / 2), -(top + TILE_SIZE));
+        const inset = TILE_SIZE * 0.19;
+        const boxLeft = left + inset;
+        const boxTop = top + inset;
+        const boxSize = TILE_SIZE - inset * 2;
+        const boxBottom = boxTop + boxSize;
+        const lipHeight = Math.max(6, Math.round(TILE_SIZE * 0.12));
+        const radius = Math.min(8, TILE_SIZE * 0.12);
+
+        roundRectPath(sceneCtx, boxLeft, boxTop, boxSize, boxSize, {
+          tl: radius,
+          tr: radius,
+          br: radius * 0.75,
+          bl: radius * 0.75
+        });
+        sceneCtx.fillStyle = "#2a2d33";
+        sceneCtx.fill();
+        sceneCtx.lineWidth = 3;
+        sceneCtx.strokeStyle = "#000000";
+        sceneCtx.stroke();
+
+        sceneCtx.fillStyle = "#5b616d";
+        sceneCtx.fillRect(boxLeft, boxBottom - lipHeight, boxSize, lipHeight);
+        sceneCtx.beginPath();
+        sceneCtx.moveTo(boxLeft, boxBottom - lipHeight);
+        sceneCtx.lineTo(boxLeft + boxSize, boxBottom - lipHeight);
+        sceneCtx.lineWidth = 3;
+        sceneCtx.strokeStyle = "#000000";
+        sceneCtx.stroke();
+        sceneCtx.restore();
+      }
+
+      if (clipToHole) {
+        sceneCtx.restore();
+      }
+    }
+
+    function getEffectSettings() {
+      const fuzzy = state.effects.fuzzyEnabled ? app.FUZZY_AMOUNT : 0;
+      const fuzzyMix = clamp(fuzzy / app.FUZZY_AMOUNT, 0, 1);
+
+      return {
+        bleed: clamp(0.78 * fuzzyMix, 0, 1),
+        bloom: clamp(0.38 * fuzzyMix, 0, 1),
+        softness: clamp(0.74 * fuzzyMix, 0, 1),
+        scanlines: clamp(0.16 * fuzzyMix, 0, 1),
+        mask: clamp(0.03 * fuzzyMix, 0, 1),
+        ghosting: clamp(0.03 * fuzzyMix, 0, 1),
+        noise: fuzzy,
+        vignetteStrength: fuzzyMix
+      };
+    }
+
+    function renderWithShader(sourceCanvas, settings) {
+      const renderer = app.renderer;
+
+      if (!gl || !renderer || (typeof gl.isContextLost === "function" && gl.isContextLost())) {
+        return false;
+      }
+
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(0.839, 0.741, 0.58, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(renderer.program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, renderer.positionBuffer);
+      gl.enableVertexAttribArray(renderer.attribs.position);
+      gl.vertexAttribPointer(renderer.attribs.position, 2, gl.FLOAT, false, 0, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, renderer.texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+      gl.uniform1i(renderer.uniforms.texture, 0);
+      gl.uniform2f(renderer.uniforms.logicalResolution, boardRect.width, boardRect.height);
+      gl.uniform1f(renderer.uniforms.bleed, settings.bleed);
+      gl.uniform1f(renderer.uniforms.bloom, settings.bloom);
+      gl.uniform1f(renderer.uniforms.softness, settings.softness);
+      gl.uniform1f(renderer.uniforms.scanlines, settings.scanlines);
+      gl.uniform1f(renderer.uniforms.mask, settings.mask);
+      gl.uniform1f(renderer.uniforms.ghosting, settings.ghosting);
+      gl.uniform1f(renderer.uniforms.noise, settings.noise);
+      gl.uniform1f(renderer.uniforms.vignetteStrength, settings.vignetteStrength);
+      gl.uniform1f(renderer.uniforms.noisePhase, state.effects.noisePhase);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      return true;
+    }
+
+    function renderFallback(sourceCanvas) {
+      if (!fallbackCtx) {
+        return;
+      }
+
+      fallbackCtx.clearRect(0, 0, boardRect.width, boardRect.height);
+      fallbackCtx.imageSmoothingEnabled = false;
+      fallbackCtx.drawImage(sourceCanvas, 0, 0, boardRect.width, boardRect.height);
+    }
+
+    function render() {
+      const now = performance.now();
+
+      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
+      app.syncGateAnimationTargets(now);
+      sceneCtx.clearRect(0, 0, boardRect.width, boardRect.height);
+      paintGround(now);
+      paintDepthSortedScene(now);
+      const settings = getEffectSettings();
+
+      if (!renderWithShader(sceneCanvas, settings)) {
+        renderFallback(sceneCanvas);
+      }
+    }
+
+    Object.assign(app, {
+      roundRectPath,
+      paintFloorTile,
+      groundFaceColor,
+      paintGroundDropFace,
+      paintWallTile,
+      paintRaisedPlayerGateTile,
+      paintExit,
+      paintGround,
+      paintWalls,
+      paintWeightlessBoxTile,
+      paintRaisedPlayer,
+      paintFloatingFloor,
+      animatedWeightlessGroupMembers,
+      paintWeightlessGroup,
+      paintDepthSortedScene,
+      paintActor,
+      getEffectSettings,
+      renderWithShader,
+      renderFallback,
+      render
+    });
+  };
+})();
