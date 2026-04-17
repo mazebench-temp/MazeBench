@@ -50,6 +50,7 @@
       applyLevelState,
       loadLevelState,
       captureViewportSnapshot,
+      viewportPositionForActor,
       startLevelTransition
     } = app;
 
@@ -159,7 +160,10 @@
       app.isTransitioningLevel = true;
       const previousLevelSnapshot = cloneLevelSnapshot();
       const previousEntrySnapshot = cloneStoredLevelSnapshot(app.levelEntrySnapshot || previousLevelSnapshot);
-      const outgoingSnapshot = captureViewportSnapshot();
+      const outgoingPlayerPosition = viewportPositionForActor(transition.player);
+      const outgoingSnapshot = captureViewportSnapshot({
+        skipActorsPredicate: (actor) => isPlayerActor(actor)
+      });
 
       try {
         const nextLevelState = await loadLevelState(transition.nextLevelId);
@@ -190,8 +194,18 @@
           immediateCamera: true,
           deferRender: true
         });
-        const incomingSnapshot = captureViewportSnapshot();
-        startLevelTransition(outgoingSnapshot, incomingSnapshot, transition.dx, transition.dy);
+        const incomingPlayer = state.actors.find((actor) => isPlayerActor(actor) && !actor.removed) || null;
+        const incomingPlayerPosition = incomingPlayer
+          ? viewportPositionForActor(incomingPlayer)
+          : outgoingPlayerPosition;
+        const incomingSnapshot = captureViewportSnapshot({
+          skipActorsPredicate: (actor) => isPlayerActor(actor)
+        });
+        startLevelTransition(outgoingSnapshot, incomingSnapshot, transition.dx, transition.dy, {
+          actor: incomingPlayer ? { ...incomingPlayer } : { ...transition.player },
+          from: outgoingPlayerPosition,
+          to: incomingPlayerPosition
+        });
 
         return true;
       } catch (error) {

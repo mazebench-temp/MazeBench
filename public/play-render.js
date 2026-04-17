@@ -1356,12 +1356,86 @@
       return snapshot;
     }
 
-    function captureViewportSnapshot(now = performance.now()) {
+    function viewportPositionForActor(actor) {
+      const surfaceLift = Math.round(TILE_SIZE * 0.26 * actorRenderElevation(actor));
+      const left = actor.renderX * TILE_SIZE;
+      const top = actor.renderY * TILE_SIZE - surfaceLift;
+
+      if (!usesScrollingViewport()) {
+        return { left, top };
+      }
+
+      return {
+        left: left - Math.round(app.cameraX),
+        top: top - Math.round(app.cameraY)
+      };
+    }
+
+    function paintTransitionPlayer(actor, left, top) {
+      const elevation = actor.renderElevation ?? actor.elevation ?? 0;
+      const surfaceLift = Math.round(TILE_SIZE * 0.26 * elevation);
+      const overlayActor = {
+        ...actor,
+        renderX: left / TILE_SIZE,
+        renderY: (top + surfaceLift) / TILE_SIZE,
+        renderElevation: elevation,
+        renderScale: actor.renderScale ?? 1,
+        renderAlpha: actor.renderAlpha ?? 1,
+        renderSink: 0,
+        renderInHole: false,
+        removed: false
+      };
+
+      if (overlayActor.type === "player") {
+        paintRaisedPlayer(overlayActor, viewCtx);
+        return;
+      }
+
+      if (overlayActor.type === "circle_player") {
+        viewCtx.fillStyle = "#5aa95c";
+        viewCtx.beginPath();
+        viewCtx.arc(
+          left + TILE_SIZE / 2,
+          top + TILE_SIZE / 2,
+          TILE_SIZE * 0.338 * (overlayActor.renderScale ?? 1),
+          0,
+          Math.PI * 2
+        );
+        viewCtx.fill();
+        viewCtx.lineWidth = 3;
+        viewCtx.strokeStyle = "#000000";
+        viewCtx.stroke();
+      }
+    }
+
+    function captureViewportSnapshot(options = {}, now = performance.now()) {
+      const skipActorsPredicate =
+        typeof options.skipActorsPredicate === "function" ? options.skipActorsPredicate : null;
       app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
       app.syncGateAnimationTargets(now);
       app.syncPlayerLiftAnimationTargets(now);
+      const hiddenActors = [];
+
+      if (skipActorsPredicate) {
+        state.actors.forEach((actor) => {
+          if (!skipActorsPredicate(actor)) {
+            return;
+          }
+
+          hiddenActors.push({
+            actor,
+            removed: actor.removed
+          });
+          actor.removed = true;
+        });
+      }
+
       drawScene(now);
-      return cloneCanvas(composeViewportSource(), viewportRect.width, viewportRect.height);
+      const snapshot = cloneCanvas(composeViewportSource(), viewportRect.width, viewportRect.height);
+      hiddenActors.forEach(({ actor, removed }) => {
+        actor.removed = removed;
+      });
+      return snapshot;
     }
 
     function startLevelTransitionLoop() {
@@ -1377,12 +1451,13 @@
       app.levelTransitionFrameId = window.requestAnimationFrame(step);
     }
 
-    function startLevelTransition(fromCanvas, toCanvas, dx, dy) {
+    function startLevelTransition(fromCanvas, toCanvas, dx, dy, player = null) {
       app.levelTransition = {
         fromCanvas,
         toCanvas,
         dx,
         dy,
+        player,
         startMs: performance.now(),
         durationMs: app.LEVEL_TRANSITION_DURATION_MS
       };
@@ -1450,6 +1525,18 @@
         gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
         viewCtx.fillStyle = gradient;
         viewCtx.fillRect(0, seamY - seamWidth / 2, viewportRect.width, seamWidth);
+      }
+
+      if (transition.player) {
+        const overlayLeft =
+          transition.player.from.left +
+          oldX +
+          (transition.player.to.left + newX - (transition.player.from.left + oldX)) * eased;
+        const overlayTop =
+          transition.player.from.top +
+          oldY +
+          (transition.player.to.top + newY - (transition.player.from.top + oldY)) * eased;
+        paintTransitionPlayer(transition.player.actor, overlayLeft, overlayTop);
       }
 
       return {
@@ -1575,6 +1662,8 @@
       drawScene,
       cloneCanvas,
       captureViewportSnapshot,
+      viewportPositionForActor,
+      paintTransitionPlayer,
       startLevelTransitionLoop,
       startLevelTransition,
       composeLevelTransitionSource,
