@@ -15,8 +15,15 @@
       (typeof playData?.gameId === "string" && playData.gameId) ||
       (currentPathSegments[0] === "play" ? currentPathSegments[1] : "") ||
       "maze";
+    const currentLevelId =
+      (typeof playData?.levelId === "string" && playData.levelId) ||
+      (currentPathSegments[0] === "play" ? currentPathSegments[2] : "") ||
+      "";
     const app = {
       playData,
+      currentGameId,
+      currentLevelId,
+      currentLevelLabel: playData.levelLabel || currentLevelId,
       canvas,
       playShell,
       playHeader,
@@ -80,6 +87,7 @@
       moveHistory: [],
       animationFrameId: null,
       isAnimating: false,
+      isTransitioningLevel: false,
       queuedAction: null,
       renderer: null,
       noiseFrameId: null,
@@ -105,38 +113,73 @@
     app.NOISE_FRAME_MS = 1000 / app.NOISE_FPS;
     app.FLOATING_FLOOR_HOVER_FRAME_MS = 1000 / app.FLOATING_FLOOR_HOVER_FPS;
 
-    app.state.terrain.forEach((row) => {
-      row.forEach((cell) => {
-        if (cell.imageUrl) {
-          app.imageUrls.add(cell.imageUrl);
-        }
+    function hoverSeedForActor(actor) {
+      return (((actor.x + 1) * 0.61803398875 + (actor.y + 1) * 1.41421356237) % 1) * Math.PI * 2;
+    }
 
-        if (cell.underlay?.imageUrl) {
-          app.imageUrls.add(cell.underlay.imageUrl);
-        }
-      });
-    });
-    app.state.actors.forEach((actor) => {
-      if (actor.imageUrl) {
-        app.imageUrls.add(actor.imageUrl);
+    function createRuntimeActor(actor) {
+      const removed = Boolean(actor?.removed);
+      const elevation = actor?.elevation ?? 0;
+
+      return {
+        ...actor,
+        hoverSeed: actor?.hoverSeed ?? hoverSeedForActor(actor),
+        renderX: actor?.renderX ?? actor.x,
+        renderY: actor?.renderY ?? actor.y,
+        elevation,
+        renderElevation: actor?.renderElevation ?? elevation,
+        renderScale: actor?.renderScale ?? (removed ? 0 : 1),
+        renderAlpha: actor?.renderAlpha ?? (removed ? 0 : 1),
+        renderSink: actor?.renderSink ?? (removed ? app.HOLE_SINK_DISTANCE : 0),
+        renderInHole: Boolean(actor?.renderInHole),
+        removed
+      };
+    }
+
+    function registerImageUrl(url) {
+      if (typeof url === "string" && url.length > 0) {
+        app.imageUrls.add(url);
       }
-    });
-    app.imageUrls.add(app.PLAYER_LIFT_ARROW_URL);
+    }
 
-    app.boardRect = {
-      width: app.state.width * app.TILE_SIZE,
-      height: app.state.height * app.TILE_SIZE
-    };
-    app.viewportRect =
-      app.state.width > app.VIEWPORT_TILE_COUNT || app.state.height > app.VIEWPORT_TILE_COUNT
-        ? {
-            width: app.VIEWPORT_TILE_COUNT * app.TILE_SIZE,
-            height: app.VIEWPORT_TILE_COUNT * app.TILE_SIZE
-          }
-        : {
-            width: app.boardRect.width,
-            height: app.boardRect.height
-          };
+    function registerTerrainImageUrls(terrain) {
+      terrain.forEach((row) => {
+        row.forEach((cell) => {
+          registerImageUrl(cell?.imageUrl || null);
+          registerImageUrl(cell?.underlay?.imageUrl || null);
+        });
+      });
+    }
+
+    function registerActorImageUrls(actors) {
+      actors.forEach((actor) => {
+        registerImageUrl(actor?.imageUrl || null);
+      });
+    }
+
+    app.state.actors = app.state.actors.map((actor) => createRuntimeActor(actor));
+    registerTerrainImageUrls(app.state.terrain);
+    registerActorImageUrls(app.state.actors);
+    registerImageUrl(app.PLAYER_LIFT_ARROW_URL);
+
+    function updateBoardMetrics(width = app.state.width, height = app.state.height) {
+      app.boardRect = {
+        width: width * app.TILE_SIZE,
+        height: height * app.TILE_SIZE
+      };
+      app.viewportRect =
+        width > app.VIEWPORT_TILE_COUNT || height > app.VIEWPORT_TILE_COUNT
+          ? {
+              width: app.VIEWPORT_TILE_COUNT * app.TILE_SIZE,
+              height: app.VIEWPORT_TILE_COUNT * app.TILE_SIZE
+            }
+          : {
+              width: app.boardRect.width,
+              height: app.boardRect.height
+            };
+    }
+
+    updateBoardMetrics();
     app.sceneCtx = app.sceneCanvas.getContext("2d");
     app.viewCtx = app.viewCanvas.getContext("2d");
     app.weightlessGroupCtx = app.weightlessGroupCanvas.getContext("2d");
@@ -492,6 +535,23 @@
       }));
     }
 
+    function cloneActorState(actor) {
+      return {
+        type: actor.type,
+        groupId: actor.groupId ?? null,
+        label: actor.label,
+        imageUrl: actor.imageUrl || null,
+        x: actor.x,
+        y: actor.y,
+        removed: Boolean(actor.removed),
+        elevation: actor.elevation ?? 0
+      };
+    }
+
+    function cloneActorStateList(actors = app.state.actors) {
+      return actors.map((actor) => cloneActorState(actor));
+    }
+
     function cloneTerrainCell(cell) {
       return {
         ...cell,
@@ -503,8 +563,169 @@
       return terrain.map((row) => row.map((cell) => cloneTerrainCell(cell)));
     }
 
+    function preloadImageUrl(url) {
+      if (typeof url !== "string" || url.length === 0) {
+        return Promise.resolve();
+      }
+
+      registerImageUrl(url);
+
+      if (app.imageCache.has(url)) {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        const image = new Image();
+        image.onload = function () {
+          app.imageCache.set(url, image);
+          resolve();
+        };
+        image.onerror = function () {
+          app.imageCache.set(url, null);
+          resolve();
+        };
+        image.src = url;
+      });
+    }
+
+    function preloadImagesForLevelState(levelState) {
+      const urls = new Set([app.PLAYER_LIFT_ARROW_URL]);
+      registerImageUrl(app.PLAYER_LIFT_ARROW_URL);
+
+      (levelState?.terrain || []).forEach((row) => {
+        row.forEach((cell) => {
+          if (cell?.imageUrl) {
+            urls.add(cell.imageUrl);
+          }
+          if (cell?.underlay?.imageUrl) {
+            urls.add(cell.underlay.imageUrl);
+          }
+        });
+      });
+
+      (levelState?.actors || []).forEach((actor) => {
+        if (actor?.imageUrl) {
+          urls.add(actor.imageUrl);
+        }
+      });
+
+      return Promise.all(Array.from(urls).map((url) => preloadImageUrl(url)));
+    }
+
     function restoreTerrainState(terrain) {
       app.state.terrain = cloneTerrainState(terrain);
+    }
+
+    function syncDocumentLevelState() {
+      const levelMeta = app.playHeader?.querySelector(".play-header-meta p");
+
+      if (levelMeta && app.currentLevelLabel) {
+        levelMeta.textContent = app.currentLevelLabel;
+      }
+
+      const gameTitle = app.playHeader?.querySelector("h1")?.textContent?.trim();
+
+      if (gameTitle && app.currentLevelLabel) {
+        document.title = `${gameTitle} ${app.currentLevelLabel}`;
+      }
+    }
+
+    function cloneLevelSnapshot() {
+      return {
+        gameId: app.currentGameId,
+        levelId: app.currentLevelId,
+        levelLabel: app.currentLevelLabel,
+        width: app.state.width,
+        height: app.state.height,
+        terrain: cloneTerrainState(app.state.terrain),
+        actors: cloneActorStateList()
+      };
+    }
+
+    function applyLevelState(levelState, options = {}) {
+      if (!levelState) {
+        return;
+      }
+
+      const {
+        updateUrl = false,
+        resetHistory = false,
+        resetLevelEntry = false,
+        immediateCamera = true
+      } = options;
+
+      if (app.animationFrameId !== null) {
+        window.cancelAnimationFrame(app.animationFrameId);
+        app.animationFrameId = null;
+      }
+
+      if (app.gateAnimationFrameId !== null) {
+        window.cancelAnimationFrame(app.gateAnimationFrameId);
+        app.gateAnimationFrameId = null;
+      }
+
+      if (app.playerLiftAnimationFrameId !== null) {
+        window.cancelAnimationFrame(app.playerLiftAnimationFrameId);
+        app.playerLiftAnimationFrameId = null;
+      }
+
+      app.isAnimating = false;
+      app.isTransitioningLevel = false;
+      app.gateRenderOverride = null;
+      app.currentLevelId = levelState.levelId || app.currentLevelId;
+      app.currentLevelLabel = levelState.levelLabel || app.currentLevelLabel || app.currentLevelId;
+      app.state.width = levelState.width;
+      app.state.height = levelState.height;
+      app.state.terrain = cloneTerrainState(levelState.terrain || []);
+      app.state.actors = (levelState.actors || []).map((actor) => createRuntimeActor(actor));
+      registerTerrainImageUrls(app.state.terrain);
+      registerActorImageUrls(app.state.actors);
+      updateBoardMetrics(app.state.width, app.state.height);
+      app.gateAnimations.clear();
+      app.gateAnimationsInitialized = false;
+      app.playerLiftAnimations.clear();
+      app.playerLiftAnimationsInitialized = false;
+      initializeActorElevations();
+      setupCanvas();
+      syncDocumentLevelState();
+      syncCameraTarget(immediateCamera);
+      syncFloatingFloorTicker();
+
+      if (resetHistory) {
+        app.moveHistory.length = 0;
+      }
+
+      if (resetLevelEntry) {
+        app.initialPositions = cloneActorPositions();
+        app.initialTerrain = cloneTerrainState(app.state.terrain);
+        app.levelEntrySnapshot = cloneLevelSnapshot();
+      }
+
+      if (updateUrl && app.currentLevelId) {
+        const nextUrl = `/play/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(app.currentLevelId)}`;
+        window.history.replaceState({ levelId: app.currentLevelId }, "", nextUrl);
+      }
+
+      app.render();
+    }
+
+    async function loadLevelState(levelId) {
+      const response = await window.fetch(
+        `/api/play/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(levelId)}`,
+        {
+          headers: {
+            Accept: "application/json"
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Unable to load ${levelId}`);
+      }
+
+      const levelState = await response.json();
+      await preloadImagesForLevelState(levelState);
+      return levelState;
     }
 
     function restoreActorPositions(positions) {
@@ -1312,22 +1533,7 @@
     }
 
     function preloadImages() {
-      return Promise.all(
-        Array.from(app.imageUrls).map((url) => {
-          return new Promise((resolve) => {
-            const image = new Image();
-            image.onload = function () {
-              app.imageCache.set(url, image);
-              resolve();
-            };
-            image.onerror = function () {
-              app.imageCache.set(url, null);
-              resolve();
-            };
-            image.src = url;
-          });
-        })
-      );
+      return Promise.all(Array.from(app.imageUrls).map((url) => preloadImageUrl(url)));
     }
 
     Object.assign(app, {
@@ -1337,14 +1543,27 @@
       syncCameraTarget,
       advanceCamera,
       startCameraFollowLoop,
+      createRuntimeActor,
+      registerImageUrl,
+      registerTerrainImageUrls,
+      registerActorImageUrls,
+      updateBoardMetrics,
       createShader,
       createProgram,
       initializeRenderer,
       posKey,
       cloneActorPositions,
+      cloneActorState,
+      cloneActorStateList,
       cloneTerrainCell,
       cloneTerrainState,
+      preloadImageUrl,
+      preloadImagesForLevelState,
       restoreTerrainState,
+      syncDocumentLevelState,
+      cloneLevelSnapshot,
+      applyLevelState,
+      loadLevelState,
       restoreActorPositions,
       buildOccupiedSet,
       actorsAt,
@@ -1406,9 +1625,11 @@
     });
 
     initializeActorElevations();
+    syncDocumentLevelState();
     syncCameraTarget(true);
     app.initialPositions = cloneActorPositions();
     app.initialTerrain = cloneTerrainState(app.state.terrain);
+    app.levelEntrySnapshot = cloneLevelSnapshot();
     app.renderer = app.gl ? initializeRenderer(app.gl) : null;
 
     return app;

@@ -193,9 +193,10 @@ class MazeWorld(GridWorld):
             self.parse_level(raw_level)
 
     @classmethod
-    def from_disk(cls, level_name: str = "level1.txt") -> "MazeWorld":
+    def from_disk(cls, level_name: str = "level_AxA.txt") -> "MazeWorld":
         parser = json.loads((MAZE_DIR / "level_parsing.json").read_text(encoding="utf8"))
-        raw_level = (MAZE_DIR / "levels" / level_name).read_text(encoding="utf8")
+        level_path = MAZE_DIR / "levels" / level_name
+        raw_level = level_path.read_text(encoding="utf8") if level_path.exists() else ""
         return cls(parser=parser, raw_level=raw_level)
 
     def register_object_class(self, name: str, object_class: type[MazeSprite]) -> None:

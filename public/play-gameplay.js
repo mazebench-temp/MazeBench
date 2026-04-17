@@ -2,11 +2,11 @@
   const modules = window.PlayModules || (window.PlayModules = {});
 
   modules.registerGameplayFunctions = function registerGameplayFunctions(app) {
+    const WORLD_LEVEL_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const WORLD_LEVEL_PATTERN = /^level_([A-Z])x([A-Z])$/;
     const {
       state,
       moveHistory,
-      initialPositions,
-      initialTerrain,
       MOVE_DURATION_MS,
       PLAYER_LIFT_RISE_DURATION_MS,
       PLAYER_LIFT_FALL_DURATION_MS,
@@ -32,6 +32,7 @@
       pushActorMembers,
       weightlessGroupMembers,
       isInsideBoard,
+      terrainAt,
       isWall,
       terrainSurfaceHeightAt,
       playerSurfaceHeightAt,
@@ -44,8 +45,159 @@
       isIceOrHole,
       easeOutBack,
       easeInOutQuad,
-      syncFloatingFloorTicker
+      syncFloatingFloorTicker,
+      cloneLevelSnapshot,
+      applyLevelState,
+      loadLevelState
     } = app;
+
+    function cloneStoredLevelSnapshot(snapshot) {
+      if (!snapshot) {
+        return null;
+      }
+
+      return {
+        ...snapshot,
+        terrain: cloneTerrainState(snapshot.terrain || []),
+        actors: (snapshot.actors || []).map((actor) => ({ ...actor }))
+      };
+    }
+
+    function restoreLevelEntryState(snapshot) {
+      const storedSnapshot = cloneStoredLevelSnapshot(snapshot);
+
+      if (!storedSnapshot) {
+        return;
+      }
+
+      app.levelEntrySnapshot = storedSnapshot;
+      app.initialTerrain = cloneTerrainState(storedSnapshot.terrain);
+      app.initialPositions = (storedSnapshot.actors || []).map((actor) => ({
+        x: actor.x,
+        y: actor.y,
+        removed: Boolean(actor.removed),
+        elevation: actor.elevation ?? 0
+      }));
+    }
+
+    function parseWorldLevelId(levelId) {
+      const match = String(levelId || "").match(WORLD_LEVEL_PATTERN);
+
+      if (!match) {
+        return null;
+      }
+
+      return {
+        columnIndex: WORLD_LEVEL_LETTERS.indexOf(match[1]),
+        rowIndex: WORLD_LEVEL_LETTERS.indexOf(match[2])
+      };
+    }
+
+    function worldLevelId(columnIndex, rowIndex) {
+      const width = WORLD_LEVEL_LETTERS.length;
+      const normalizedColumn = ((columnIndex % width) + width) % width;
+      const normalizedRow = ((rowIndex % width) + width) % width;
+      return `level_${WORLD_LEVEL_LETTERS[normalizedColumn]}x${WORLD_LEVEL_LETTERS[normalizedRow]}`;
+    }
+
+    function adjacentWorldLevelId(levelId, dx, dy) {
+      const coordinates = parseWorldLevelId(levelId);
+
+      if (!coordinates) {
+        return null;
+      }
+
+      return worldLevelId(coordinates.columnIndex - dx, coordinates.rowIndex + dy);
+    }
+
+    function edgeTransitionForMove(dx, dy) {
+      const players = state.actors.filter((actor) => isPlayerActor(actor) && !actor.removed);
+
+      if (players.length !== 1) {
+        return null;
+      }
+
+      const player = players[0];
+
+      if (actorElevation(player) !== 0 || terrainAt(player.x, player.y).type !== "floor") {
+        return null;
+      }
+
+      const onEdge =
+        (dx < 0 && player.x === 0) ||
+        (dx > 0 && player.x === state.width - 1) ||
+        (dy < 0 && player.y === 0) ||
+        (dy > 0 && player.y === state.height - 1);
+
+      if (!onEdge) {
+        return null;
+      }
+
+      const nextLevelId = adjacentWorldLevelId(app.currentLevelId, dx, dy);
+
+      if (!nextLevelId) {
+        return null;
+      }
+
+      return {
+        player,
+        nextLevelId,
+        targetX: dx < 0 ? state.width - 1 : dx > 0 ? 0 : player.x,
+        targetY: dy < 0 ? state.height - 1 : dy > 0 ? 0 : player.y
+      };
+    }
+
+    async function transitionToAdjacentLevel(transition) {
+      if (!transition || app.isTransitioningLevel) {
+        return false;
+      }
+
+      app.isTransitioningLevel = true;
+      const previousLevelSnapshot = cloneLevelSnapshot();
+      const previousEntrySnapshot = cloneStoredLevelSnapshot(app.levelEntrySnapshot || previousLevelSnapshot);
+
+      try {
+        const nextLevelState = await loadLevelState(transition.nextLevelId);
+        const transferredPlayer = {
+          type: transition.player.type,
+          groupId: transition.player.groupId ?? null,
+          label: transition.player.label,
+          imageUrl: transition.player.imageUrl || null,
+          x: transition.targetX,
+          y: transition.targetY,
+          removed: false,
+          elevation: 0
+        };
+
+        nextLevelState.actors = [
+          ...(nextLevelState.actors || []).filter((actor) => !isPlayerActor(actor)),
+          transferredPlayer
+        ];
+
+        moveHistory.push({
+          kind: "level-transition",
+          level: previousLevelSnapshot,
+          entry: previousEntrySnapshot
+        });
+        applyLevelState(nextLevelState, {
+          updateUrl: true,
+          resetLevelEntry: true,
+          immediateCamera: true
+        });
+
+        if (app.queuedAction) {
+          const nextAction = app.queuedAction;
+          app.queuedAction = null;
+          runAction(nextAction);
+        }
+
+        return true;
+      } catch (error) {
+        console.error(error);
+        app.isTransitioningLevel = false;
+        return false;
+      }
+    }
 
     function canMoveInto(x, y, occupied, gateState = app.liveRaisedPlayerGates) {
       if (!isInsideBoard(x, y)) {
@@ -811,8 +963,15 @@
     }
 
     function movePlayers(dx, dy) {
-      if (app.isAnimating) {
+      if (app.isAnimating || app.isTransitioningLevel) {
         app.queuedAction = { type: "move", dx, dy };
+        return;
+      }
+
+      const edgeTransition = edgeTransitionForMove(dx, dy);
+
+      if (edgeTransition) {
+        void transitionToAdjacentLevel(edgeTransition);
         return;
       }
 
@@ -953,7 +1112,7 @@
     }
 
     function undoMove() {
-      if (app.isAnimating) {
+      if (app.isAnimating || app.isTransitioningLevel) {
         app.queuedAction = { type: "undo" };
         return;
       }
@@ -961,6 +1120,17 @@
       const previousState = moveHistory.pop();
 
       if (!previousState) {
+        return;
+      }
+
+      if (previousState.kind === "level-transition") {
+        applyLevelState(previousState.level, {
+          updateUrl: true,
+          immediateCamera: true
+        });
+        restoreLevelEntryState(previousState.entry);
+        syncFloatingFloorTicker();
+        app.render();
         return;
       }
 
@@ -996,15 +1166,15 @@
     }
 
     function resetPositions() {
-      if (app.isAnimating) {
+      if (app.isAnimating || app.isTransitioningLevel) {
         app.queuedAction = { type: "reset" };
         return;
       }
 
       moveHistory.length = 0;
-      restoreTerrainState(initialTerrain);
+      restoreTerrainState(app.initialTerrain);
       app.gateRenderOverride = computeRaisedPlayerGateSet();
-      const moves = buildMovesToPositions(initialPositions);
+      const moves = buildMovesToPositions(app.initialPositions);
 
       if (moves.length > 0) {
         animateMoves(moves, MOVE_DURATION_MS);

@@ -9,6 +9,9 @@ const PUBLIC_DIR = path.join(ROOT_DIR, "public");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
 const MAZE_LEVEL_GRID_SIZE = 26;
+const MAZE_WORLD_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const MAZE_WORLD_LEVEL_ID_PATTERN = /^level_([A-Z])x([A-Z])$/;
+const MAZE_DEFAULT_LEVEL_ID = "level_AxA";
 
 function escapeHtml(value) {
   return String(value)
@@ -105,6 +108,55 @@ function resolveGameAssetPath(gameId, relativePath) {
 
 function parseLevelRows(rawLevel) {
   return rawLevel.split(/\r?\n/).filter((row) => row.length > 0);
+}
+
+function parseMazeWorldLevelId(levelId) {
+  const match = String(levelId || "").match(MAZE_WORLD_LEVEL_ID_PATTERN);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    column: match[1],
+    row: match[2]
+  };
+}
+
+function isMazeWorldLevelId(levelId) {
+  return parseMazeWorldLevelId(levelId) !== null;
+}
+
+function mazeLevelLabel(levelId) {
+  const coordinates = parseMazeWorldLevelId(levelId);
+
+  if (!coordinates) {
+    return `Level ${levelId}`;
+  }
+
+  return `Level ${coordinates.column}x${coordinates.row}`;
+}
+
+function buildMazeWorldLevel(levelId) {
+  if (!isMazeWorldLevelId(levelId)) {
+    return null;
+  }
+
+  return {
+    fileName: `${levelId}.txt`,
+    id: levelId,
+    number: levelId,
+    label: mazeLevelLabel(levelId),
+    playUrl: `/play/maze/${levelId}`
+  };
+}
+
+function defaultLevelIdForGame(game) {
+  if (game?.id === "maze") {
+    return MAZE_DEFAULT_LEVEL_ID;
+  }
+
+  return game?.levels?.[0]?.id || null;
 }
 
 function parseLevelCells(parser, row) {
@@ -286,6 +338,9 @@ function getLevelState(game, level) {
   });
 
   return {
+    gameId: game.id,
+    levelId: level.id,
+    levelLabel: level.label,
     width: boardSize,
     height: boardSize,
     terrain,
@@ -339,11 +394,17 @@ function getGame(gameId) {
       const levelId = path.parse(fileName).name;
       const match = fileName.match(/(\d+)/);
       const number = match ? Number(match[1]) : levelId;
+      const label =
+        gameId === "maze" && isMazeWorldLevelId(levelId)
+          ? mazeLevelLabel(levelId)
+          : typeof number === "number"
+            ? `Level ${number}`
+            : `Level ${levelId}`;
       return {
         fileName,
         id: levelId,
         number,
-        label: typeof number === "number" ? `Level ${number}` : `Level ${levelId}`,
+        label,
         playUrl: `/play/${gameId}/${levelId}`
       };
     })
@@ -351,7 +412,19 @@ function getGame(gameId) {
 }
 
 function getLevel(game, levelId) {
-  return game.levels.find((level) => level.id === levelId) || null;
+  const requestedLevelId =
+    typeof levelId === "string" && levelId.length > 0 ? levelId : defaultLevelIdForGame(game);
+  const existingLevel = game.levels.find((level) => level.id === requestedLevelId) || null;
+
+  if (existingLevel) {
+    return existingLevel;
+  }
+
+  if (game.id === "maze" && isMazeWorldLevelId(requestedLevelId)) {
+    return buildMazeWorldLevel(requestedLevelId);
+  }
+
+  return null;
 }
 
 function sendHtml(response, statusCode, body) {
@@ -362,6 +435,13 @@ function sendHtml(response, statusCode, body) {
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload, null, 2));
+}
+
+function sendRedirect(response, location, statusCode = 302) {
+  response.writeHead(statusCode, {
+    Location: location
+  });
+  response.end();
 }
 
 function sendFile(response, filePath, contentType) {
@@ -393,7 +473,11 @@ function renderHomePage() {
   const games = listGames();
   const items = games
     .map(
-      (game) => `<a class="game-link" href="/games/${encodeURIComponent(game.id)}">
+      (game) => `<a class="game-link" href="${
+        game.id === "maze"
+          ? `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
+          : `/games/${encodeURIComponent(game.id)}`
+      }">
         <span class="game-link__title">${escapeHtml(game.name)}</span>
       </a>`
     )
@@ -409,11 +493,21 @@ function renderHomePage() {
 }
 
 function renderGamePage(game) {
-  const levels = game.levels
-    .map(
-      (level) => `<li><a href="${escapeHtml(level.playUrl)}">${escapeHtml(level.label)}</a></li>`
-    )
-    .join("");
+  const startLevelId = defaultLevelIdForGame(game);
+  const startLink = startLevelId
+    ? `<a class="back-link" href="/play/${encodeURIComponent(game.id)}/${encodeURIComponent(startLevelId)}">Play</a>`
+    : "";
+  const levelsSection =
+    game.id === "maze"
+      ? ""
+      : `<section class="stack">
+        <h2>Levels</h2>
+        <ul class="level-list">${game.levels
+          .map(
+            (level) => `<li><a href="${escapeHtml(level.playUrl)}">${escapeHtml(level.label)}</a></li>`
+          )
+          .join("")}</ul>
+      </section>`;
 
   return renderPage({
     title: game.name,
@@ -422,10 +516,8 @@ function renderGamePage(game) {
         <a class="back-link" href="/">Back</a>
       </nav>
       <h1>${escapeHtml(game.name)}</h1>
-      <section class="stack">
-        <h2>Levels</h2>
-        <ul class="level-list">${levels}</ul>
-      </section>
+      ${startLink}
+      ${levelsSection}
     </main>`
   });
 }
@@ -576,10 +668,35 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  if (segments.length === 2 && segments[0] === "play") {
+    const game = getGame(segments[1]);
+    if (!game) {
+      sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    const levelId = defaultLevelIdForGame(game);
+    if (!levelId) {
+      sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    sendRedirect(response, `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(levelId)}`);
+    return;
+  }
+
   if (segments.length === 3 && segments[0] === "play") {
     const game = getGame(segments[1]);
     if (!game) {
       sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    if (game.id === "maze" && !isMazeWorldLevelId(segments[2])) {
+      sendRedirect(
+        response,
+        `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
+      );
       return;
     }
 
@@ -590,6 +707,23 @@ const server = http.createServer((request, response) => {
     }
 
     sendHtml(response, 200, renderPlayPage(game, level));
+    return;
+  }
+
+  if (segments.length === 4 && segments[0] === "api" && segments[1] === "play") {
+    const game = getGame(segments[2]);
+    if (!game) {
+      sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    const level = getLevel(game, segments[3]);
+    if (!level) {
+      sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    sendJson(response, 200, getLevelState(game, level));
     return;
   }
 
