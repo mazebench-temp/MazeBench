@@ -1477,55 +1477,18 @@
       const eased = easeInOutQuad(progress);
       const worldShiftX = -transition.dx;
       const worldShiftY = -transition.dy;
+      const overlap = 0;
       const oldX = worldShiftX * eased * viewportRect.width;
       const oldY = worldShiftY * eased * viewportRect.height;
-      const newX = oldX - worldShiftX * viewportRect.width;
-      const newY = oldY - worldShiftY * viewportRect.height;
+      const newX = oldX - worldShiftX * (viewportRect.width - overlap);
+      const newY = oldY - worldShiftY * (viewportRect.height - overlap);
 
       viewCtx.clearRect(0, 0, viewportRect.width, viewportRect.height);
       viewCtx.fillStyle = "#d6bd94";
       viewCtx.fillRect(0, 0, viewportRect.width, viewportRect.height);
 
-      viewCtx.save();
-      viewCtx.globalAlpha = 1 - progress * 0.16;
       viewCtx.drawImage(transition.fromCanvas, Math.round(oldX), Math.round(oldY));
-      viewCtx.restore();
-
-      viewCtx.save();
-      viewCtx.globalAlpha = 0.84 + progress * 0.16;
       viewCtx.drawImage(transition.toCanvas, Math.round(newX), Math.round(newY));
-      viewCtx.restore();
-
-      const seamWidth = 26;
-      const seamStrength = 0.28 * (1 - Math.abs(progress - 0.5) * 2);
-
-      if (worldShiftX !== 0) {
-        const seamX = Math.round(oldX + (worldShiftX < 0 ? viewportRect.width : 0));
-        const gradient = viewCtx.createLinearGradient(
-          seamX - seamWidth / 2,
-          0,
-          seamX + seamWidth / 2,
-          0
-        );
-        gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
-        gradient.addColorStop(0.5, `rgba(0, 0, 0, ${seamStrength})`);
-        gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-        viewCtx.fillStyle = gradient;
-        viewCtx.fillRect(seamX - seamWidth / 2, 0, seamWidth, viewportRect.height);
-      } else if (worldShiftY !== 0) {
-        const seamY = Math.round(oldY + (worldShiftY < 0 ? viewportRect.height : 0));
-        const gradient = viewCtx.createLinearGradient(
-          0,
-          seamY - seamWidth / 2,
-          0,
-          seamY + seamWidth / 2
-        );
-        gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
-        gradient.addColorStop(0.5, `rgba(0, 0, 0, ${seamStrength})`);
-        gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-        viewCtx.fillStyle = gradient;
-        viewCtx.fillRect(0, seamY - seamWidth / 2, viewportRect.width, seamWidth);
-      }
 
       if (transition.player) {
         const overlayLeft =
