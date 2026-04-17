@@ -110,7 +110,7 @@
         return null;
       }
 
-      return worldLevelId(coordinates.columnIndex - dx, coordinates.rowIndex + dy);
+      return worldLevelId(coordinates.columnIndex + dx, coordinates.rowIndex + dy);
     }
 
     function edgeTransitionForMove(dx, dy) {
