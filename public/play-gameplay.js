@@ -497,7 +497,8 @@
       moves,
       budget,
       handled = new Set(),
-      gateState = app.liveRaisedPlayerGates
+      gateState = app.liveRaisedPlayerGates,
+      ignoredActors = new Set()
     ) {
       const entityKey = pushEntityKey(actor);
 
@@ -528,7 +529,10 @@
         const blocker = actorAt(
           targetX,
           targetY,
-          (candidate) => !memberSet.has(candidate) && !isCollectibleActor(candidate)
+          (candidate) =>
+            !ignoredActors.has(candidate) &&
+            !memberSet.has(candidate) &&
+            !isCollectibleActor(candidate)
         );
 
         if (!blocker) {
@@ -556,7 +560,8 @@
           moves,
           remainingBudget,
           handled,
-          gateState
+          gateState,
+          ignoredActors
         );
 
         if (result === null) {
@@ -1090,7 +1095,8 @@
                 moves,
                 pushBudget,
                 new Set(),
-                raisedPlayerGates
+                raisedPlayerGates,
+                new Set([player])
               );
 
               if (result !== null) {

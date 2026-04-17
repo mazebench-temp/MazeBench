@@ -31,7 +31,7 @@
       "token": "f"
     },
     "weightless_box": {
-      "tokens": ["M0", "M1"]
+      "tokens": ["M0", "M1", "M2"]
     },
     "exit": {
       "token": "e"
