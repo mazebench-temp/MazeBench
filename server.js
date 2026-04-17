@@ -8,7 +8,7 @@ const GAMES_DIR = path.join(ROOT_DIR, "games");
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
-const MAZE_LEVEL_GRID_SIZE = 25;
+const MAZE_LEVEL_GRID_SIZE = 26;
 
 function escapeHtml(value) {
   return String(value)

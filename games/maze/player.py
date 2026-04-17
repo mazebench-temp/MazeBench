@@ -7,7 +7,7 @@ from typing import Any
 from games.shared import GridWorld, Sprite
 
 MAZE_DIR = Path(__file__).resolve().parent
-MAZE_LEVEL_GRID_SIZE = 25
+MAZE_LEVEL_GRID_SIZE = 26
 
 
 def config_tokens(config: dict[str, Any]) -> list[str]:
