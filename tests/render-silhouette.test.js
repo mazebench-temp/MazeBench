@@ -174,4 +174,37 @@ function createRenderApp({ terrain, actors, playData = {} }) {
   assert.equal(app.viewportRect.height, 16 * app.TILE_SIZE);
 }
 
+{
+  const app = createRenderApp({
+    terrain: buildTerrain(4, 4, [
+      [3, 0],
+      [3, 1]
+    ]),
+    actors: [],
+    playData: {
+      worldColumns: ["A", "B"],
+      worldRows: ["A"],
+      width: 4,
+      height: 4
+    }
+  });
+
+  assert.equal(app.isTerrainWallAcrossHorizontalWorldEdge(4, 0), false);
+  assert.equal(app.shouldHideElevatedSideStroke(3, 0, 1), false);
+
+  app.rememberHorizontalNeighborLevelState({
+    levelId: "level_BxA",
+    width: 4,
+    height: 4,
+    terrain: buildTerrain(4, 4, [
+      [0, 0],
+      [0, 1]
+    ]),
+    actors: []
+  });
+
+  assert.equal(app.isTerrainWallAcrossHorizontalWorldEdge(4, 0), true);
+  assert.equal(app.shouldHideElevatedSideStroke(3, 0, 1), true);
+}
+
 console.log("render silhouette regression tests passed");

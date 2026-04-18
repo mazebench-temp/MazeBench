@@ -35,6 +35,7 @@
       gateLiftAt,
       playerLiftAt,
       isTerrainWall,
+      isTerrainWallAcrossHorizontalWorldEdge,
       shouldHideElevatedSideStroke,
       isWeightlessBoxAt,
       weightlessGroupRenderState,
@@ -233,9 +234,9 @@
       const bottom = top + TILE_SIZE;
       const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
       const openTop = !isTerrainWall(x, y - 1);
-      const openRight = !isTerrainWall(x + 1, y);
+      const openRight = !isTerrainWallAcrossHorizontalWorldEdge(x + 1, y);
       const openBottom = !isTerrainWall(x, y + 1);
-      const openLeft = !isTerrainWall(x - 1, y);
+      const openLeft = !isTerrainWallAcrossHorizontalWorldEdge(x - 1, y);
 
       paintFloorTile(x, y, groundSurfaceCell(cell));
 
@@ -299,9 +300,11 @@
         const shineTop = bottom - faceHeight;
         const shineBorderWidth = 3;
         const leftNeighborHasShine =
-          x > 0 && isTerrainWall(x - 1, y) && !isTerrainWall(x - 1, y + 1);
+          isTerrainWallAcrossHorizontalWorldEdge(x - 1, y) &&
+          !isTerrainWallAcrossHorizontalWorldEdge(x - 1, y + 1);
         const rightNeighborHasShine =
-          x < state.width - 1 && isTerrainWall(x + 1, y) && !isTerrainWall(x + 1, y + 1);
+          isTerrainWallAcrossHorizontalWorldEdge(x + 1, y) &&
+          !isTerrainWallAcrossHorizontalWorldEdge(x + 1, y + 1);
         sceneCtx.fillStyle = "#4f5560";
         sceneCtx.fillRect(left, shineTop, TILE_SIZE, faceHeight);
         sceneCtx.lineWidth = shineBorderWidth;

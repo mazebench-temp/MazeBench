@@ -142,6 +142,124 @@
 
     app.NOISE_FRAME_MS = 1000 / app.NOISE_FPS;
     app.FLOATING_FLOOR_HOVER_FRAME_MS = 1000 / app.FLOATING_FLOOR_HOVER_FPS;
+    app.horizontalNeighborLevelStates = new Map();
+
+    function parseWorldLevelId(levelId) {
+      const match = String(levelId || "").match(/^level_([A-Z])x([A-Z])$/);
+
+      if (!match) {
+        return null;
+      }
+
+      const columnIndex = app.worldColumns.indexOf(match[1]);
+      const rowIndex = app.worldRows.indexOf(match[2]);
+
+      if (columnIndex === -1 || rowIndex === -1) {
+        return null;
+      }
+
+      return {
+        columnIndex,
+        rowIndex
+      };
+    }
+
+    function worldLevelId(columnIndex, rowIndex) {
+      if (app.worldColumns.length === 0 || app.worldRows.length === 0) {
+        return null;
+      }
+
+      const normalizedColumn = ((columnIndex % app.worldColumns.length) + app.worldColumns.length) % app.worldColumns.length;
+      const normalizedRow = ((rowIndex % app.worldRows.length) + app.worldRows.length) % app.worldRows.length;
+      return `level_${app.worldColumns[normalizedColumn]}x${app.worldRows[normalizedRow]}`;
+    }
+
+    function adjacentWorldLevelId(levelId, dx, dy) {
+      const coordinates = parseWorldLevelId(levelId);
+
+      if (!coordinates) {
+        return null;
+      }
+
+      return worldLevelId(coordinates.columnIndex + dx, coordinates.rowIndex + dy);
+    }
+
+    function rememberHorizontalNeighborLevelState(levelState) {
+      if (typeof levelState?.levelId !== "string" || !Array.isArray(levelState?.terrain)) {
+        return null;
+      }
+
+      const storedLevelState = {
+        levelId: levelState.levelId,
+        width: Number(levelState.width) || 0,
+        height: Number(levelState.height) || 0,
+        terrain: cloneTerrainState(levelState.terrain)
+      };
+
+      app.horizontalNeighborLevelStates.set(levelState.levelId, storedLevelState);
+      return storedLevelState;
+    }
+
+    function cachedHorizontalNeighborLevelState(levelId) {
+      const cached = app.horizontalNeighborLevelStates.get(levelId);
+      return cached && typeof cached.then !== "function" ? cached : null;
+    }
+
+    async function loadHorizontalNeighborLevelState(levelId) {
+      if (!levelId || typeof window.fetch !== "function") {
+        return null;
+      }
+
+      const cached = app.horizontalNeighborLevelStates.get(levelId);
+
+      if (cached) {
+        return typeof cached.then === "function" ? cached : Promise.resolve(cached);
+      }
+
+      const request = window
+        .fetch(`/api/play/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(levelId)}`, {
+          headers: {
+            Accept: "application/json"
+          }
+        })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Unable to load ${levelId}`);
+          }
+
+          return rememberHorizontalNeighborLevelState(await response.json());
+        })
+        .catch((error) => {
+          app.horizontalNeighborLevelStates.delete(levelId);
+          throw error;
+        });
+
+      app.horizontalNeighborLevelStates.set(levelId, request);
+      return request;
+    }
+
+    function queueHorizontalNeighborLevelState(levelId) {
+      if (!levelId || typeof window.fetch !== "function") {
+        return;
+      }
+
+      if (app.horizontalNeighborLevelStates.has(levelId)) {
+        return;
+      }
+
+      loadHorizontalNeighborLevelState(levelId)
+        .then(() => {
+          if (!app.isTransitioningLevel && typeof app.render === "function") {
+            app.render();
+          }
+        })
+        .catch(() => {});
+    }
+
+    function syncHorizontalNeighborLevelStates() {
+      queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, -1, 0));
+      queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, 1, 0));
+    }
 
     function hoverSeedForActor(actor) {
       return (((actor.x + 1) * 0.61803398875 + (actor.y + 1) * 1.41421356237) % 1) * Math.PI * 2;
@@ -728,6 +846,8 @@
       initializeActorElevations();
       setupCanvas();
       syncDocumentLevelState();
+      rememberHorizontalNeighborLevelState(levelState);
+      syncHorizontalNeighborLevelStates();
       syncCameraTarget(immediateCamera);
       syncFloatingFloorTicker();
 
@@ -766,6 +886,7 @@
       }
 
       const levelState = await response.json();
+      rememberHorizontalNeighborLevelState(levelState);
       await preloadImagesForLevelState(levelState);
       return levelState;
     }
@@ -1090,12 +1211,55 @@
       return terrainAt(x, y).type === "wall";
     }
 
+    function terrainCellAcrossHorizontalWorldEdge(x, y) {
+      if (y < 0 || y >= app.state.height) {
+        return null;
+      }
+
+      if (x >= 0 && x < app.state.width) {
+        return terrainAt(x, y);
+      }
+
+      if (x !== -1 && x !== app.state.width) {
+        return null;
+      }
+
+      const neighborLevelId = adjacentWorldLevelId(app.currentLevelId, x < 0 ? -1 : 1, 0);
+      const neighborLevelState = cachedHorizontalNeighborLevelState(neighborLevelId);
+
+      if (!neighborLevelState) {
+        queueHorizontalNeighborLevelState(neighborLevelId);
+        return null;
+      }
+
+      const neighborX = x < 0 ? neighborLevelState.width - 1 : 0;
+
+      if (neighborX < 0 || y >= neighborLevelState.height) {
+        return null;
+      }
+
+      return neighborLevelState.terrain?.[y]?.[neighborX] || null;
+    }
+
+    function isTerrainWallAcrossHorizontalWorldEdge(x, y) {
+      return terrainCellAcrossHorizontalWorldEdge(x, y)?.type === "wall";
+    }
+
     function isWall(x, y, gateState = app.liveRaisedPlayerGates) {
       return isTerrainWall(x, y) || isRaisedPlayerGate(x, y, gateState) || isRaisedPlayerLift(x, y);
     }
 
     function elevatedBlockFamiliesAt(x, y, gateState = app.liveRaisedPlayerGates) {
       const families = new Set();
+
+      if ((x === -1 || x === app.state.width) && isTerrainWallAcrossHorizontalWorldEdge(x, y)) {
+        families.add("terrain:wall");
+        return families;
+      }
+
+      if (!isInsideBoard(x, y)) {
+        return families;
+      }
 
       if (isTerrainWall(x, y)) {
         families.add("terrain:wall");
@@ -1585,6 +1749,14 @@
       syncCameraTarget,
       advanceCamera,
       startCameraFollowLoop,
+      parseWorldLevelId,
+      worldLevelId,
+      adjacentWorldLevelId,
+      rememberHorizontalNeighborLevelState,
+      cachedHorizontalNeighborLevelState,
+      loadHorizontalNeighborLevelState,
+      queueHorizontalNeighborLevelState,
+      syncHorizontalNeighborLevelStates,
       createRuntimeActor,
       registerImageUrl,
       registerTerrainImageUrls,
@@ -1638,6 +1810,8 @@
       eachPlayerGate,
       isRaisedPlayerGate,
       isTerrainWall,
+      terrainCellAcrossHorizontalWorldEdge,
+      isTerrainWallAcrossHorizontalWorldEdge,
       isWall,
       elevatedBlockFamiliesAt,
       sharedElevatedBlockFamily,
@@ -1668,6 +1842,8 @@
 
     initializeActorElevations();
     syncDocumentLevelState();
+    rememberHorizontalNeighborLevelState(playData);
+    syncHorizontalNeighborLevelStates();
     syncCameraTarget(true);
     app.initialPositions = cloneActorPositions();
     app.initialTerrain = cloneTerrainState(app.state.terrain);
