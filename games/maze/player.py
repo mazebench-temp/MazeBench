@@ -44,6 +44,36 @@ def load_maze_world_config() -> tuple[int, int]:
 MAZE_LEVEL_GRID_WIDTH, MAZE_LEVEL_GRID_HEIGHT = load_maze_world_config()
 
 
+def default_level_file_name() -> str:
+    levels_dir = MAZE_DIR / "levels"
+    world_map_path = MAZE_DIR / "world_map.json"
+
+    if world_map_path.exists():
+        try:
+            world_map = json.loads(world_map_path.read_text(encoding="utf8"))
+        except json.JSONDecodeError:
+            world_map = {}
+
+        levels = world_map.get("levels")
+        if isinstance(levels, dict):
+            for file_name, position in levels.items():
+                if position == ["A", "A"] and isinstance(file_name, str) and (levels_dir / file_name).exists():
+                    return file_name
+
+            for file_name in levels:
+                if isinstance(file_name, str) and (levels_dir / file_name).exists():
+                    return file_name
+
+    if levels_dir.exists():
+        level_files = sorted(
+            path.name for path in levels_dir.iterdir() if path.is_file() and not path.name.startswith(".")
+        )
+        if level_files:
+            return level_files[0]
+
+    return "level_AxA.txt"
+
+
 def config_tokens(config: dict[str, Any]) -> list[str]:
     token = config.get("token")
     if isinstance(token, str) and token:
@@ -227,9 +257,10 @@ class MazeWorld(GridWorld):
             self.parse_level(raw_level)
 
     @classmethod
-    def from_disk(cls, level_name: str = "level_AxA.txt") -> "MazeWorld":
+    def from_disk(cls, level_name: str | None = None) -> "MazeWorld":
         parser = json.loads((MAZE_DIR / "level_parsing.json").read_text(encoding="utf8"))
-        level_path = MAZE_DIR / "levels" / level_name
+        resolved_level_name = level_name or default_level_file_name()
+        level_path = MAZE_DIR / "levels" / resolved_level_name
         raw_level = level_path.read_text(encoding="utf8") if level_path.exists() else ""
         return cls(parser=parser, raw_level=raw_level)
 

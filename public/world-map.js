@@ -41,7 +41,8 @@
     message: worldMapData.message || "Select a tile, then click a world slot to move it.",
     messageTone: "warning",
     savedEntries: cloneEntries(worldMapData.entries || []),
-    selectedFileName: null
+    selectedFileName: null,
+    selectedPosition: null
   };
 
   function cloneEntries(entries) {
@@ -135,6 +136,15 @@
     return position[0] + "x" + position[1];
   }
 
+  function positionsMatch(left, right) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left[0] === right[0] &&
+      left[1] === right[1]
+    );
+  }
+
   function describeSelection(entry) {
     if (!entry) {
       return "No tile selected. Click a placed tile or an unplaced file to begin moving it.";
@@ -145,6 +155,10 @@
 
   function describeUnplaced(fileName) {
     return fileName + " is currently unplaced. Click a world slot to put it on the map.";
+  }
+
+  function describeEmptySlot(position) {
+    return "Empty slot " + formatPosition(position) + " selected. Press Author Slot to create or edit it.";
   }
 
   function markDirty(message) {
@@ -202,7 +216,10 @@
       const column = button.dataset.column;
       const row = button.dataset.row;
       const entry = getEntryAtPosition(column, row);
-      const isSelected = entry && entry.fileName === state.selectedFileName;
+      const position = [column, row];
+      const isSelected = entry
+        ? entry.fileName === state.selectedFileName
+        : positionsMatch(state.selectedPosition, position);
 
       button.className =
         "world-map-grid__cell" +
@@ -231,7 +248,10 @@
         );
         button.title = entry.fileName + " at " + formatPosition(entry.position);
       } else {
-        button.innerHTML = '<span class="world-map-grid__empty">.</span>';
+        button.innerHTML =
+          (isSelected
+            ? '<span class="world-map-grid__selection-frame" aria-hidden="true"></span>'
+            : "") + '<span class="world-map-grid__empty">.</span>';
         button.setAttribute("aria-label", "Empty slot " + formatPosition([column, row]));
         button.title = "Empty slot " + formatPosition([column, row]);
       }
@@ -241,12 +261,26 @@
   function renderSelection() {
     const selectedEntry = getEntryByFileName(state.selectedFileName);
     const selectedFile = worldMapData.files.find((file) => file.fileName === state.selectedFileName) || null;
+    const selectedPosition =
+      Array.isArray(state.selectedPosition) && state.selectedPosition.length >= 2
+        ? state.selectedPosition.slice(0, 2)
+        : null;
+    const selectedSlotIsEmpty =
+      selectedPosition && !getEntryAtPosition(selectedPosition[0], selectedPosition[1]);
     const hasMappedSelection = Boolean(selectedEntry);
+
+    function setLinkState(link, href, isEnabled) {
+      link.href = isEnabled ? href : "#";
+      link.classList.toggle("is-disabled", !isEnabled);
+      link.setAttribute("aria-disabled", isEnabled ? "false" : "true");
+    }
 
     if (selectedEntry) {
       elements.selection.textContent = describeSelection(selectedEntry);
     } else if (selectedFile) {
       elements.selection.textContent = describeUnplaced(selectedFile.fileName);
+    } else if (selectedSlotIsEmpty) {
+      elements.selection.textContent = describeEmptySlot(selectedPosition);
     } else {
       elements.selection.textContent = "No tile selected. Click a placed tile or an unplaced file to begin moving it.";
     }
@@ -255,19 +289,18 @@
     elements.unmap.setAttribute("aria-disabled", hasMappedSelection ? "false" : "true");
 
     if (selectedEntry) {
-      elements.playLink.href = selectedEntry.playUrl;
-      elements.authorLink.href = selectedEntry.authorUrl;
-      elements.playLink.classList.remove("is-disabled");
-      elements.authorLink.classList.remove("is-disabled");
-      elements.playLink.setAttribute("aria-disabled", "false");
-      elements.authorLink.setAttribute("aria-disabled", "false");
+      setLinkState(elements.playLink, selectedEntry.playUrl, true);
+      setLinkState(elements.authorLink, selectedEntry.authorUrl, true);
+    } else if (selectedSlotIsEmpty) {
+      setLinkState(elements.playLink, "#", false);
+      setLinkState(
+        elements.authorLink,
+        buildAuthorUrl(buildLevelId(selectedPosition)),
+        true
+      );
     } else {
-      elements.playLink.href = "#";
-      elements.authorLink.href = "#";
-      elements.playLink.classList.add("is-disabled");
-      elements.authorLink.classList.add("is-disabled");
-      elements.playLink.setAttribute("aria-disabled", "true");
-      elements.authorLink.setAttribute("aria-disabled", "true");
+      setLinkState(elements.playLink, "#", false);
+      setLinkState(elements.authorLink, "#", false);
     }
   }
 
@@ -346,12 +379,14 @@
   function selectFile(fileName, message) {
     if (!fileName) {
       state.selectedFileName = null;
+      state.selectedPosition = null;
       setStatus("Selection cleared.", "warning");
       renderAll();
       return;
     }
 
     state.selectedFileName = fileName;
+    state.selectedPosition = null;
     const selectedEntry = getEntryByFileName(fileName);
 
     if (selectedEntry) {
@@ -363,8 +398,16 @@
     renderAll();
   }
 
+  function selectEmptySlot(column, row, message) {
+    state.selectedFileName = null;
+    state.selectedPosition = [column, row];
+    setStatus(message || describeEmptySlot(state.selectedPosition), "warning");
+    renderAll();
+  }
+
   function clearSelection(message) {
     state.selectedFileName = null;
+    state.selectedPosition = null;
     setStatus(message || "Selection cleared.", "warning");
     renderAll();
   }
@@ -511,9 +554,20 @@
     const column = button.dataset.column;
     const row = button.dataset.row;
     const occupant = getEntryAtPosition(column, row);
+    const position = [column, row];
 
-    if (!state.selectedFileName && occupant) {
-      selectFile(occupant.fileName);
+    if (!state.selectedFileName) {
+      if (occupant) {
+        selectFile(occupant.fileName);
+        return;
+      }
+
+      if (positionsMatch(state.selectedPosition, position)) {
+        clearSelection("Deselected empty slot " + formatPosition(position) + ".");
+        return;
+      }
+
+      selectEmptySlot(column, row);
       return;
     }
 

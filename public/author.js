@@ -62,6 +62,7 @@
   const state = {
     cells: cloneCells(authorData.initialLevel.cells),
     exists: authorData.initialLevel.exists,
+    fileName: authorData.initialLevel.fileName,
     filePath: authorData.initialLevel.filePath,
     height: authorData.initialLevel.height,
     isDirty: false,
@@ -508,6 +509,7 @@
 
       state.cells = cloneCells(payload.cells);
       state.exists = payload.exists;
+      state.fileName = payload.fileName;
       state.filePath = payload.filePath;
       state.height = payload.height;
       state.isDirty = false;
@@ -536,6 +538,7 @@
         {
           body: JSON.stringify({
             cells: state.cells,
+            fileName: state.fileName,
             height: state.height,
             width: state.width
           }),
@@ -554,6 +557,7 @@
 
       state.cells = cloneCells(payload.cells);
       state.exists = true;
+      state.fileName = payload.fileName;
       state.filePath = payload.filePath;
       state.height = payload.height;
       state.isDirty = false;
