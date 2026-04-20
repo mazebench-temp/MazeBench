@@ -1,0 +1,14 @@
+{
+  "levels": {
+    "level_FxE.txt": ["F", "E"],
+    "level_GxE.txt": ["G", "E"],
+    "level_HxE.txt": ["H", "E"],
+    "level_FxF.txt": ["F", "F"],
+    "level_GxF.txt": ["G", "F"],
+    "level_HxF.txt": ["H", "F"],
+    "level_FxG.txt": ["F", "G"],
+    "level_GxG.txt": ["G", "G"],
+    "level_HxG.txt": ["H", "G"],
+    "level_GxH.txt": ["G", "H"]
+  }
+}

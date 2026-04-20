@@ -1,5 +1,6 @@
 (function () {
   const authorData = window.__AUTHOR_DATA__;
+  const levelPreviewRenderer = window.LevelPreviewRenderer;
 
   if (!authorData) {
     return;
@@ -557,9 +558,42 @@
       state.height = payload.height;
       state.isDirty = false;
       state.levelId = payload.levelId;
-      state.message = payload.message || "Saved.";
-      state.messageTone = "success";
       state.width = payload.width;
+      let previewMessage = payload.message || "Saved.";
+      let previewTone = "success";
+
+      if (levelPreviewRenderer && typeof levelPreviewRenderer.savePreview === "function") {
+        try {
+          const playResponse = await fetch(
+            "/api/play/" + encodeURIComponent(authorData.game.id) + "/" + encodeURIComponent(state.levelId),
+            { headers: { Accept: "application/json" } }
+          );
+          const playPayload = await playResponse.json();
+
+          if (!playResponse.ok) {
+            throw new Error(playPayload.error || "Could not load the saved level preview.");
+          }
+
+          const previewPayload = await levelPreviewRenderer.savePreview({
+            levelId: state.levelId,
+            playData: playPayload,
+            previewApiBaseUrl: authorData.previewApiBaseUrl || authorData.authorApiBaseUrl
+          });
+          previewMessage =
+            (payload.message || "Saved the level.") +
+            " " +
+            (previewPayload.message || "Refreshed its preview.");
+        } catch (previewError) {
+          previewMessage =
+            (payload.message || "Saved the level.") +
+            " Preview refresh failed: " +
+            (previewError instanceof Error ? previewError.message : "Unknown error.");
+          previewTone = "warning";
+        }
+      }
+
+      state.message = previewMessage;
+      state.messageTone = previewTone;
       syncLevelSelectors();
       renderAll();
     } catch (error) {
