@@ -943,7 +943,7 @@
       state.terrain[y][x] = buildFloorTerrainCell();
     }
 
-    function finishAnimation(moves) {
+    function applyMoveFinalState(moves) {
       moves.forEach(
         ({
           actor,
@@ -953,15 +953,15 @@
           skipHoleFall = false,
           toElevation = actor.elevation ?? 0
         }) => {
-        actor.renderX = toX;
-        actor.renderY = toY;
-        actor.elevation = toElevation;
-        actor.renderElevation = toElevation;
-        actor.renderScale = toRemoved ? 0 : 1;
-        actor.renderAlpha = toRemoved ? 0 : 1;
-        actor.renderSink = toRemoved && !skipHoleFall ? HOLE_SINK_DISTANCE : 0;
-        actor.renderInHole = false;
-        actor.removed = Boolean(toRemoved);
+          actor.renderX = toX;
+          actor.renderY = toY;
+          actor.elevation = toElevation;
+          actor.renderElevation = toElevation;
+          actor.renderScale = toRemoved ? 0 : 1;
+          actor.renderAlpha = toRemoved ? 0 : 1;
+          actor.renderSink = toRemoved && !skipHoleFall ? HOLE_SINK_DISTANCE : 0;
+          actor.renderInHole = false;
+          actor.removed = Boolean(toRemoved);
         }
       );
 
@@ -972,7 +972,10 @@
 
         fillHoleAt(fillHoleX, fillHoleY);
       });
+    }
 
+    function finishAnimation(moves) {
+      applyMoveFinalState(moves);
       app.gateRenderOverride = null;
       app.isAnimating = false;
       app.animationFrameId = null;
@@ -1326,19 +1329,9 @@
       return moves;
     }
 
-    function movePlayers(dx, dy) {
-      if (app.isAnimating || app.isTransitioningLevel) {
-        app.queuedAction = { type: "move", dx, dy };
-        return;
-      }
-
-      const edgeTransition = edgeTransitionForMove(dx, dy);
-
-      if (edgeTransition) {
-        void transitionToAdjacentLevel(edgeTransition);
-        return;
-      }
-
+    function performPlayerMove(dx, dy, options = {}) {
+      const animate = options.animate !== false;
+      const recordHistory = options.recordHistory !== false;
       const players = state.actors.filter((actor) => isPlayerActor(actor) && !actor.removed);
       let occupied = buildOccupiedSet();
       const raisedPlayerGates = computeRaisedPlayerGateSet();
@@ -1459,17 +1452,68 @@
 
       if (moves.length > 0) {
         applyHoleFalls(moves);
-        previousState.iceSlideMoves = iceSlideMoveMetadata(moves);
-        app.gateRenderOverride = raisedPlayerGates;
-        moveHistory.push(previousState);
-        animateMoves(moves, null, {
-          startLiftPhase: () => {
-            pendingLiftToggles.forEach(({ x, y, raised }) => {
-              setPlayerLiftRaised(x, y, raised);
-            });
-          }
-        });
+        if (recordHistory) {
+          previousState.iceSlideMoves = iceSlideMoveMetadata(moves);
+          moveHistory.push(previousState);
+        }
+
+        if (animate) {
+          app.gateRenderOverride = raisedPlayerGates;
+          animateMoves(moves, null, {
+            startLiftPhase: () => {
+              pendingLiftToggles.forEach(({ x, y, raised }) => {
+                setPlayerLiftRaised(x, y, raised);
+              });
+            }
+          });
+        } else {
+          pendingLiftToggles.forEach(({ x, y, raised }) => {
+            setPlayerLiftRaised(x, y, raised);
+          });
+          applyMoveFinalState(moves);
+          app.gateRenderOverride = null;
+        }
       }
+
+      return {
+        moved: moves.length > 0,
+        moves,
+        previousState
+      };
+    }
+
+    function tryMovePlayersInstant(dx, dy) {
+      if (app.isAnimating || app.isTransitioningLevel) {
+        return {
+          moved: false,
+          moves: [],
+          blocked: true
+        };
+      }
+
+      return performPlayerMove(dx, dy, {
+        animate: false,
+        recordHistory: false
+      });
+    }
+
+    function movePlayers(dx, dy) {
+      if (app.isAnimating || app.isTransitioningLevel) {
+        app.queuedAction = { type: "move", dx, dy };
+        return;
+      }
+
+      const edgeTransition = edgeTransitionForMove(dx, dy);
+
+      if (edgeTransition) {
+        void transitionToAdjacentLevel(edgeTransition);
+        return;
+      }
+
+      performPlayerMove(dx, dy, {
+        animate: true,
+        recordHistory: true
+      });
     }
 
     function undoMove() {
@@ -1615,11 +1659,14 @@
       applyHoleFalls,
       buildFloorTerrainCell,
       fillHoleAt,
+      applyMoveFinalState,
       finishAnimation,
       animateMoves,
       sortActorsForMove,
       adjacentWorldLevelId,
       buildMovesToPositions,
+      performPlayerMove,
+      tryMovePlayersInstant,
       movePlayers,
       undoMove,
       resetPositions,

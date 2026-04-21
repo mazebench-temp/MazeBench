@@ -184,6 +184,21 @@ function runAttemptFromActor(app, actor, dx, dy, ignoredActors) {
 }
 
 {
+  const landingGem = { type: "gem", x: 1, y: 0, removed: false };
+  const actors = [
+    { type: "player", x: 0, y: 0, elevation: 0, removed: false },
+    landingGem
+  ];
+  const app = createGameplayApp(actors);
+  const result = app.tryMovePlayersInstant(1, 0);
+
+  assert.equal(result.moved, true);
+  assert.equal(app.moveHistory.length, 0);
+  assert.deepEqual([actors[0].x, actors[0].y], [1, 0]);
+  assert.equal(landingGem.removed, true);
+}
+
+{
   const app = createGameplayApp(createUShapeActors());
   const player = app.state.actors[0];
   const { result, moves } = runAttempt(app, new Set([player]));

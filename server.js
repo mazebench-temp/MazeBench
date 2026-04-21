@@ -1439,6 +1439,7 @@ function renderAuthorPage(game, level) {
           <button id="resize-level" class="tool-button" type="button">Resize</button>
           <button id="clear-level" class="tool-button" type="button">Clear</button>
           <button id="frame-level" class="tool-button" type="button">Frame Walls</button>
+          <button id="solve-level" class="tool-button" type="button">Solver</button>
           <button id="save-level" class="tool-button tool-button--primary" type="button">Save</button>
         </div>
       </section>
@@ -1476,6 +1477,7 @@ function renderAuthorPage(game, level) {
       <script>window.__AUTHOR_DATA__ = ${serializeForScript(authorData)};</script>
       <script src="/play-core.js" defer></script>
       <script src="/play-render.js" defer></script>
+      <script src="/play-gameplay.js" defer></script>
       <script src="/level-preview.js" defer></script>
       <script src="/author.js" defer></script>
     </main>`

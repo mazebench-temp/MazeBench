@@ -277,6 +277,11 @@ pre {
   background: #7ee0a1;
 }
 
+.tool-button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
 .tool-button:active,
 .tool-button.is-active {
   transform: translate(2px, 2px);
@@ -419,6 +424,7 @@ pre {
 .author-status {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   min-height: 24px;
   margin: 0 0 22px;
   padding: 8px 12px;
@@ -427,6 +433,8 @@ pre {
   background: #8dc7ff;
   box-shadow: var(--shadow-xs) var(--shadow-xs) 0 #000000;
   font-weight: 800;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .author-status.is-success {

@@ -25,6 +25,7 @@
     resizeLevel: document.getElementById("resize-level"),
     saveLevel: document.getElementById("save-level"),
     selectedCellLabel: document.getElementById("selected-cell-label"),
+    solveLevel: document.getElementById("solve-level"),
     status: document.getElementById("author-status")
   };
 
@@ -49,6 +50,22 @@
   };
 
   const toolByToken = new Map(authorData.palette.map((tool) => [tool.token, tool]));
+  const toolByName = new Map(authorData.palette.map((tool) => [tool.name, tool]));
+  const solverActorNames = new Set([
+    "player",
+    "circle_player",
+    "box",
+    "gem",
+    "floating_floor",
+    "weightless_box"
+  ]);
+  const solverDirections = [
+    { label: "U", dx: 0, dy: -1 },
+    { label: "D", dx: 0, dy: 1 },
+    { label: "L", dx: -1, dy: 0 },
+    { label: "R", dx: 1, dy: 0 }
+  ];
+  const solverMaxExpandedStates = 150000;
   const worldColumns =
     Array.isArray(authorData.worldColumns) && authorData.worldColumns.length > 0
       ? authorData.worldColumns
@@ -148,15 +165,25 @@
     return tokens.join(authorData.blockAdder);
   }
 
+  function getCellTokens(value) {
+    return String(value || "")
+      .split(authorData.blockAdder)
+      .map((token) => token.trim())
+      .filter(Boolean);
+  }
+
+  function getCellTools(value) {
+    return getCellTokens(value)
+      .map((token) => toolByToken.get(token))
+      .filter(Boolean);
+  }
+
   function serializeCells() {
     return state.cells.map((row) => row.join(authorData.separator)).join("\n");
   }
 
   function getCellDescriptor(value) {
-    const tokens = String(value || "")
-      .split(authorData.blockAdder)
-      .map((token) => token.trim())
-      .filter(Boolean);
+    const tokens = getCellTokens(value);
     const topToken = tokens[tokens.length - 1] || authorData.defaultFloorToken;
     const tool = toolByToken.get(topToken) || toolByToken.get(tokens[0]) || null;
     const tone = toneByName[tool?.name] || { background: "#ffffff", color: "#111111" };
@@ -170,6 +197,400 @@
     };
   }
 
+  function titleCaseName(name) {
+    return String(name || "")
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  }
+
+  function isSolverActorTool(tool) {
+    return solverActorNames.has(tool?.name);
+  }
+
+  function levelHasGem() {
+    return state.cells.some((row) =>
+      row.some((cell) => getCellTools(cell).some((tool) => tool.name === "gem"))
+    );
+  }
+
+  function buildSolverTerrainCell(type, tool = null, options = {}) {
+    return {
+      type,
+      label: tool?.label || titleCaseName(type),
+      imageUrl: tool?.imageUrl || null,
+      underlay: options.underlay || null,
+      raised: options.raised === true
+    };
+  }
+
+  function buildSolverCellState(tools) {
+    const floorTool = toolByName.get("floor") || null;
+    const exitTool = toolByName.get("exit") || null;
+    const terrainTools = tools.filter((tool) => !isSolverActorTool(tool));
+    const wallTool = terrainTools.find((tool) => tool.name === "wall") || null;
+    const exitCellTool = terrainTools.find((tool) => tool.name === "exit") || null;
+    const terrainTool = wallTool || exitCellTool || terrainTools[0] || null;
+
+    if (wallTool) {
+      const underlayTool = terrainTools.find((tool) => tool.name !== "wall") || floorTool;
+
+      return buildSolverTerrainCell("wall", wallTool, {
+        underlay: buildSolverTerrainCell(underlayTool?.name || "floor", underlayTool)
+      });
+    }
+
+    if (terrainTool?.name === "exit") {
+      return buildSolverTerrainCell("exit", exitTool || terrainTool);
+    }
+
+    if (terrainTool) {
+      return buildSolverTerrainCell(terrainTool.name, terrainTool, {
+        raised: terrainTool.name === "player_lift" ? false : undefined
+      });
+    }
+
+    if (tools.some((tool) => isSolverActorTool(tool))) {
+      return buildSolverTerrainCell("floor", floorTool);
+    }
+
+    return buildSolverTerrainCell("empty");
+  }
+
+  function buildSolverPlayData() {
+    const terrain = [];
+    const actors = [];
+
+    for (let y = 0; y < state.height; y += 1) {
+      const terrainRow = [];
+
+      for (let x = 0; x < state.width; x += 1) {
+        const tools = getCellTools(state.cells[y][x]);
+
+        terrainRow.push(buildSolverCellState(tools));
+        tools.forEach((tool) => {
+          if (!isSolverActorTool(tool)) {
+            return;
+          }
+
+          actors.push({
+            type: tool.name,
+            groupId: tool.name === "weightless_box" ? tool.token : null,
+            label: tool.label,
+            imageUrl: tool.imageUrl || null,
+            x,
+            y
+          });
+        });
+      }
+
+      terrain.push(terrainRow);
+    }
+
+    return {
+      gameId: authorData.game.id,
+      levelId: "__editor_solver__",
+      levelLabel: state.levelId,
+      sourceFileName: state.fileName,
+      width: state.width,
+      height: state.height,
+      terrain,
+      actors,
+      cameraView: null,
+      worldColumns: null,
+      worldRows: null
+    };
+  }
+
+  function isSolverPlayerActor(actor) {
+    return actor?.type === "player" || actor?.type === "circle_player";
+  }
+
+  function isSolvedSolverSnapshot(snapshot) {
+    if (snapshot.actors.some((actor) => actor.type === "gem" && actor.removed)) {
+      return true;
+    }
+
+    const players = snapshot.actors.filter(
+      (actor) => isSolverPlayerActor(actor) && !actor.removed && (actor.elevation ?? 0) === 0
+    );
+    const gems = snapshot.actors.filter((actor) => actor.type === "gem" && !actor.removed);
+
+    return gems.some((gem) => players.some((player) => player.x === gem.x && player.y === gem.y));
+  }
+
+  function solverHeuristic(snapshot) {
+    const players = snapshot.actors.filter((actor) => isSolverPlayerActor(actor) && !actor.removed);
+    const gems = snapshot.actors.filter((actor) => actor.type === "gem" && !actor.removed);
+
+    if (players.length === 0 || gems.length === 0) {
+      return 0;
+    }
+
+    let best = 2;
+
+    players.forEach((player) => {
+      gems.forEach((gem) => {
+        if (player.x === gem.x && player.y === gem.y && (player.elevation ?? 0) === 0) {
+          best = 0;
+        } else if (player.x === gem.x || player.y === gem.y) {
+          best = Math.min(best, 1);
+        }
+      });
+    });
+
+    return best;
+  }
+
+  function solverTerrainKey(terrain) {
+    return terrain
+      .map((row) => row.map((cell) => cell.type + (cell.raised ? "^" : "")).join(","))
+      .join("/");
+  }
+
+  function solverStateKey(snapshot) {
+    const actorKey = snapshot.actors
+      .map((actor) =>
+        [
+          actor.type,
+          actor.groupId || "",
+          actor.x,
+          actor.y,
+          actor.elevation ?? 0,
+          actor.removed ? 1 : 0
+        ].join(":")
+      )
+      .join("|");
+
+    return solverTerrainKey(snapshot.terrain) + "::" + actorKey;
+  }
+
+  function captureSolverSnapshot(app) {
+    return {
+      width: app.state.width,
+      height: app.state.height,
+      terrain: app.cloneTerrainState(app.state.terrain),
+      actors: app.cloneActorStateList()
+    };
+  }
+
+  function restoreSolverSnapshot(app, snapshot) {
+    app.state.width = snapshot.width;
+    app.state.height = snapshot.height;
+    app.state.terrain = app.cloneTerrainState(snapshot.terrain);
+    app.state.actors = snapshot.actors.map((actor) => app.createRuntimeActor(actor));
+    app.moveHistory.length = 0;
+    app.isAnimating = false;
+    app.isTransitioningLevel = false;
+    app.queuedAction = null;
+    app.gateRenderOverride = null;
+    app.liveRaisedPlayerGates.clear();
+  }
+
+  function createSolverApp(playData) {
+    const modules = window.PlayModules || {};
+
+    if (
+      typeof modules.createPlayCore !== "function" ||
+      typeof modules.registerGameplayFunctions !== "function"
+    ) {
+      throw new Error("Solver modules are not available.");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, playData.width * 64);
+    canvas.height = Math.max(1, playData.height * 64);
+
+    const app = modules.createPlayCore({
+      playData,
+      canvas,
+      playShell: null,
+      playHeader: null,
+      playStage: null,
+      mazeFrame: null,
+      fuzzyToggle: null
+    });
+
+    if (!app) {
+      throw new Error("Could not initialize the solver.");
+    }
+
+    app.render = function () {};
+    modules.registerGameplayFunctions(app);
+
+    if (typeof app.tryMovePlayersInstant !== "function") {
+      throw new Error("Instant movement is not available to the solver.");
+    }
+
+    return app;
+  }
+
+  function compareSolverNodes(left, right) {
+    return left.priority - right.priority || left.cost - right.cost || left.order - right.order;
+  }
+
+  class SolverHeap {
+    constructor() {
+      this.items = [];
+    }
+
+    get size() {
+      return this.items.length;
+    }
+
+    push(item) {
+      this.items.push(item);
+      this.bubbleUp(this.items.length - 1);
+    }
+
+    pop() {
+      if (this.items.length === 0) {
+        return null;
+      }
+
+      const first = this.items[0];
+      const last = this.items.pop();
+
+      if (this.items.length > 0) {
+        this.items[0] = last;
+        this.bubbleDown(0);
+      }
+
+      return first;
+    }
+
+    bubbleUp(index) {
+      let currentIndex = index;
+
+      while (currentIndex > 0) {
+        const parentIndex = Math.floor((currentIndex - 1) / 2);
+
+        if (compareSolverNodes(this.items[parentIndex], this.items[currentIndex]) <= 0) {
+          return;
+        }
+
+        [this.items[parentIndex], this.items[currentIndex]] = [
+          this.items[currentIndex],
+          this.items[parentIndex]
+        ];
+        currentIndex = parentIndex;
+      }
+    }
+
+    bubbleDown(index) {
+      let currentIndex = index;
+
+      while (true) {
+        const leftIndex = currentIndex * 2 + 1;
+        const rightIndex = currentIndex * 2 + 2;
+        let smallestIndex = currentIndex;
+
+        if (
+          leftIndex < this.items.length &&
+          compareSolverNodes(this.items[leftIndex], this.items[smallestIndex]) < 0
+        ) {
+          smallestIndex = leftIndex;
+        }
+
+        if (
+          rightIndex < this.items.length &&
+          compareSolverNodes(this.items[rightIndex], this.items[smallestIndex]) < 0
+        ) {
+          smallestIndex = rightIndex;
+        }
+
+        if (smallestIndex === currentIndex) {
+          return;
+        }
+
+        [this.items[currentIndex], this.items[smallestIndex]] = [
+          this.items[smallestIndex],
+          this.items[currentIndex]
+        ];
+        currentIndex = smallestIndex;
+      }
+    }
+  }
+
+  function solveWithAStar(app, initialSnapshot) {
+    const open = new SolverHeap();
+    const bestCostByKey = new Map();
+    let order = 0;
+    let expanded = 0;
+    const initialKey = solverStateKey(initialSnapshot);
+
+    bestCostByKey.set(initialKey, 0);
+    open.push({
+      snapshot: initialSnapshot,
+      cost: 0,
+      path: "",
+      priority: solverHeuristic(initialSnapshot),
+      order: order
+    });
+    order += 1;
+
+    while (open.size > 0) {
+      const current = open.pop();
+      const currentKey = solverStateKey(current.snapshot);
+
+      if (current.cost !== bestCostByKey.get(currentKey)) {
+        continue;
+      }
+
+      if (isSolvedSolverSnapshot(current.snapshot)) {
+        return {
+          status: "solved",
+          moves: current.cost,
+          path: current.path,
+          expanded
+        };
+      }
+
+      expanded += 1;
+
+      if (expanded > solverMaxExpandedStates) {
+        return {
+          status: "capped",
+          expanded,
+          maxExpanded: solverMaxExpandedStates
+        };
+      }
+
+      solverDirections.forEach((direction) => {
+        restoreSolverSnapshot(app, current.snapshot);
+        const moveResult = app.tryMovePlayersInstant(direction.dx, direction.dy);
+
+        if (!moveResult?.moved) {
+          return;
+        }
+
+        const nextSnapshot = captureSolverSnapshot(app);
+        const nextCost = current.cost + 1;
+        const nextKey = solverStateKey(nextSnapshot);
+        const bestKnownCost = bestCostByKey.get(nextKey);
+
+        if (typeof bestKnownCost === "number" && bestKnownCost <= nextCost) {
+          return;
+        }
+
+        bestCostByKey.set(nextKey, nextCost);
+        open.push({
+          snapshot: nextSnapshot,
+          cost: nextCost,
+          path: current.path + direction.label,
+          priority: nextCost + solverHeuristic(nextSnapshot),
+          order
+        });
+        order += 1;
+      });
+    }
+
+    return {
+      status: "unsolved",
+      expanded
+    };
+  }
+
   function setStatus(message, tone) {
     state.message = message;
     state.messageTone = tone || "warning";
@@ -180,6 +601,15 @@
     const dirtySuffix = state.isDirty ? " Unsaved changes." : "";
     elements.status.textContent = state.message + dirtySuffix;
     elements.status.className = "author-status is-" + state.messageTone;
+  }
+
+  function syncSolverButtonState() {
+    const hasGem = levelHasGem();
+
+    elements.solveLevel.disabled = !hasGem;
+    elements.solveLevel.title = hasGem
+      ? "Run A* from the current editor grid."
+      : "Add a gem before running the solver.";
   }
 
   function syncLevelSelectors() {
@@ -317,6 +747,7 @@
     elements.currentFileName.textContent = state.filePath;
     elements.playLink.href = "/play/" + encodeURIComponent(authorData.game.id) + "/" + encodeURIComponent(state.levelId);
     elements.playLink.setAttribute("aria-label", "Play " + state.levelId);
+    syncSolverButtonState();
   }
 
   function renderExistingLevels() {
@@ -381,6 +812,7 @@
     state.isDirty = true;
     renderStatus();
     renderRawOutput();
+    syncSolverButtonState();
   }
 
   function paintCell(x, y, value) {
@@ -605,6 +1037,71 @@
     }
   }
 
+  function formatSolverPath(path) {
+    return path.length > 0 ? path : "(empty)";
+  }
+
+  async function solveLevel() {
+    if (!levelHasGem()) {
+      setStatus("Solver needs a gem first.", "error");
+      syncSolverButtonState();
+      return;
+    }
+
+    const playData = buildSolverPlayData();
+
+    if (!playData.actors.some((actor) => isSolverPlayerActor(actor))) {
+      setStatus("Solver needs a player first.", "error");
+      syncSolverButtonState();
+      return;
+    }
+
+    setStatus("Solver running A*...", "warning");
+    elements.solveLevel.disabled = true;
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    try {
+      const app = createSolverApp(playData);
+      const result = solveWithAStar(app, captureSolverSnapshot(app));
+
+      if (result.status === "solved") {
+        setStatus(
+          "Solver: possible in " +
+            result.moves +
+            " move" +
+            (result.moves === 1 ? "" : "s") +
+            ". UDLR: " +
+            formatSolverPath(result.path) +
+            ".",
+          "success"
+        );
+      } else if (result.status === "unsolved") {
+        setStatus(
+          "Solver: not possible. Explored " +
+            result.expanded +
+            " state" +
+            (result.expanded === 1 ? "" : "s") +
+            ".",
+          "warning"
+        );
+      } else {
+        setStatus(
+          "Solver: no answer within " +
+            result.maxExpanded +
+            " states. Search stopped after " +
+            result.expanded +
+            ".",
+          "warning"
+        );
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Solver failed.", "error");
+    } finally {
+      syncSolverButtonState();
+    }
+  }
+
   function handleGridPointerDown(event) {
     const button = event.target.closest(".author-grid__cell");
 
@@ -697,6 +1194,7 @@
       applySelectedCellValue();
     }
   });
+  elements.solveLevel.addEventListener("click", solveLevel);
   elements.saveLevel.addEventListener("click", saveLevel);
 
   elements.levelNeighbors.addEventListener("click", function (event) {
