@@ -20,6 +20,7 @@
     levelColumn: document.getElementById("level-column"),
     levelRow: document.getElementById("level-row"),
     palette: document.getElementById("palette"),
+    placeGem: document.getElementById("place-gem"),
     playLink: document.getElementById("author-play-link"),
     rawOutput: document.getElementById("raw-output"),
     resizeLevel: document.getElementById("resize-level"),
@@ -214,6 +215,42 @@
     );
   }
 
+  function levelHasPlayer() {
+    return state.cells.some((row) =>
+      row.some((cell) =>
+        getCellTools(cell).some((tool) => tool.name === "player" || tool.name === "circle_player")
+      )
+    );
+  }
+
+  function isTerrainOnlyGemPlacementCell(x, y) {
+    const tools = getCellTools(state.cells[y]?.[x]);
+
+    if (tools.some((tool) => tool.name === "gem")) {
+      return false;
+    }
+
+    return !tools.some((tool) => isSolverActorTool(tool));
+  }
+
+  function gemPlacementValueForCell(x, y) {
+    const gemToken = toolByName.get("gem")?.token || "G";
+    const tokens = getCellTokens(state.cells[y]?.[x]);
+
+    if (tokens.includes(gemToken)) {
+      return tokens.join(authorData.blockAdder);
+    }
+
+    return tokens.concat(gemToken).join(authorData.blockAdder);
+  }
+
+  function stripGemFromCellValue(value) {
+    const gemToken = toolByName.get("gem")?.token || "G";
+    const tokens = getCellTokens(value).filter((token) => token !== gemToken);
+
+    return tokens.length > 0 ? tokens.join(authorData.blockAdder) : authorData.defaultFloorToken;
+  }
+
   function buildSolverTerrainCell(type, tool = null, options = {}) {
     return {
       type,
@@ -257,7 +294,8 @@
     return buildSolverTerrainCell("empty");
   }
 
-  function buildSolverPlayData() {
+  function buildSolverPlayData(options = {}) {
+    const includeGems = options.includeGems !== false;
     const terrain = [];
     const actors = [];
 
@@ -270,6 +308,10 @@
         terrainRow.push(buildSolverCellState(tools));
         tools.forEach((tool) => {
           if (!isSolverActorTool(tool)) {
+            return;
+          }
+
+          if (!includeGems && tool.name === "gem") {
             return;
           }
 
@@ -591,6 +633,133 @@
     };
   }
 
+  function canCollectGemAtMoveEndpoint(app, move) {
+    if (!isSolverPlayerActor(move.actor) || move.toRemoved) {
+      return false;
+    }
+
+    const toElevation = move.toElevation ?? move.actor.elevation ?? 0;
+    const fromElevation = move.fromElevation ?? 0;
+
+    return toElevation === 0 || (fromElevation === 0 && app.isPlayerLift(move.toX, move.toY));
+  }
+
+  function recordGemPlacementCandidates(app, moveResult, cost, path, bestCandidateByCell) {
+    moveResult.moves.forEach((move) => {
+      if (!canCollectGemAtMoveEndpoint(app, move)) {
+        return;
+      }
+
+      if (!isTerrainOnlyGemPlacementCell(move.toX, move.toY)) {
+        return;
+      }
+
+      const key = move.toX + "," + move.toY;
+      const previousCandidate = bestCandidateByCell.get(key);
+
+      if (previousCandidate && previousCandidate.moves <= cost) {
+        return;
+      }
+
+      bestCandidateByCell.set(key, {
+        x: move.toX,
+        y: move.toY,
+        moves: cost,
+        path
+      });
+    });
+  }
+
+  function hardestGemPlacementCandidate(bestCandidateByCell) {
+    let hardest = null;
+
+    bestCandidateByCell.forEach((candidate) => {
+      if (!hardest || candidate.moves > hardest.moves) {
+        hardest = candidate;
+      }
+    });
+
+    return hardest;
+  }
+
+  function findHardestGemPlacement(app, initialSnapshot) {
+    const open = new SolverHeap();
+    const bestCostByKey = new Map();
+    const bestCandidateByCell = new Map();
+    let order = 0;
+    let expanded = 0;
+    const initialKey = solverStateKey(initialSnapshot);
+
+    bestCostByKey.set(initialKey, 0);
+    open.push({
+      snapshot: initialSnapshot,
+      cost: 0,
+      path: "",
+      priority: 0,
+      order
+    });
+    order += 1;
+
+    while (open.size > 0) {
+      const current = open.pop();
+      const currentKey = solverStateKey(current.snapshot);
+
+      if (current.cost !== bestCostByKey.get(currentKey)) {
+        continue;
+      }
+
+      expanded += 1;
+
+      if (expanded > solverMaxExpandedStates) {
+        return {
+          status: "capped",
+          candidate: hardestGemPlacementCandidate(bestCandidateByCell),
+          expanded,
+          maxExpanded: solverMaxExpandedStates
+        };
+      }
+
+      solverDirections.forEach((direction) => {
+        restoreSolverSnapshot(app, current.snapshot);
+        const moveResult = app.tryMovePlayersInstant(direction.dx, direction.dy);
+
+        if (!moveResult?.moved) {
+          return;
+        }
+
+        const nextCost = current.cost + 1;
+        const nextPath = current.path + direction.label;
+        const nextSnapshot = captureSolverSnapshot(app);
+        const nextKey = solverStateKey(nextSnapshot);
+        const bestKnownCost = bestCostByKey.get(nextKey);
+
+        recordGemPlacementCandidates(app, moveResult, nextCost, nextPath, bestCandidateByCell);
+
+        if (typeof bestKnownCost === "number" && bestKnownCost <= nextCost) {
+          return;
+        }
+
+        bestCostByKey.set(nextKey, nextCost);
+        open.push({
+          snapshot: nextSnapshot,
+          cost: nextCost,
+          path: nextPath,
+          priority: nextCost,
+          order
+        });
+        order += 1;
+      });
+    }
+
+    const candidate = hardestGemPlacementCandidate(bestCandidateByCell);
+
+    return {
+      status: candidate ? "found" : "none",
+      candidate,
+      expanded
+    };
+  }
+
   function setStatus(message, tone) {
     state.message = message;
     state.messageTone = tone || "warning";
@@ -605,11 +774,16 @@
 
   function syncSolverButtonState() {
     const hasGem = levelHasGem();
+    const hasPlayer = levelHasPlayer();
 
     elements.solveLevel.disabled = !hasGem;
     elements.solveLevel.title = hasGem
       ? "Run A* from the current editor grid."
       : "Add a gem before running the solver.";
+    elements.placeGem.disabled = !hasPlayer;
+    elements.placeGem.title = hasPlayer
+      ? "Find the hardest empty terrain cell the player can reach."
+      : "Add a player before finding a gem placement.";
   }
 
   function syncLevelSelectors() {
@@ -1041,6 +1215,88 @@
     return path.length > 0 ? path : "(empty)";
   }
 
+  function applyGemPlacement(candidate) {
+    for (let y = 0; y < state.height; y += 1) {
+      for (let x = 0; x < state.width; x += 1) {
+        state.cells[y][x] = stripGemFromCellValue(state.cells[y][x]);
+      }
+    }
+
+    const placedValue = gemPlacementValueForCell(candidate.x, candidate.y);
+    state.cells[candidate.y][candidate.x] = placedValue;
+    state.selectedCell = { x: candidate.x, y: candidate.y };
+    state.isDirty = true;
+    renderGrid();
+    renderSelectedCell();
+    renderRawOutput();
+    syncSolverButtonState();
+
+    return placedValue;
+  }
+
+  async function placeGem() {
+    if (!levelHasPlayer()) {
+      setStatus("Place Gem needs a player first.", "error");
+      syncSolverButtonState();
+      return;
+    }
+
+    setStatus("Place Gem running reachability search...", "warning");
+    elements.placeGem.disabled = true;
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    try {
+      const app = createSolverApp(buildSolverPlayData({ includeGems: false }));
+      const result = findHardestGemPlacement(app, captureSolverSnapshot(app));
+
+      if (result.candidate) {
+        const placedValue = applyGemPlacement(result.candidate);
+        const prefix =
+          result.status === "capped"
+            ? "Place Gem: placed best spot before cap at "
+            : "Place Gem: placed hardest spot at ";
+        const suffix =
+          result.status === "capped"
+            ? " Search stopped after " + result.expanded + " states."
+            : "";
+
+        setStatus(
+          prefix +
+            "cell " +
+            (result.candidate.x + 1) +
+            ", " +
+            (result.candidate.y + 1) +
+            " as " +
+            placedValue +
+            " in " +
+            result.candidate.moves +
+            " move" +
+            (result.candidate.moves === 1 ? "" : "s") +
+            ". UDLR: " +
+            formatSolverPath(result.candidate.path) +
+            "." +
+            suffix,
+          "success"
+        );
+        return;
+      }
+
+      setStatus(
+        "Place Gem: no reachable empty terrain cell found. Explored " +
+          result.expanded +
+          " state" +
+          (result.expanded === 1 ? "" : "s") +
+          ".",
+        "warning"
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Place Gem failed.", "error");
+    } finally {
+      syncSolverButtonState();
+    }
+  }
+
   async function solveLevel() {
     if (!levelHasGem()) {
       setStatus("Solver needs a gem first.", "error");
@@ -1187,6 +1443,7 @@
   elements.resizeLevel.addEventListener("click", resizeLevel);
   elements.clearLevel.addEventListener("click", clearLevel);
   elements.frameLevel.addEventListener("click", frameLevel);
+  elements.placeGem.addEventListener("click", placeGem);
   elements.applyCellValue.addEventListener("click", applySelectedCellValue);
   elements.cellValue.addEventListener("keydown", function (event) {
     if (event.key === "Enter") {
