@@ -1291,14 +1291,14 @@
       return families;
     }
 
-    function sharedElevatedBlockFamily(positions, gateState = app.liveRaisedPlayerGates) {
+    function sharedElevatedBlockFamilies(positions, gateState = app.liveRaisedPlayerGates) {
       let sharedFamilies = null;
 
       for (const position of positions) {
         const families = elevatedBlockFamiliesAt(position.x, position.y, gateState);
 
         if (families.size === 0) {
-          return false;
+          return new Set();
         }
 
         if (sharedFamilies === null) {
@@ -1311,23 +1311,27 @@
         );
 
         if (sharedFamilies.size === 0) {
-          return false;
+          return new Set();
         }
       }
 
-      return sharedFamilies.size > 0;
+      return sharedFamilies || new Set();
     }
 
-    function shouldHideElevatedSideStroke(x, y, dx, gateState = app.liveRaisedPlayerGates) {
+    function sharedElevatedBlockFamily(positions, gateState = app.liveRaisedPlayerGates) {
+      return sharedElevatedBlockFamilies(positions, gateState).size > 0;
+    }
+
+    function elevatedSideBleedCoverFamily(x, y, dx, gateState = app.liveRaisedPlayerGates) {
       if (dx !== -1 && dx !== 1) {
-        return false;
+        return null;
       }
 
       if (y >= app.state.height - 1) {
-        return false;
+        return null;
       }
 
-      return sharedElevatedBlockFamily(
+      const families = sharedElevatedBlockFamilies(
         [
           { x: x + dx, y },
           { x, y: y + 1 },
@@ -1335,6 +1339,8 @@
         ],
         gateState
       );
+
+      return families.values().next().value || null;
     }
 
     function isIce(x, y) {
@@ -1815,8 +1821,9 @@
       isTerrainWallAcrossHorizontalWorldEdge,
       isWall,
       elevatedBlockFamiliesAt,
+      sharedElevatedBlockFamilies,
       sharedElevatedBlockFamily,
-      shouldHideElevatedSideStroke,
+      elevatedSideBleedCoverFamily,
       isIce,
       isHole,
       isIceOrHole,

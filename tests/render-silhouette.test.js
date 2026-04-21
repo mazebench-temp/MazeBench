@@ -3,9 +3,13 @@ const fs = require("node:fs");
 
 function createStubContext() {
   const noop = () => {};
-  return {
+  const operations = [];
+  const context = {
+    __operations: operations,
     clearRect: noop,
-    fillRect: noop,
+    fillRect(...args) {
+      operations.push({ type: "fillRect", fillStyle: context.fillStyle, args });
+    },
     strokeRect: noop,
     beginPath: noop,
     moveTo: noop,
@@ -30,6 +34,7 @@ function createStubContext() {
     strokeStyle: "",
     fillStyle: ""
   };
+  return context;
 }
 
 function buildTerrain(width, height, wallPositions = []) {
@@ -140,7 +145,28 @@ function createRenderApp({ terrain, actors, playData = {} }) {
     actors: []
   });
 
-  assert.equal(app.sideSilhouetteEndY(1, 0, 1, 100, 74), 74);
+  assert.equal(app.elevatedSideBleedCoverFamily(1, 0, 1), "terrain:wall");
+  assert.equal(app.elevatedBleedCoverColor(app.elevatedSideBleedCoverFamily(1, 0, 1)), "#23262c");
+
+  app.paintElevatedSideBleedCover(app.sceneCtx, 1, 0, 1, 64, 74, 100);
+  assert.deepEqual(app.sceneCtx.__operations.at(-1), {
+    type: "fillRect",
+    fillStyle: "#23262c",
+    args: [61.5, 77, 5, 28]
+  });
+
+  app.sceneCtx.__operations.length = 0;
+  app.paintDepthSortedScene(0);
+  assert.ok(
+    app.sceneCtx.__operations.some(
+      (operation) =>
+        operation.fillStyle === "#23262c" &&
+        operation.args[0] === 125.5 &&
+        operation.args[1] === 50 &&
+        operation.args[2] === 5 &&
+        operation.args[3] === 19
+    )
+  );
 }
 
 {
@@ -153,8 +179,8 @@ function createRenderApp({ terrain, actors, playData = {} }) {
     ]
   });
 
-  assert.equal(app.sideSilhouetteEndY(1, 0, 1, 100, 74), 74);
-  assert.equal(app.sideSilhouetteEndY(1, 0, -1, 100, 74), 100);
+  assert.equal(app.elevatedSideBleedCoverFamily(1, 0, 1), "actor:floating_floor");
+  assert.equal(app.elevatedSideBleedCoverFamily(1, 0, -1), null);
 }
 
 {
@@ -167,7 +193,40 @@ function createRenderApp({ terrain, actors, playData = {} }) {
     ]
   });
 
-  assert.equal(app.sideSilhouetteEndY(1, 0, 1, 100, 74), 74);
+  assert.equal(app.elevatedSideBleedCoverFamily(1, 0, 1), "actor:weightless_box:M0");
+
+  app.state.actors.forEach((actor) => {
+    actor.renderX = actor.x - 0.5;
+    actor.renderY = actor.y + 0.25;
+  });
+  app.sceneCtx.__operations.length = 0;
+  app.paintDepthSortedScene(0);
+  assert.ok(
+    app.sceneCtx.__operations.some(
+      (operation) =>
+        operation.fillStyle === "#315991" &&
+        operation.args[0] === 93.5 &&
+        operation.args[1] === 66 &&
+        operation.args[2] === 5 &&
+        operation.args[3] === 19
+    )
+  );
+
+  app.state.actors.forEach((actor) => {
+    actor.renderScale = 0.5;
+    actor.renderSink = 8;
+  });
+  app.sceneCtx.__operations.length = 0;
+  app.paintDepthSortedScene(0);
+  assert.equal(
+    app.sceneCtx.__operations.some(
+      (operation) =>
+        operation.fillStyle === "#315991" &&
+        operation.args[2] === 5 &&
+        operation.args[3] === 19
+    ),
+    false
+  );
 }
 
 {
@@ -180,7 +239,7 @@ function createRenderApp({ terrain, actors, playData = {} }) {
     ]
   });
 
-  assert.equal(app.sideSilhouetteEndY(1, 0, 1, 100, 74), 100);
+  assert.equal(app.elevatedSideBleedCoverFamily(1, 0, 1), null);
 }
 
 {
@@ -216,7 +275,7 @@ function createRenderApp({ terrain, actors, playData = {} }) {
   });
 
   assert.equal(app.isTerrainWallAcrossHorizontalWorldEdge(4, 0), false);
-  assert.equal(app.shouldHideElevatedSideStroke(3, 0, 1), false);
+  assert.equal(app.elevatedSideBleedCoverFamily(3, 0, 1), null);
 
   app.rememberHorizontalNeighborLevelState({
     levelId: "level_BxA",
@@ -230,7 +289,7 @@ function createRenderApp({ terrain, actors, playData = {} }) {
   });
 
   assert.equal(app.isTerrainWallAcrossHorizontalWorldEdge(4, 0), true);
-  assert.equal(app.shouldHideElevatedSideStroke(3, 0, 1), true);
+  assert.equal(app.elevatedSideBleedCoverFamily(3, 0, 1), "terrain:wall");
 }
 
 console.log("render silhouette regression tests passed");

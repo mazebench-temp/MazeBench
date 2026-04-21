@@ -36,7 +36,7 @@
       playerLiftAt,
       isTerrainWall,
       isTerrainWallAcrossHorizontalWorldEdge,
-      shouldHideElevatedSideStroke,
+      elevatedSideBleedCoverFamily,
       isWeightlessBoxAt,
       weightlessGroupRenderState,
       weightlessGroupMembers,
@@ -95,15 +95,271 @@
       context.restore();
     }
 
-    function sideSilhouetteEndY(
+    function elevatedBleedCoverColor(family) {
+      if (family === "terrain:wall") {
+        return "#23262c";
+      }
+
+      if (family === "terrain:player_gate") {
+        return "#c75652";
+      }
+
+      if (family === "terrain:player_lift") {
+        return "#8a63d2";
+      }
+
+      if (family === "actor:player") {
+        return "#4d8b52";
+      }
+
+      if (family === "actor:floating_floor") {
+        return "#d6bd94";
+      }
+
+      if (family?.startsWith("actor:weightless_box:")) {
+        return "#315991";
+      }
+
+      return null;
+    }
+
+    function paintElevatedSideBleedCover(
+      context,
       x,
       y,
       dx,
-      visibleEndY,
-      trimmedEndY,
-      gateState = app.liveRaisedPlayerGates
+      sideX,
+      coverStartY,
+      coverEndY,
+      gateState = app.liveRaisedPlayerGates,
+      transform = null
     ) {
-      return shouldHideElevatedSideStroke(x, y, dx, gateState) ? trimmedEndY : visibleEndY;
+      const family = elevatedSideBleedCoverFamily(x, y, dx, gateState);
+      const coverColor = elevatedBleedCoverColor(family);
+
+      if (!coverColor || coverEndY <= coverStartY) {
+        return;
+      }
+
+      const coverWidth = 5;
+      const coverPaddingY = 1;
+      const coverOffsetY = 4;
+      let rectLeft = sideX - coverWidth / 2;
+      let rectTop = coverStartY - coverPaddingY + coverOffsetY;
+      let rectWidth = coverWidth;
+      let rectHeight = coverEndY - coverStartY + coverPaddingY * 2;
+
+      if (transform) {
+        const scale = transform.scale ?? 1;
+
+        if (scale < 0.999) {
+          return;
+        }
+
+        rectLeft = transform.centerX + (rectLeft - transform.centerX) * scale;
+        rectTop = transform.centerY + (transform.sink ?? 0) + (rectTop - transform.centerY) * scale;
+      }
+
+      context.save();
+      context.fillStyle = coverColor;
+      context.fillRect(rectLeft, rectTop, rectWidth, rectHeight);
+      context.restore();
+    }
+
+    function elevatedBleedCoverTieBreaker(family) {
+      if (family === "actor:player") {
+        return 2.5;
+      }
+
+      if (family === "actor:floating_floor" || family?.startsWith("actor:weightless_box:")) {
+        return 1.5;
+      }
+
+      return 0.5;
+    }
+
+    function elevatedBleedCoverHeight(family, x, y, now, faceHeight) {
+      const lowerY = y + 1;
+
+      if (family === "terrain:player_gate") {
+        return faceHeight * gateLiftAt(x, lowerY, now);
+      }
+
+      if (family === "terrain:player_lift") {
+        return faceHeight * playerLiftAt(x, lowerY, now);
+      }
+
+      if (family === "actor:floating_floor") {
+        const lowerFloor = state.actors.find(
+          (actor) => !actor.removed && actor.type === "floating_floor" && actor.x === x && actor.y === lowerY
+        );
+
+        return lowerFloor ? Math.max(0, floatingFloorHoverOffset(lowerFloor, now)) : 0;
+      }
+
+      return faceHeight;
+    }
+
+    function actorMatchesElevatedBleedCoverFamily(actor, family) {
+      if (!actor || actor.removed) {
+        return false;
+      }
+
+      if (family === "actor:player") {
+        return actor.type === "player";
+      }
+
+      if (family === "actor:floating_floor") {
+        return actor.type === "floating_floor";
+      }
+
+      if (family?.startsWith("actor:weightless_box:")) {
+        const groupId = family.slice("actor:weightless_box:".length);
+        return actor.type === "weightless_box" && (actor.groupId ?? "__ungrouped__") === groupId;
+      }
+
+      return false;
+    }
+
+    function actorAtElevatedBleedCoverPosition(family, position) {
+      return state.actors.find(
+        (candidate) =>
+          candidate.x === position.x &&
+          candidate.y === position.y &&
+          actorMatchesElevatedBleedCoverFamily(candidate, family)
+      );
+    }
+
+    function elevatedBleedCoverActorPlacement(family, x, y, positions) {
+      if (!family?.startsWith("actor:")) {
+        return {
+          offset: { x: 0, y: 0 },
+          depthOffset: 0,
+          transform: null
+        };
+      }
+
+      if (family.startsWith("actor:weightless_box:")) {
+        const groupId = family.slice("actor:weightless_box:".length);
+        const groupState = weightlessGroupRenderState(groupId);
+
+        return {
+          offset: { x: groupState.offsetX, y: groupState.offsetY },
+          depthOffset: (groupState.offsetY + groupState.sink) / TILE_SIZE,
+          transform: {
+            centerX: groupState.centerX,
+            centerY: groupState.centerY,
+            scale: groupState.scale,
+            sink: groupState.sink
+          }
+        };
+      }
+
+      let offsetX = 0;
+      let offsetY = 0;
+      let count = 0;
+
+      positions.forEach((position) => {
+        const actor = actorAtElevatedBleedCoverPosition(family, position);
+
+        if (!actor) {
+          return;
+        }
+
+        offsetX += ((actor.renderX ?? actor.x) - actor.x) * TILE_SIZE;
+        offsetY += ((actor.renderY ?? actor.y) - actor.y) * TILE_SIZE;
+        count += 1;
+      });
+
+      if (count === 0) {
+        return {
+          offset: { x: 0, y: 0 },
+          depthOffset: 0,
+          transform: null
+        };
+      }
+
+      const lowerActor =
+        actorAtElevatedBleedCoverPosition(family, { x, y: y + 1 }) ||
+        actorAtElevatedBleedCoverPosition(family, positions[0]);
+      const offset = {
+        x: offsetX / count,
+        y: offsetY / count
+      };
+
+      if (!lowerActor) {
+        return {
+          offset,
+          depthOffset: offset.y / TILE_SIZE,
+          transform: null
+        };
+      }
+
+      const lowerOffsetX = ((lowerActor.renderX ?? lowerActor.x) - lowerActor.x) * TILE_SIZE;
+      const lowerOffsetY = ((lowerActor.renderY ?? lowerActor.y) - lowerActor.y) * TILE_SIZE;
+      const scale = lowerActor.renderScale ?? 1;
+      const sink = lowerActor.renderSink ?? 0;
+
+      return {
+        offset,
+        depthOffset: (offset.y + sink) / TILE_SIZE,
+        transform: {
+          centerX: lowerActor.x * TILE_SIZE + lowerOffsetX + TILE_SIZE / 2,
+          centerY: lowerActor.y * TILE_SIZE + lowerOffsetY + TILE_SIZE,
+          scale,
+          sink
+        }
+      };
+    }
+
+    function queueElevatedSideBleedCoverItems(drawItems, now = performance.now()) {
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+
+      for (let y = 0; y < state.height - 1; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          [-1, 1].forEach((dx) => {
+            const positions = [
+              { x: x + dx, y },
+              { x, y: y + 1 },
+              { x: x + dx, y: y + 1 }
+            ];
+            const family = elevatedSideBleedCoverFamily(x, y, dx);
+
+            if (!elevatedBleedCoverColor(family)) {
+              return;
+            }
+
+            const sideX = (x + (dx > 0 ? 1 : 0)) * TILE_SIZE;
+            const coverEndY = (y + 1) * TILE_SIZE;
+            const coverHeight = elevatedBleedCoverHeight(family, x, y, now, faceHeight);
+            const coverStartY = coverEndY - coverHeight;
+            const placement = elevatedBleedCoverActorPlacement(family, x, y, positions);
+
+            if (coverHeight <= 0.001) {
+              return;
+            }
+
+            drawItems.push({
+              depth: y + 2 + placement.depthOffset,
+              tieBreaker: elevatedBleedCoverTieBreaker(family),
+              order: drawItems.length,
+              paint: function () {
+                paintElevatedSideBleedCover(
+                  sceneCtx,
+                  x,
+                  y,
+                  dx,
+                  sideX + placement.offset.x,
+                  coverStartY + placement.offset.y,
+                  coverEndY + placement.offset.y,
+                  app.liveRaisedPlayerGates,
+                  placement.transform
+                );
+              }
+            });
+          });
+        }
+      }
     }
 
     function paintFloorTile(x, y, cell) {
@@ -274,8 +530,8 @@
         !isTerrainWall(x - 1, y)
           ? bottom - faceHeight
           : bottom - radii.bl;
-      const rightSideEnd = sideSilhouetteEndY(x, y, 1, rightSideVisibleEnd, bottom - faceHeight);
-      const leftSideEnd = sideSilhouetteEndY(x, y, -1, leftSideVisibleEnd, bottom - faceHeight);
+      const rightSideEnd = rightSideVisibleEnd;
+      const leftSideEnd = leftSideVisibleEnd;
 
       if (x === 0 && y === 0) {
         radii.tl = 0;
@@ -395,8 +651,8 @@
         br: 0,
         bl: 0
       };
-      const rightSideEnd = sideSilhouetteEndY(x, y, 1, bottom, platformBottom);
-      const leftSideEnd = sideSilhouetteEndY(x, y, -1, bottom, platformBottom);
+      const rightSideEnd = bottom;
+      const leftSideEnd = bottom;
 
       if (x === 0 && y === 0) {
         radii.tl = 0;
@@ -466,8 +722,8 @@
         br: 0,
         bl: 0
       };
-      const rightSideEnd = sideSilhouetteEndY(x, y, 1, bottom, platformBottom);
-      const leftSideEnd = sideSilhouetteEndY(x, y, -1, bottom, platformBottom);
+      const rightSideEnd = bottom;
+      const leftSideEnd = bottom;
 
       if (x === 0 && y === 0) {
         radii.tl = 0;
@@ -625,20 +881,8 @@
         !isWeightlessBoxAt(actor.groupId, actor.x - 1, actor.y)
           ? bottom - faceHeight
           : bottom - radii.bl;
-      const rightSideEnd = sideSilhouetteEndY(
-        actor.x,
-        actor.y,
-        1,
-        rightSideVisibleEnd,
-        bottom - faceHeight
-      );
-      const leftSideEnd = sideSilhouetteEndY(
-        actor.x,
-        actor.y,
-        -1,
-        leftSideVisibleEnd,
-        bottom - faceHeight
-      );
+      const rightSideEnd = rightSideVisibleEnd;
+      const leftSideEnd = leftSideVisibleEnd;
 
       roundRectPath(context, left, wallTop, TILE_SIZE, wallHeight, radii);
       context.save();
@@ -752,8 +996,8 @@
         br: 0,
         bl: 0
       };
-      const rightSideEnd = sideSilhouetteEndY(actor.x, actor.y, 1, bottom, bottom - faceHeight);
-      const leftSideEnd = sideSilhouetteEndY(actor.x, actor.y, -1, bottom, bottom - faceHeight);
+      const rightSideEnd = bottom;
+      const leftSideEnd = bottom;
 
       context.save();
       context.translate(left + TILE_SIZE / 2, bottom + sink);
@@ -830,8 +1074,8 @@
       const platformTop = top - hover + sink;
       const platformBottom = bottom - hover + sink;
       const radius = Math.min(7, TILE_SIZE * 0.11);
-      const rightSideEnd = sideSilhouetteEndY(actor.x, actor.y, 1, bottom + sink, platformBottom);
-      const leftSideEnd = sideSilhouetteEndY(actor.x, actor.y, -1, bottom + sink, platformBottom);
+      const rightSideEnd = bottom + sink;
+      const leftSideEnd = bottom + sink;
 
       context.save();
       context.translate(left + TILE_SIZE / 2, bottom + sink);
@@ -1068,6 +1312,8 @@
           }
         });
       });
+
+      queueElevatedSideBleedCoverItems(drawItems, now);
 
       drawItems.sort((left, right) => {
         if (left.depth !== right.depth) {
@@ -1852,7 +2098,9 @@
       viewportPositionForActor,
       captureForegroundOccluderSnapshot,
       paintTransitionPlayer,
-      sideSilhouetteEndY,
+      elevatedBleedCoverColor,
+      paintElevatedSideBleedCover,
+      queueElevatedSideBleedCoverItems,
       drawViewportFromScene,
       startLevelTransitionLoop,
       startLevelTransition,
