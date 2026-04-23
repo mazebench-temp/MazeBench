@@ -102,6 +102,8 @@ function createRenderApp({ terrain, actors, playData = {} }) {
 
   loadBrowserScript("public/play-rules.js");
   loadBrowserScript("public/play-core.js");
+  loadBrowserScript("public/play-render-effects.js");
+  loadBrowserScript("public/play-render-compositor.js");
   loadBrowserScript("public/play-render.js");
 
   const canvas = {

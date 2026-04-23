@@ -12,6 +12,7 @@ global.window = {
   cancelAnimationFrame: () => {}
 };
 loadBrowserScript("public/play-rules.js");
+loadBrowserScript("public/play-movement.js");
 loadBrowserScript("public/play-world-transitions.js");
 loadBrowserScript("public/play-gameplay.js");
 
@@ -238,7 +239,17 @@ function runAttempt(app, ignoredActors) {
   const leftArm = app.state.actors.find(
     (actor) => actor.type === "weightless_box" && actor.x === 1 && actor.y === 0
   );
-  const result = app.attemptPushActor(leftArm, -1, 0, occupied, moves, 1, new Set(), new Set(), ignoredActors);
+  const result = app.movement.testHooks.attemptPushActor(
+    leftArm,
+    -1,
+    0,
+    occupied,
+    moves,
+    1,
+    new Set(),
+    new Set(),
+    ignoredActors
+  );
 
   return { result, moves };
 }
@@ -250,7 +261,17 @@ function runAttemptFromActor(app, actor, dx, dy, ignoredActors) {
       .map((candidate) => posKey(candidate.x, candidate.y))
   );
   const moves = [];
-  const result = app.attemptPushActor(actor, dx, dy, occupied, moves, 1, new Set(), new Set(), ignoredActors);
+  const result = app.movement.testHooks.attemptPushActor(
+    actor,
+    dx,
+    dy,
+    occupied,
+    moves,
+    1,
+    new Set(),
+    new Set(),
+    ignoredActors
+  );
 
   return { result, moves };
 }
@@ -355,6 +376,50 @@ asyncTests.push(
       app.initialPositions.map(({ x, y, removed }) => ({ x, y, removed })),
       [{ x: 4, y: 4, removed: false }]
     );
+  })()
+);
+
+{
+  const edgePlayer = { type: "player", x: 7, y: 3, elevation: 0, removed: false };
+  const app = createGameplayApp([edgePlayer]);
+  const transition = app.edgeTransitionForMove(1, 0);
+
+  assert.equal(transition?.nextLevelId, "level_BxA");
+  assert.deepEqual([transition?.targetX, transition?.targetY], [0, 3]);
+}
+
+asyncTests.push(
+  (async () => {
+    const edgePlayer = { type: "player", x: 7, y: 2, elevation: 0, removed: false };
+    const nextTerrain = Array.from({ length: 8 }, () =>
+      Array.from({ length: 8 }, () => ({ type: "floor" }))
+    );
+    let loadedLevelId = null;
+    const app = createGameplayApp([edgePlayer], {
+      currentLevelId: "level_AxA",
+      loadLevelState: async (levelId) => {
+        loadedLevelId = levelId;
+        return {
+          levelId,
+          levelLabel: levelId,
+          width: 8,
+          height: 8,
+          terrain: nextTerrain,
+          actors: []
+        };
+      }
+    });
+
+    app.movePlayers(1, 0);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const incomingPlayer = app.state.actors.find((actor) => app.isPlayerActor(actor));
+
+    assert.equal(loadedLevelId, "level_BxA");
+    assert.equal(app.currentLevelId, "level_BxA");
+    assert.deepEqual([incomingPlayer.x, incomingPlayer.y], [0, 2]);
+    assert.equal(app.moveHistory.at(-1)?.kind, "level-transition");
   })()
 );
 

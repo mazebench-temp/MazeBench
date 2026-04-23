@@ -122,7 +122,10 @@ function createPageRenderer({
           <script>window.__PLAY_DATA__ = ${serializeForScript(levelState)};</script>
           <script src="/play-rules.js" defer></script>
           <script src="/play-core.js" defer></script>
+          <script src="/play-render-effects.js" defer></script>
+          <script src="/play-render-compositor.js" defer></script>
           <script src="/play-render.js" defer></script>
+          <script src="/play-movement.js" defer></script>
           <script src="/play-world-transitions.js" defer></script>
           <script src="/play-gameplay.js" defer></script>
           <script src="/play.js" defer></script>`
@@ -238,7 +241,10 @@ function createPageRenderer({
         <script>window.__AUTHOR_DATA__ = ${serializeForScript(authorData)};</script>
         <script src="/play-rules.js" defer></script>
         <script src="/play-core.js" defer></script>
+        <script src="/play-render-effects.js" defer></script>
+        <script src="/play-render-compositor.js" defer></script>
         <script src="/play-render.js" defer></script>
+        <script src="/play-movement.js" defer></script>
         <script src="/play-world-transitions.js" defer></script>
         <script src="/play-gameplay.js" defer></script>
         <script src="/level-preview.js" defer></script>
