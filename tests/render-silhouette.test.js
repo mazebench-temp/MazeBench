@@ -100,6 +100,7 @@ function createRenderApp({ terrain, actors, playData = {} }) {
     PlayModules: {}
   };
 
+  loadBrowserScript("public/play-rules.js");
   loadBrowserScript("public/play-core.js");
   loadBrowserScript("public/play-render.js");
 

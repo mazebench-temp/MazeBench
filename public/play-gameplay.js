@@ -2,15 +2,12 @@
   const modules = window.PlayModules || (window.PlayModules = {});
 
   modules.registerGameplayFunctions = function registerGameplayFunctions(app) {
-    const WORLD_LEVEL_PATTERN = /^level_([A-Z])x([A-Z])$/;
-    const worldColumns =
-      Array.isArray(app.worldColumns) && app.worldColumns.length > 0
-        ? app.worldColumns
-        : Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-    const worldRows =
-      Array.isArray(app.worldRows) && app.worldRows.length > 0
-        ? app.worldRows
-        : Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    const playRules = modules.PlayRules;
+
+    if (!playRules) {
+      throw new Error("PlayRules must be loaded before play-gameplay.js");
+    }
+
     // Ice ramps smoothly to capped speed across this many tiles.
     const ICE_SLIDE_TOP_SPEED_MULTIPLIER = 2.67;
     const ICE_SLIDE_ACCELERATION_DISTANCE = 5;
@@ -214,40 +211,8 @@
       return false;
     }
 
-    function parseWorldLevelId(levelId) {
-      const match = String(levelId || "").match(WORLD_LEVEL_PATTERN);
-
-      if (!match) {
-        return null;
-      }
-
-      const columnIndex = worldColumns.indexOf(match[1]);
-      const rowIndex = worldRows.indexOf(match[2]);
-
-      if (columnIndex === -1 || rowIndex === -1) {
-        return null;
-      }
-
-      return {
-        columnIndex,
-        rowIndex
-      };
-    }
-
-    function worldLevelId(columnIndex, rowIndex) {
-      const normalizedColumn = ((columnIndex % worldColumns.length) + worldColumns.length) % worldColumns.length;
-      const normalizedRow = ((rowIndex % worldRows.length) + worldRows.length) % worldRows.length;
-      return `level_${worldColumns[normalizedColumn]}x${worldRows[normalizedRow]}`;
-    }
-
     function adjacentWorldLevelId(levelId, dx, dy) {
-      const coordinates = parseWorldLevelId(levelId);
-
-      if (!coordinates) {
-        return null;
-      }
-
-      return worldLevelId(coordinates.columnIndex + dx, coordinates.rowIndex + dy);
+      return playRules.adjacentWorldLevelId(levelId, dx, dy, app.worldColumns, app.worldRows);
     }
 
     function edgeTransitionForMove(dx, dy) {
