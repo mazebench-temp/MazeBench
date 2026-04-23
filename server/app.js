@@ -25,6 +25,7 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/play-rules.js",
     "/play-core.js",
     "/play-render-effects.js",
+    "/play-render-terrain.js",
     "/play-render-compositor.js",
     "/play-render.js",
     "/play-movement.js",
