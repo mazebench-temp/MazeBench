@@ -39,6 +39,10 @@
     selectedToolLabel: document.getElementById("selected-tool-label"),
     sidebar: document.querySelector(".author-sidebar"),
     solveLevel: document.getElementById("solve-level"),
+    solverProgress: document.getElementById("solver-progress"),
+    solverProgressBar: document.getElementById("solver-progress-bar"),
+    solverProgressText: document.getElementById("solver-progress-text"),
+    solverProgressTrack: document.getElementById("solver-progress-track"),
     status: document.getElementById("author-status")
   };
 
@@ -48,7 +52,11 @@
     "currentLevelName",
     "existingLevels",
     "levelColumn",
-    "levelRow"
+    "levelRow",
+    "solverProgress",
+    "solverProgressBar",
+    "solverProgressText",
+    "solverProgressTrack"
   ]);
 
   if (
@@ -92,7 +100,9 @@
     { label: "L", dx: -1, dy: 0 },
     { label: "R", dx: 1, dy: 0 }
   ];
-  const solverMaxExpandedStates = 150000;
+  const solverMaxExpandedStates = 1000000;
+  const solverProgressYieldStateInterval = 4096;
+  const solverProgressRenderIntervalMs = 80;
   const worldColumns =
     Array.isArray(authorData.worldColumns) && authorData.worldColumns.length > 0
       ? authorData.worldColumns
@@ -110,6 +120,7 @@
     filePath: authorData.initialLevel.filePath,
     height: authorData.initialLevel.height,
     isDirty: false,
+    isSolverBusy: false,
     levelId: authorData.initialLevel.levelId,
     message: authorData.initialLevel.exists
       ? "Loaded existing level."
@@ -254,6 +265,86 @@
     }
 
     return mazeEngine.createEngine(playData);
+  }
+
+  function formatStateCount(value) {
+    return Math.max(0, value).toLocaleString("en-US");
+  }
+
+  function nextSolverProgressFrame() {
+    return new Promise((resolve) => {
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(() => resolve());
+        return;
+      }
+
+      window.setTimeout(resolve, 0);
+    });
+  }
+
+  function renderSolverProgress(label, expanded, maxExpanded) {
+    if (
+      !elements.solverProgress ||
+      !elements.solverProgressBar ||
+      !elements.solverProgressText ||
+      !elements.solverProgressTrack
+    ) {
+      return;
+    }
+
+    const safeMax = Math.max(1, maxExpanded);
+    const safeExpanded = Math.max(0, Math.min(expanded, safeMax));
+    const percent = Math.min(100, (safeExpanded / safeMax) * 100);
+
+    elements.solverProgress.hidden = false;
+    elements.solverProgress.removeAttribute("aria-hidden");
+    elements.solverProgressBar.style.width = percent.toFixed(1) + "%";
+    elements.solverProgressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+    elements.solverProgressText.textContent =
+      label +
+      ": " +
+      formatStateCount(safeExpanded) +
+      " / " +
+      formatStateCount(safeMax) +
+      " states";
+  }
+
+  function hideSolverProgress() {
+    if (
+      !elements.solverProgress ||
+      !elements.solverProgressBar ||
+      !elements.solverProgressTrack
+    ) {
+      return;
+    }
+
+    elements.solverProgress.hidden = true;
+    elements.solverProgress.setAttribute("aria-hidden", "true");
+    elements.solverProgressBar.style.width = "0%";
+    elements.solverProgressTrack.setAttribute("aria-valuenow", "0");
+  }
+
+  function createSolverProgressReporter(label) {
+    let lastRenderAt = 0;
+
+    renderSolverProgress(label, 0, solverMaxExpandedStates);
+
+    return async function reportSolverProgress(progress, force = false) {
+      const expanded = progress?.expanded ?? 0;
+      const maxExpanded = progress?.maxExpanded ?? solverMaxExpandedStates;
+      const now =
+        window.performance && typeof window.performance.now === "function"
+          ? window.performance.now()
+          : Date.now();
+
+      if (!force && now - lastRenderAt < solverProgressRenderIntervalMs) {
+        return;
+      }
+
+      lastRenderAt = now;
+      renderSolverProgress(label, expanded, maxExpanded);
+      await nextSolverProgressFrame();
+    };
   }
 
   function buildEditorRenderPlayData() {
@@ -421,9 +512,11 @@
     }
   }
 
-  function solveWithAStar(engine) {
+  async function solveWithAStar(engine, options = {}) {
     const open = new SolverHeap();
     const bestCostByKey = new Map();
+    const reportProgress =
+      typeof options.onProgress === "function" ? options.onProgress : null;
     let order = 0;
     let expanded = 0;
     const initialState = engine.cloneState(engine.initialState);
@@ -440,6 +533,17 @@
     });
     order += 1;
 
+    if (reportProgress) {
+      await reportProgress(
+        {
+          expanded,
+          maxExpanded: solverMaxExpandedStates,
+          openSize: open.size
+        },
+        true
+      );
+    }
+
     while (open.size > 0) {
       const current = open.pop();
 
@@ -448,6 +552,17 @@
       }
 
       if (engine.isSolved(current.state)) {
+        if (reportProgress) {
+          await reportProgress(
+            {
+              expanded,
+              maxExpanded: solverMaxExpandedStates,
+              openSize: open.size
+            },
+            true
+          );
+        }
+
         return {
           status: "solved",
           moves: current.cost,
@@ -458,7 +573,26 @@
 
       expanded += 1;
 
-      if (expanded > solverMaxExpandedStates) {
+      if (reportProgress && expanded % solverProgressYieldStateInterval === 0) {
+        await reportProgress({
+          expanded,
+          maxExpanded: solverMaxExpandedStates,
+          openSize: open.size
+        });
+      }
+
+      if (expanded >= solverMaxExpandedStates) {
+        if (reportProgress) {
+          await reportProgress(
+            {
+              expanded,
+              maxExpanded: solverMaxExpandedStates,
+              openSize: open.size
+            },
+            true
+          );
+        }
+
         return {
           status: "capped",
           expanded,
@@ -493,6 +627,17 @@
         });
         order += 1;
       });
+    }
+
+    if (reportProgress) {
+      await reportProgress(
+        {
+          expanded,
+          maxExpanded: solverMaxExpandedStates,
+          openSize: open.size
+        },
+        true
+      );
     }
 
     return {
@@ -550,10 +695,12 @@
     return hardest;
   }
 
-  function findHardestGemPlacement(engine) {
+  async function findHardestGemPlacement(engine, options = {}) {
     const open = new SolverHeap();
     const bestCostByKey = new Map();
     const bestCandidateByCell = new Map();
+    const reportProgress =
+      typeof options.onProgress === "function" ? options.onProgress : null;
     let order = 0;
     let expanded = 0;
     const initialState = engine.cloneState(engine.initialState);
@@ -570,6 +717,17 @@
     });
     order += 1;
 
+    if (reportProgress) {
+      await reportProgress(
+        {
+          expanded,
+          maxExpanded: solverMaxExpandedStates,
+          openSize: open.size
+        },
+        true
+      );
+    }
+
     while (open.size > 0) {
       const current = open.pop();
 
@@ -579,7 +737,26 @@
 
       expanded += 1;
 
-      if (expanded > solverMaxExpandedStates) {
+      if (reportProgress && expanded % solverProgressYieldStateInterval === 0) {
+        await reportProgress({
+          expanded,
+          maxExpanded: solverMaxExpandedStates,
+          openSize: open.size
+        });
+      }
+
+      if (expanded >= solverMaxExpandedStates) {
+        if (reportProgress) {
+          await reportProgress(
+            {
+              expanded,
+              maxExpanded: solverMaxExpandedStates,
+              openSize: open.size
+            },
+            true
+          );
+        }
+
         return {
           status: "capped",
           candidate: hardestGemPlacementCandidate(bestCandidateByCell),
@@ -622,6 +799,17 @@
 
     const candidate = hardestGemPlacementCandidate(bestCandidateByCell);
 
+    if (reportProgress) {
+      await reportProgress(
+        {
+          expanded,
+          maxExpanded: solverMaxExpandedStates,
+          openSize: open.size
+        },
+        true
+      );
+    }
+
     return {
       status: candidate ? "found" : "none",
       candidate,
@@ -644,6 +832,14 @@
   function syncSolverButtonState() {
     const hasGem = levelHasGem();
     const hasPlayer = levelHasPlayer();
+
+    if (state.isSolverBusy) {
+      elements.solveLevel.disabled = true;
+      elements.solveLevel.title = "Search is running.";
+      elements.placeGem.disabled = true;
+      elements.placeGem.title = "Search is running.";
+      return;
+    }
 
     elements.solveLevel.disabled = !hasGem;
     elements.solveLevel.title = hasGem
@@ -1408,13 +1604,17 @@
     }
 
     setStatus("Place Gem running reachability search...", "warning");
-    elements.placeGem.disabled = true;
+    state.isSolverBusy = true;
+    syncSolverButtonState();
+    renderSolverProgress("Place Gem", 0, solverMaxExpandedStates);
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     try {
       const engine = createSolverEngine(buildEditorPlayData({ includeGems: false }));
-      const result = findHardestGemPlacement(engine);
+      const result = await findHardestGemPlacement(engine, {
+        onProgress: createSolverProgressReporter("Place Gem")
+      });
 
       if (result.candidate) {
         const placedValue = applyGemPlacement(result.candidate);
@@ -1424,7 +1624,7 @@
             : "Place Gem: placed hardest spot at ";
         const suffix =
           result.status === "capped"
-            ? " Search stopped after " + result.expanded + " states."
+            ? " Search stopped after " + formatStateCount(result.expanded) + " states."
             : "";
 
         setStatus(
@@ -1449,8 +1649,8 @@
       }
 
       setStatus(
-        "Place Gem: no reachable empty terrain cell found. Explored " +
-          result.expanded +
+          "Place Gem: no reachable empty terrain cell found. Explored " +
+          formatStateCount(result.expanded) +
           " state" +
           (result.expanded === 1 ? "" : "s") +
           ".",
@@ -1459,6 +1659,8 @@
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Place Gem failed.", "error");
     } finally {
+      state.isSolverBusy = false;
+      hideSolverProgress();
       syncSolverButtonState();
     }
   }
@@ -1479,13 +1681,17 @@
     }
 
     setStatus("Solver running A*...", "warning");
-    elements.solveLevel.disabled = true;
+    state.isSolverBusy = true;
+    syncSolverButtonState();
+    renderSolverProgress("A*", 0, solverMaxExpandedStates);
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     try {
       const engine = createSolverEngine(playData);
-      const result = solveWithAStar(engine);
+      const result = await solveWithAStar(engine, {
+        onProgress: createSolverProgressReporter("A*")
+      });
 
       if (result.status === "solved") {
         setStatus(
@@ -1501,7 +1707,7 @@
       } else if (result.status === "unsolved") {
         setStatus(
           "Solver: not possible. Explored " +
-            result.expanded +
+            formatStateCount(result.expanded) +
             " state" +
             (result.expanded === 1 ? "" : "s") +
             ".",
@@ -1510,9 +1716,9 @@
       } else {
         setStatus(
           "Solver: no answer within " +
-            result.maxExpanded +
+            formatStateCount(result.maxExpanded) +
             " states. Search stopped after " +
-            result.expanded +
+            formatStateCount(result.expanded) +
             ".",
           "warning"
         );
@@ -1520,6 +1726,8 @@
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Solver failed.", "error");
     } finally {
+      state.isSolverBusy = false;
+      hideSolverProgress();
       syncSolverButtonState();
     }
   }

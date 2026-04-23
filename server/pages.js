@@ -169,6 +169,20 @@ function createPageRenderer({
             </nav>
             <button id="save-level" class="tool-button tool-button--primary author-save-button" type="button">Save</button>
             <p id="author-status" class="author-status" role="status" aria-live="polite"></p>
+            <div id="solver-progress" class="solver-progress" hidden>
+              <div
+                id="solver-progress-track"
+                class="solver-progress__track"
+                role="progressbar"
+                aria-label="Solver search progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+              >
+                <div id="solver-progress-bar" class="solver-progress__bar"></div>
+              </div>
+              <span id="solver-progress-text" class="solver-progress__text">0 / 1,000,000 states</span>
+            </div>
           </div>
         </header>
         <div class="author-layout">
