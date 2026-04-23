@@ -22,6 +22,7 @@
     flipVertical: document.getElementById("flip-vertical"),
     frameLevel: document.getElementById("frame-level"),
     grid: document.getElementById("author-grid"),
+    gridShell: document.querySelector(".author-grid-shell"),
     hitGrid: document.getElementById("author-hit-grid"),
     levelNeighbors: document.getElementById("level-neighbors"),
     levelColumn: document.getElementById("level-column"),
@@ -73,8 +74,11 @@
     toolByToken
   } = playDataAdapter;
   const editorTileSize = 64;
+  const minimumEditorTileSize = 12;
+  const editorGridOutlineSize = 8;
   const editorRenderer = {
     app: null,
+    layoutFrameId: null,
     preloadVersion: 0
   };
   const palettePreviewRenderer = {
@@ -975,15 +979,69 @@
     button.title = "Cell " + (x + 1) + ", " + (y + 1) + ": " + value;
   }
 
+  function readPixelValue(value) {
+    const parsed = parseFloat(value);
+
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function clampEditorTileSize(value) {
+    return Math.max(minimumEditorTileSize, Math.min(editorTileSize, Math.floor(value)));
+  }
+
+  function measureEditorTileSize() {
+    const shellStyles = window.getComputedStyle(elements.gridShell);
+    const paddingX =
+      readPixelValue(shellStyles.paddingLeft) + readPixelValue(shellStyles.paddingRight);
+    const paddingY =
+      readPixelValue(shellStyles.paddingTop) + readPixelValue(shellStyles.paddingBottom);
+    const viewportHeight =
+      window.visualViewport?.height || window.innerHeight || state.height * editorTileSize;
+    const shellRect = elements.gridShell.getBoundingClientRect();
+    const cappedTop = Math.max(0, Math.min(shellRect.top, Math.max(120, viewportHeight * 0.28)));
+    const availableWidth = Math.max(
+      minimumEditorTileSize,
+      elements.gridShell.clientWidth - paddingX - editorGridOutlineSize
+    );
+    const availableHeight = Math.max(
+      minimumEditorTileSize,
+      viewportHeight - cappedTop - paddingY - editorGridOutlineSize - 24
+    );
+    const widthTileSize = availableWidth / Math.max(1, state.width);
+    const heightTileSize = availableHeight / Math.max(1, state.height);
+
+    return clampEditorTileSize(Math.min(widthTileSize, heightTileSize));
+  }
+
+  function syncEditorGridLayout() {
+    const displayTileSize = measureEditorTileSize();
+    const gridWidth = state.width * displayTileSize;
+    const gridHeight = state.height * displayTileSize;
+
+    elements.grid.style.setProperty("--editor-cell-size", displayTileSize + "px");
+    elements.grid.style.width = gridWidth + "px";
+    elements.grid.style.height = gridHeight + "px";
+    elements.hitGrid.style.gridTemplateColumns =
+      "repeat(" + state.width + ", " + displayTileSize + "px)";
+    elements.hitGrid.style.gridTemplateRows =
+      "repeat(" + state.height + ", " + displayTileSize + "px)";
+  }
+
+  function scheduleEditorGridLayout() {
+    if (editorRenderer.layoutFrameId !== null) {
+      return;
+    }
+
+    editorRenderer.layoutFrameId = window.requestAnimationFrame(() => {
+      editorRenderer.layoutFrameId = null;
+      syncEditorGridLayout();
+    });
+  }
+
   function renderGrid(options = {}) {
     const cellCount = state.width * state.height;
 
-    elements.grid.style.width = state.width * editorTileSize + "px";
-    elements.grid.style.height = state.height * editorTileSize + "px";
-    elements.hitGrid.style.gridTemplateColumns =
-      "repeat(" + state.width + ", " + editorTileSize + "px)";
-    elements.hitGrid.style.gridTemplateRows =
-      "repeat(" + state.height + ", " + editorTileSize + "px)";
+    syncEditorGridLayout();
 
     if (
       elements.hitGrid.children.length !== cellCount ||
@@ -1636,6 +1694,7 @@
       }
 
       resetDisclosureBodyStyles(body);
+      scheduleEditorGridLayout();
     };
     const handleTransitionEnd = function (event) {
       if (event.target === body && event.propertyName === "height") {
@@ -1812,4 +1871,5 @@
     event.preventDefault();
     event.returnValue = "";
   });
+  window.addEventListener("resize", scheduleEditorGridLayout);
 })();

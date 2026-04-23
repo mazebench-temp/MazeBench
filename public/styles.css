@@ -603,6 +603,13 @@ pre {
   min-width: 0;
 }
 
+.author-stage {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+}
+
 .author-sidebar {
   position: sticky;
   top: 18px;
@@ -844,9 +851,12 @@ pre {
 }
 
 .author-grid-shell {
-  overflow: auto;
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  overflow: hidden;
   max-width: 100%;
-  max-height: calc(100dvh - 262px);
+  box-sizing: border-box;
   padding: 16px;
   border: 4px solid #000000;
   border-radius: 6px;
@@ -880,8 +890,8 @@ pre {
 }
 
 .author-grid__cell {
-  width: 64px;
-  height: 64px;
+  width: var(--editor-cell-size, 64px);
+  height: var(--editor-cell-size, 64px);
   padding: 0;
   border: 1px solid rgba(0, 0, 0, 0.14);
   border-radius: 0;
