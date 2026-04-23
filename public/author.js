@@ -64,6 +64,10 @@
     app: null,
     preloadVersion: 0
   };
+  const palettePreviewRenderer = {
+    previewsByToken: new Map(),
+    promise: null
+  };
   const solverDirections = [
     { label: "U", dx: 0, dy: -1 },
     { label: "D", dx: 0, dy: 1 },
@@ -767,28 +771,27 @@
   function renderPalette() {
     elements.palette.innerHTML = authorData.palette
       .map((tool) => {
-        const swatchContents = tool.imageUrl
-          ? '<img src="' + escapeHtml(tool.imageUrl) + '" alt="">'
-          : '<span>' + escapeHtml(tool.token) + "</span>";
+        const previewUrl = palettePreviewRenderer.previewsByToken.get(tool.token);
+        const swatchContents = previewUrl
+          ? '<img src="' + escapeHtml(previewUrl) + '" alt="">'
+          : '<span class="palette__swatch-placeholder" aria-hidden="true"></span>';
+        const accessibleLabel = tool.label + " (" + tool.token + ")";
 
         return (
           '<button class="tool-button palette__button' +
           (tool.token === state.selectedToken ? " is-active" : "") +
           '" type="button" data-token="' +
           escapeHtml(tool.token) +
+          '" aria-label="' +
+          escapeHtml(accessibleLabel) +
           '" title="' +
-          escapeHtml(tool.label + " (" + tool.token + ")") +
+          escapeHtml(accessibleLabel) +
           '">' +
           '<span class="palette__swatch">' +
           swatchContents +
           "</span>" +
-          '<span class="palette__meta">' +
-          '<span class="palette__label">' +
-          escapeHtml(tool.label) +
-          "</span>" +
           '<span class="palette__token">' +
           escapeHtml(tool.token) +
-          "</span>" +
           "</span>" +
           "</button>"
         );
@@ -796,11 +799,134 @@
       .join("");
   }
 
+  function createPalettePreviewPlayData() {
+    const stride = 3;
+    const columns = Math.max(1, Math.min(4, authorData.palette.length));
+    const rows = Math.max(1, Math.ceil(authorData.palette.length / columns));
+    const width = columns * stride;
+    const height = rows * stride;
+    const cells = createBlankCells(width, height, authorData.defaultFloorToken);
+    const positionsByToken = new Map();
+
+    authorData.palette.forEach((tool, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const x = column * stride + 1;
+      const y = row * stride + 1;
+
+      cells[y][x] = tool.token;
+      positionsByToken.set(tool.token, { x, y });
+    });
+
+    return {
+      playData: buildPlayData({
+        cameraView: { width, height },
+        cells,
+        gameId: authorData.game.id,
+        height,
+        includeGems: true,
+        levelId: "__palette_preview__",
+        levelLabel: "Palette",
+        width
+      }),
+      positionsByToken
+    };
+  }
+
+  function cropPalettePreview(sceneCanvas, position) {
+    const sourceSize = 80;
+    const previewCanvas = document.createElement("canvas");
+    const previewContext = previewCanvas.getContext("2d");
+
+    if (!previewContext) {
+      return "";
+    }
+
+    const sourceCenterX = position.x * editorTileSize + editorTileSize / 2;
+    const sourceCenterY = position.y * editorTileSize + editorTileSize / 2;
+    const sourceX = Math.round(sourceCenterX - sourceSize / 2);
+    const sourceY = Math.round(sourceCenterY - sourceSize / 2 - 8);
+
+    previewCanvas.width = sourceSize;
+    previewCanvas.height = sourceSize;
+    previewContext.imageSmoothingEnabled = true;
+    previewContext.fillStyle = "#d6bd94";
+    previewContext.fillRect(0, 0, sourceSize, sourceSize);
+    previewContext.drawImage(
+      sceneCanvas,
+      sourceX,
+      sourceY,
+      sourceSize,
+      sourceSize,
+      0,
+      0,
+      sourceSize,
+      sourceSize
+    );
+
+    return previewCanvas.toDataURL("image/png");
+  }
+
+  async function renderPalettePreviews() {
+    if (palettePreviewRenderer.promise) {
+      return palettePreviewRenderer.promise;
+    }
+
+    palettePreviewRenderer.promise = (async function () {
+      const modules = window.PlayModules || {};
+
+      if (
+        typeof modules.createPlayCore !== "function" ||
+        typeof modules.registerRenderFunctions !== "function"
+      ) {
+        return;
+      }
+
+      const { playData, positionsByToken } = createPalettePreviewPlayData();
+      const canvas = document.createElement("canvas");
+      const app = modules.createPlayCore({
+        playData,
+        canvas,
+        playShell: null,
+        playHeader: null,
+        playStage: null,
+        mazeFrame: null,
+        fuzzyToggle: null
+      });
+
+      if (!app) {
+        return;
+      }
+
+      modules.registerRenderFunctions(app);
+      await app.preloadImagesForLevelState(playData);
+      app.setupCanvas();
+      app.liveRaisedPlayerGates = app.computeRaisedPlayerGateSet();
+      app.syncGateAnimationTargets(0);
+      app.syncPlayerLiftAnimationTargets(0);
+      app.renderCompositor.drawScene(0);
+
+      const previewsByToken = new Map();
+      positionsByToken.forEach((position, token) => {
+        const previewUrl = cropPalettePreview(app.sceneCanvas, position);
+
+        if (previewUrl) {
+          previewsByToken.set(token, previewUrl);
+        }
+      });
+
+      palettePreviewRenderer.previewsByToken = previewsByToken;
+      renderPalette();
+    })().catch(() => {});
+
+    return palettePreviewRenderer.promise;
+  }
+
   function renderSelectedTool() {
     const tool = toolByToken.get(state.selectedToken);
-    const label = tool ? tool.label + " (" + tool.token + ")" : state.selectedToken;
 
-    elements.selectedToolLabel.textContent = label;
+    elements.selectedToolLabel.textContent = state.selectedToken;
+    elements.selectedToolLabel.title = tool ? tool.label : state.selectedToken;
   }
 
   function renderNeighborButtons() {
@@ -1444,6 +1570,7 @@
 
   renderLevelSelectors();
   renderPalette();
+  renderPalettePreviews();
   renderAll();
 
   elements.palette.addEventListener("click", function (event) {
