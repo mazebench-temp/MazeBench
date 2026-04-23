@@ -12,6 +12,7 @@ global.window = {
   cancelAnimationFrame: () => {}
 };
 loadBrowserScript("public/play-rules.js");
+loadBrowserScript("public/play-world-transitions.js");
 loadBrowserScript("public/play-gameplay.js");
 
 const { registerGameplayFunctions } = window.PlayModules;

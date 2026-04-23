@@ -123,6 +123,7 @@ function createPageRenderer({
           <script src="/play-rules.js" defer></script>
           <script src="/play-core.js" defer></script>
           <script src="/play-render.js" defer></script>
+          <script src="/play-world-transitions.js" defer></script>
           <script src="/play-gameplay.js" defer></script>
           <script src="/play.js" defer></script>`
         : `<section class="play-stage"><p>This level is empty.</p></section>`;
@@ -238,6 +239,7 @@ function createPageRenderer({
         <script src="/play-rules.js" defer></script>
         <script src="/play-core.js" defer></script>
         <script src="/play-render.js" defer></script>
+        <script src="/play-world-transitions.js" defer></script>
         <script src="/play-gameplay.js" defer></script>
         <script src="/level-preview.js" defer></script>
         <script src="/author.js" defer></script>
