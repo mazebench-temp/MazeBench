@@ -1593,10 +1593,97 @@
     }
   }
 
+  function resetDisclosureBodyStyles(body) {
+    body.style.height = "";
+    body.style.opacity = "";
+    body.style.overflow = "";
+  }
+
+  function setDisclosureOpen(details, shouldOpen) {
+    const body = details.querySelector(".author-disclosure__body");
+
+    if (!body || details.classList.contains("is-animating")) {
+      return;
+    }
+
+    const isOpen = details.hasAttribute("open");
+
+    if (isOpen === shouldOpen) {
+      return;
+    }
+
+    details.classList.add("is-animating");
+    body.style.overflow = "hidden";
+
+    let finished = false;
+    const finish = function () {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      body.removeEventListener("transitionend", handleTransitionEnd);
+      details.classList.remove("is-animating");
+
+      if (!shouldOpen) {
+        details.removeAttribute("open");
+      }
+
+      resetDisclosureBodyStyles(body);
+    };
+    const handleTransitionEnd = function (event) {
+      if (event.target === body && event.propertyName === "height") {
+        finish();
+      }
+    };
+
+    body.addEventListener("transitionend", handleTransitionEnd);
+
+    if (shouldOpen) {
+      details.setAttribute("open", "");
+      body.style.height = "0px";
+      body.style.opacity = "0";
+
+      window.requestAnimationFrame(() => {
+        body.style.height = body.scrollHeight + "px";
+        body.style.opacity = "1";
+      });
+    } else {
+      body.style.height = body.scrollHeight + "px";
+      body.style.opacity = "1";
+
+      window.requestAnimationFrame(() => {
+        body.style.height = "0px";
+        body.style.opacity = "0";
+      });
+    }
+
+    window.setTimeout(finish, 260);
+  }
+
+  function initializeAuthorDisclosures() {
+    document.querySelectorAll(".author-disclosure").forEach((details) => {
+      const summary = details.querySelector(".author-disclosure__summary");
+      const body = details.querySelector(".author-disclosure__body");
+
+      if (!summary || !body) {
+        return;
+      }
+
+      details.removeAttribute("open");
+      resetDisclosureBodyStyles(body);
+      summary.addEventListener("click", function (event) {
+        event.preventDefault();
+        setDisclosureOpen(details, !details.hasAttribute("open"));
+      });
+    });
+  }
+
   renderLevelSelectors();
   renderPalette();
   renderPalettePreviews();
   renderAll();
+  initializeAuthorDisclosures();
 
   elements.palette.addEventListener("click", function (event) {
     const button = event.target.closest("[data-token]");

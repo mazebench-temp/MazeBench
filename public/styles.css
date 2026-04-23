@@ -609,8 +609,12 @@ pre {
   position: sticky;
   top: 18px;
   max-height: calc(100dvh - 36px);
-  overflow: auto;
-  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: calc(var(--shadow-md) + 2px);
+  padding-bottom: calc(var(--shadow-md) + 2px);
+  gap: 10px;
 }
 
 .author-panel {
@@ -621,6 +625,86 @@ pre {
   box-shadow: var(--shadow-md) var(--shadow-md) 0 #000000;
   margin-right: var(--shadow-md);
   margin-bottom: var(--shadow-md);
+}
+
+.author-disclosure {
+  padding: 0;
+  overflow: visible;
+}
+
+.author-disclosure__summary {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 900;
+  line-height: 1;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.author-disclosure__summary::-webkit-details-marker {
+  display: none;
+}
+
+.author-disclosure__summary::before {
+  content: "+";
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #000000;
+  border-radius: 4px;
+  background: #8dc7ff;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.author-disclosure[open] .author-disclosure__summary {
+  border-bottom: 3px solid #000000;
+  background: #ffd84d;
+}
+
+.author-disclosure[open] .author-disclosure__summary::before {
+  content: "-";
+  background: #ffffff;
+}
+
+.author-disclosure__summary span:first-of-type {
+  flex: 1 1 auto;
+}
+
+.author-disclosure__body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  transition: height 190ms ease, opacity 150ms ease;
+  will-change: height, opacity;
+}
+
+.author-disclosure.is-animating .author-disclosure__body {
+  overflow: hidden;
+}
+
+.author-sidebar .author-control-row {
+  gap: 10px;
+}
+
+.author-sidebar .author-control-row .tool-button,
+.author-sidebar .author-control-row .field {
+  flex: 1 1 120px;
+  margin: 0;
+}
+
+.author-disclosure--world .author-disclosure__body {
+  justify-items: center;
 }
 
 .author-panel h2,
@@ -646,7 +730,7 @@ pre {
 
 .author-panel__badge {
   min-width: 0;
-  max-width: 210px;
+  max-width: 86px;
   overflow: hidden;
   padding: 5px 8px;
   border: 2px solid #000000;
@@ -1167,10 +1251,13 @@ pre {
   }
 
   .author-sidebar {
-    position: static;
-    max-height: none;
-    overflow: visible;
-    padding-right: 0;
+    position: sticky;
+    top: 10px;
+    z-index: 5;
+    max-height: min(46dvh, 520px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: calc(var(--shadow-md) + 2px);
   }
 
   .author-grid-shell {

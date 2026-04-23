@@ -173,87 +173,109 @@ function createPageRenderer({
             <p id="author-status" class="author-status" role="status" aria-live="polite"></p>
           </div>
         </header>
-        <section class="author-command-bar" aria-label="Editor controls">
-          <div class="author-control-group author-control-group--world">
-            <h2>World Slot</h2>
-            <div class="author-control-row">
-              <div id="level-neighbors" class="author-neighbors" aria-label="Neighbor levels">
-                <button class="tool-button author-neighbors__button author-neighbors__button--up" type="button" data-dx="0" data-dy="-1"><span aria-hidden="true">&#8593;</span></button>
-                <button class="tool-button author-neighbors__button author-neighbors__button--left" type="button" data-dx="-1" data-dy="0"><span aria-hidden="true">&#8592;</span></button>
-                <button class="tool-button author-neighbors__button author-neighbors__button--right" type="button" data-dx="1" data-dy="0"><span aria-hidden="true">&#8594;</span></button>
-                <button class="tool-button author-neighbors__button author-neighbors__button--down" type="button" data-dx="0" data-dy="1"><span aria-hidden="true">&#8595;</span></button>
-              </div>
-            </div>
-          </div>
-          <div class="author-control-group">
-            <h2>Board</h2>
-            <div class="author-control-row">
-              <label class="field field--compact">
-                <span>Width</span>
-                <input id="board-width" type="number" min="1" max="${mazeLevelGridWidth}" inputmode="numeric">
-              </label>
-              <label class="field field--compact">
-                <span>Height</span>
-                <input id="board-height" type="number" min="1" max="${mazeLevelGridHeight}" inputmode="numeric">
-              </label>
-              <button id="resize-level" class="tool-button" type="button">Resize</button>
-            </div>
-            <div class="author-control-row">
-              <button id="clear-level" class="tool-button tool-button--danger" type="button">
-                <span class="tool-button__icon" aria-hidden="true">&#10005;</span>
-                <span>Clear</span>
-              </button>
-              <button id="frame-level" class="tool-button" type="button">
-                <span class="tool-button__icon" aria-hidden="true">&#9633;</span>
-                <span>Frame</span>
-              </button>
-            </div>
-          </div>
-          <div class="author-control-group author-control-group--actions">
-            <h2>Transform & Check</h2>
-            <div class="author-control-row">
-              <button id="rotate-left" class="tool-button" type="button" title="Rotate level left">
-                <span class="tool-button__icon" aria-hidden="true">&#8634;</span>
-                <span>Rotate Left</span>
-              </button>
-              <button id="rotate-right" class="tool-button" type="button" title="Rotate level right">
-                <span class="tool-button__icon" aria-hidden="true">&#8635;</span>
-                <span>Rotate Right</span>
-              </button>
-              <button id="flip-horizontal" class="tool-button" type="button" title="Mirror level left to right">
-                <span class="tool-button__icon" aria-hidden="true">&#8596;</span>
-                <span>Flip H</span>
-              </button>
-              <button id="flip-vertical" class="tool-button" type="button" title="Mirror level top to bottom">
-                <span class="tool-button__icon" aria-hidden="true">&#8597;</span>
-                <span>Flip V</span>
-              </button>
-            </div>
-            <div class="author-control-row">
-              <button id="place-gem" class="tool-button" type="button">Place Gem</button>
-              <button id="solve-level" class="tool-button" type="button">Solver</button>
-              <button id="save-level" class="tool-button tool-button--primary" type="button">Save</button>
-            </div>
-          </div>
-        </section>
         <div class="author-layout">
           <aside class="author-sidebar">
-            <section class="author-panel author-panel--palette">
-              <div class="author-panel__header">
-                <h2>Paint</h2>
-                <span id="selected-tool-label" class="author-panel__badge"></span>
+            <details class="author-panel author-disclosure author-disclosure--world">
+              <summary class="author-disclosure__summary">
+                <span>World Slot</span>
+              </summary>
+              <div class="author-disclosure__body">
+                <div id="level-neighbors" class="author-neighbors" aria-label="Neighbor levels">
+                  <button class="tool-button author-neighbors__button author-neighbors__button--up" type="button" data-dx="0" data-dy="-1"><span aria-hidden="true">&#8593;</span></button>
+                  <button class="tool-button author-neighbors__button author-neighbors__button--left" type="button" data-dx="-1" data-dy="0"><span aria-hidden="true">&#8592;</span></button>
+                  <button class="tool-button author-neighbors__button author-neighbors__button--right" type="button" data-dx="1" data-dy="0"><span aria-hidden="true">&#8594;</span></button>
+                  <button class="tool-button author-neighbors__button author-neighbors__button--down" type="button" data-dx="0" data-dy="1"><span aria-hidden="true">&#8595;</span></button>
+                </div>
               </div>
-              <div id="palette" class="palette"></div>
-            </section>
-            <section class="author-panel">
-              <h2>Cell</h2>
-              <p id="selected-cell-label" class="author-panel__copy"></p>
-              <label class="field">
-                <span>Raw value</span>
-                <input id="cell-value" type="text" spellcheck="false" aria-label="Selected cell raw value">
-              </label>
-              <button id="apply-cell-value" class="tool-button" type="button">Apply Cell</button>
-            </section>
+            </details>
+            <details class="author-panel author-disclosure author-panel--palette">
+              <summary class="author-disclosure__summary">
+                <span>Paint</span>
+                <span id="selected-tool-label" class="author-panel__badge"></span>
+              </summary>
+              <div class="author-disclosure__body">
+                <div id="palette" class="palette"></div>
+              </div>
+            </details>
+            <details class="author-panel author-disclosure">
+              <summary class="author-disclosure__summary">
+                <span>Board</span>
+              </summary>
+              <div class="author-disclosure__body">
+                <div class="author-control-row">
+                  <label class="field field--compact">
+                    <span>Width</span>
+                    <input id="board-width" type="number" min="1" max="${mazeLevelGridWidth}" inputmode="numeric">
+                  </label>
+                  <label class="field field--compact">
+                    <span>Height</span>
+                    <input id="board-height" type="number" min="1" max="${mazeLevelGridHeight}" inputmode="numeric">
+                  </label>
+                  <button id="resize-level" class="tool-button" type="button">Resize</button>
+                </div>
+                <div class="author-control-row">
+                  <button id="clear-level" class="tool-button tool-button--danger" type="button">
+                    <span class="tool-button__icon" aria-hidden="true">&#10005;</span>
+                    <span>Clear</span>
+                  </button>
+                  <button id="frame-level" class="tool-button" type="button">
+                    <span class="tool-button__icon" aria-hidden="true">&#9633;</span>
+                    <span>Frame</span>
+                  </button>
+                </div>
+              </div>
+            </details>
+            <details class="author-panel author-disclosure">
+              <summary class="author-disclosure__summary">
+                <span>Transform</span>
+              </summary>
+              <div class="author-disclosure__body">
+                <div class="author-control-row">
+                  <button id="rotate-left" class="tool-button" type="button" title="Rotate level left">
+                    <span class="tool-button__icon" aria-hidden="true">&#8634;</span>
+                    <span>Rotate Left</span>
+                  </button>
+                  <button id="rotate-right" class="tool-button" type="button" title="Rotate level right">
+                    <span class="tool-button__icon" aria-hidden="true">&#8635;</span>
+                    <span>Rotate Right</span>
+                  </button>
+                  <button id="flip-horizontal" class="tool-button" type="button" title="Mirror level left to right">
+                    <span class="tool-button__icon" aria-hidden="true">&#8596;</span>
+                    <span>Flip H</span>
+                  </button>
+                  <button id="flip-vertical" class="tool-button" type="button" title="Mirror level top to bottom">
+                    <span class="tool-button__icon" aria-hidden="true">&#8597;</span>
+                    <span>Flip V</span>
+                  </button>
+                </div>
+                <div class="author-control-row">
+                  <button id="place-gem" class="tool-button" type="button">Place Gem</button>
+                  <button id="solve-level" class="tool-button" type="button">Solver</button>
+                  <button id="save-level" class="tool-button tool-button--primary" type="button">Save</button>
+                </div>
+              </div>
+            </details>
+            <details class="author-panel author-disclosure">
+              <summary class="author-disclosure__summary">
+                <span>Cell</span>
+              </summary>
+              <div class="author-disclosure__body">
+                <p id="selected-cell-label" class="author-panel__copy"></p>
+                <label class="field">
+                  <span>Raw value</span>
+                  <input id="cell-value" type="text" spellcheck="false" aria-label="Selected cell raw value">
+                </label>
+                <button id="apply-cell-value" class="tool-button" type="button">Apply Cell</button>
+              </div>
+            </details>
+            <details class="author-panel author-disclosure author-output-panel">
+              <summary class="author-disclosure__summary">
+                <span>Text Output</span>
+              </summary>
+              <div class="author-disclosure__body">
+                <textarea id="raw-output" class="raw-output" readonly spellcheck="false"></textarea>
+              </div>
+            </details>
           </aside>
           <section class="author-workspace">
             <section class="author-stage" aria-label="Level canvas">
@@ -273,10 +295,6 @@ function createPageRenderer({
                   <div id="author-hit-grid" class="author-grid__hit-grid"></div>
                 </div>
               </section>
-            </section>
-            <section class="author-panel author-output-panel">
-              <h2>Text Output</h2>
-              <textarea id="raw-output" class="raw-output" readonly spellcheck="false"></textarea>
             </section>
           </section>
         </div>
