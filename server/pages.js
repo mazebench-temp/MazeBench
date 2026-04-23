@@ -333,9 +333,6 @@ function createPageRenderer({
           <section class="world-map-workspace">
             <section class="author-grid-shell world-map-grid-shell">
               <div class="world-map-canvas">
-                <div class="world-map-corner" aria-hidden="true"></div>
-                <div id="world-map-columns" class="world-map-axis world-map-axis--columns" aria-hidden="true"></div>
-                <div id="world-map-rows" class="world-map-axis world-map-axis--rows" aria-hidden="true"></div>
                 <div id="world-map-grid" class="world-map-grid" aria-label="World map grid"></div>
               </div>
             </section>

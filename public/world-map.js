@@ -8,12 +8,10 @@
   const elements = {
     authorLink: document.getElementById("world-map-author-link"),
     canvas: document.querySelector(".world-map-canvas"),
-    columns: document.getElementById("world-map-columns"),
     deselect: document.getElementById("world-map-deselect"),
     grid: document.getElementById("world-map-grid"),
     gridShell: document.querySelector(".world-map-grid-shell"),
     playLink: document.getElementById("world-map-play-link"),
-    rows: document.getElementById("world-map-rows"),
     save: document.getElementById("world-map-save"),
     sidebar: document.querySelector(".world-map-sidebar"),
     status: document.getElementById("world-map-status"),
@@ -46,8 +44,6 @@
   };
   const worldMapMaxCellSize = 56;
   const worldMapMinCellSize = 8;
-  const worldMapMinAxisSize = 22;
-  const worldMapMaxAxisSize = 36;
   const worldMapGapSize = 2;
   const worldMapGridPadding = 4;
 
@@ -223,26 +219,16 @@
       worldMapMinCellSize,
       viewportHeight - cappedTop - paddingY - 24
     );
-    const axisSize = clampWorldMapSize(
-      Math.min(availableWidth, availableHeight) * 0.1,
-      worldMapMinAxisSize,
-      worldMapMaxAxisSize
-    );
     const widthExtras =
-      axisSize +
-      worldMapGapSize +
       worldMapGridPadding +
       Math.max(0, worldColumns.length - 1) * worldMapGapSize;
     const heightExtras =
-      axisSize +
-      worldMapGapSize +
       worldMapGridPadding +
       Math.max(0, worldRows.length - 1) * worldMapGapSize;
     const cellByWidth = (availableWidth - widthExtras) / Math.max(1, worldColumns.length);
     const cellByHeight = (availableHeight - heightExtras) / Math.max(1, worldRows.length);
 
     return {
-      axisSize,
       cellSize: clampWorldMapSize(
         Math.min(cellByWidth, cellByHeight),
         worldMapMinCellSize,
@@ -262,7 +248,6 @@
   function syncWorldMapLayout() {
     const layout = measureWorldMapLayout();
 
-    elements.canvas.style.setProperty("--world-map-axis-size", layout.axisSize + "px");
     elements.canvas.style.setProperty("--world-map-cell-size", layout.cellSize + "px");
     syncWorldMapTrayHeight();
   }
@@ -276,18 +261,6 @@
       state.layoutFrameId = null;
       syncWorldMapLayout();
     });
-  }
-
-  function renderAxes() {
-    syncWorldMapLayout();
-    elements.columns.style.gridTemplateColumns =
-      "repeat(" + worldColumns.length + ", var(--world-map-cell-size, 56px))";
-    elements.columns.innerHTML = worldColumns
-      .map((value) => '<span class="world-map-axis__label">' + escapeHtml(value) + "</span>")
-      .join("");
-    elements.rows.innerHTML = worldRows
-      .map((value) => '<span class="world-map-row-label">' + escapeHtml(value) + "</span>")
-      .join("");
   }
 
   function renderGrid() {
@@ -346,9 +319,9 @@
         button.title = entry.fileName + " at " + formatPosition(entry.position);
       } else {
         button.innerHTML =
-          (isSelected
+          isSelected
             ? '<span class="world-map-grid__selection-frame" aria-hidden="true"></span>'
-            : "") + '<span class="world-map-grid__empty">.</span>';
+            : "";
         button.setAttribute("aria-label", "Empty slot " + formatPosition([column, row]));
         button.title = "Empty slot " + formatPosition([column, row]);
       }
@@ -659,7 +632,6 @@
     });
   }
 
-  renderAxes();
   renderAll();
   initializeWorldMapDisclosures();
 
