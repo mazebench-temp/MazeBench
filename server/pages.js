@@ -127,6 +127,7 @@ function createPageRenderer({
           <script src="/play-render-actors.js" defer></script>
           <script src="/play-render-compositor.js" defer></script>
           <script src="/play-render.js" defer></script>
+          <script src="/maze-engine.js" defer></script>
           <script src="/play-movement.js" defer></script>
           <script src="/play-world-transitions.js" defer></script>
           <script src="/play-gameplay.js" defer></script>
@@ -292,6 +293,7 @@ function createPageRenderer({
         <script src="/play-render-actors.js" defer></script>
         <script src="/play-render-compositor.js" defer></script>
         <script src="/play-render.js" defer></script>
+        <script src="/maze-engine.js" defer></script>
         <script src="/play-movement.js" defer></script>
         <script src="/play-world-transitions.js" defer></script>
         <script src="/play-gameplay.js" defer></script>

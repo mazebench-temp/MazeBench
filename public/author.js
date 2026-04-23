@@ -246,123 +246,14 @@
     return actor?.type === "player" || actor?.type === "circle_player";
   }
 
-  function isSolvedSolverSnapshot(snapshot) {
-    if (snapshot.actors.some((actor) => actor.type === "gem" && actor.removed)) {
-      return true;
+  function createSolverEngine(playData) {
+    const mazeEngine = window.MazeEngine;
+
+    if (!mazeEngine || typeof mazeEngine.createEngine !== "function") {
+      throw new Error("Solver engine is not available.");
     }
 
-    const players = snapshot.actors.filter(
-      (actor) => isSolverPlayerActor(actor) && !actor.removed && (actor.elevation ?? 0) === 0
-    );
-    const gems = snapshot.actors.filter((actor) => actor.type === "gem" && !actor.removed);
-
-    return gems.some((gem) => players.some((player) => player.x === gem.x && player.y === gem.y));
-  }
-
-  function solverHeuristic(snapshot) {
-    const players = snapshot.actors.filter((actor) => isSolverPlayerActor(actor) && !actor.removed);
-    const gems = snapshot.actors.filter((actor) => actor.type === "gem" && !actor.removed);
-
-    if (players.length === 0 || gems.length === 0) {
-      return 0;
-    }
-
-    let best = 2;
-
-    players.forEach((player) => {
-      gems.forEach((gem) => {
-        if (player.x === gem.x && player.y === gem.y && (player.elevation ?? 0) === 0) {
-          best = 0;
-        } else if (player.x === gem.x || player.y === gem.y) {
-          best = Math.min(best, 1);
-        }
-      });
-    });
-
-    return best;
-  }
-
-  function solverTerrainKey(terrain) {
-    return terrain
-      .map((row) => row.map((cell) => cell.type + (cell.raised ? "^" : "")).join(","))
-      .join("/");
-  }
-
-  function solverStateKey(snapshot) {
-    const actorKey = snapshot.actors
-      .map((actor) =>
-        [
-          actor.type,
-          actor.groupId || "",
-          actor.x,
-          actor.y,
-          actor.elevation ?? 0,
-          actor.removed ? 1 : 0
-        ].join(":")
-      )
-      .join("|");
-
-    return solverTerrainKey(snapshot.terrain) + "::" + actorKey;
-  }
-
-  function captureSolverSnapshot(app) {
-    return {
-      width: app.state.width,
-      height: app.state.height,
-      terrain: app.cloneTerrainState(app.state.terrain),
-      actors: app.cloneActorStateList()
-    };
-  }
-
-  function restoreSolverSnapshot(app, snapshot) {
-    app.state.width = snapshot.width;
-    app.state.height = snapshot.height;
-    app.state.terrain = app.cloneTerrainState(snapshot.terrain);
-    app.state.actors = snapshot.actors.map((actor) => app.createRuntimeActor(actor));
-    app.moveHistory.length = 0;
-    app.isAnimating = false;
-    app.isTransitioningLevel = false;
-    app.queuedAction = null;
-    app.gateRenderOverride = null;
-    app.liveRaisedPlayerGates.clear();
-  }
-
-  function createSolverApp(playData) {
-    const modules = window.PlayModules || {};
-
-    if (
-      typeof modules.createPlayCore !== "function" ||
-      typeof modules.registerGameplayFunctions !== "function"
-    ) {
-      throw new Error("Solver modules are not available.");
-    }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, playData.width * 64);
-    canvas.height = Math.max(1, playData.height * 64);
-
-    const app = modules.createPlayCore({
-      playData,
-      canvas,
-      playShell: null,
-      playHeader: null,
-      playStage: null,
-      mazeFrame: null,
-      fuzzyToggle: null
-    });
-
-    if (!app) {
-      throw new Error("Could not initialize the solver.");
-    }
-
-    app.render = function () {};
-    modules.registerGameplayFunctions(app);
-
-    if (typeof app.tryMovePlayersInstant !== "function") {
-      throw new Error("Instant movement is not available to the solver.");
-    }
-
-    return app;
+    return mazeEngine.createEngine(playData);
   }
 
   function buildEditorRenderPlayData() {
@@ -530,32 +421,33 @@
     }
   }
 
-  function solveWithAStar(app, initialSnapshot) {
+  function solveWithAStar(engine) {
     const open = new SolverHeap();
     const bestCostByKey = new Map();
     let order = 0;
     let expanded = 0;
-    const initialKey = solverStateKey(initialSnapshot);
+    const initialState = engine.cloneState(engine.initialState);
+    const initialKey = engine.stateKey(initialState);
 
     bestCostByKey.set(initialKey, 0);
     open.push({
-      snapshot: initialSnapshot,
+      state: initialState,
+      key: initialKey,
       cost: 0,
       path: "",
-      priority: solverHeuristic(initialSnapshot),
+      priority: engine.heuristic(initialState),
       order: order
     });
     order += 1;
 
     while (open.size > 0) {
       const current = open.pop();
-      const currentKey = solverStateKey(current.snapshot);
 
-      if (current.cost !== bestCostByKey.get(currentKey)) {
+      if (current.cost !== bestCostByKey.get(current.key)) {
         continue;
       }
 
-      if (isSolvedSolverSnapshot(current.snapshot)) {
+      if (engine.isSolved(current.state)) {
         return {
           status: "solved",
           moves: current.cost,
@@ -575,16 +467,15 @@
       }
 
       solverDirections.forEach((direction) => {
-        restoreSolverSnapshot(app, current.snapshot);
-        const moveResult = app.tryMovePlayersInstant(direction.dx, direction.dy);
+        const nextState = engine.cloneState(current.state);
+        const moveResult = engine.move(nextState, direction.dx, direction.dy);
 
         if (!moveResult?.moved) {
           return;
         }
 
-        const nextSnapshot = captureSolverSnapshot(app);
         const nextCost = current.cost + 1;
-        const nextKey = solverStateKey(nextSnapshot);
+        const nextKey = engine.stateKey(nextState);
         const bestKnownCost = bestCostByKey.get(nextKey);
 
         if (typeof bestKnownCost === "number" && bestKnownCost <= nextCost) {
@@ -593,10 +484,11 @@
 
         bestCostByKey.set(nextKey, nextCost);
         open.push({
-          snapshot: nextSnapshot,
+          state: nextState,
+          key: nextKey,
           cost: nextCost,
           path: current.path + direction.label,
-          priority: nextCost + solverHeuristic(nextSnapshot),
+          priority: nextCost + engine.heuristic(nextState),
           order
         });
         order += 1;
@@ -609,20 +501,20 @@
     };
   }
 
-  function canCollectGemAtMoveEndpoint(app, move) {
-    if (!isSolverPlayerActor(move.actor) || move.toRemoved) {
+  function canCollectGemAtMoveEndpoint(engine, move) {
+    if (!engine.isPlayerMove(move) || move.toRemoved) {
       return false;
     }
 
-    const toElevation = move.toElevation ?? move.actor.elevation ?? 0;
+    const toElevation = move.toElevation ?? 0;
     const fromElevation = move.fromElevation ?? 0;
 
-    return toElevation === 0 || (fromElevation === 0 && app.isPlayerLift(move.toX, move.toY));
+    return toElevation === 0 || (fromElevation === 0 && engine.isPlayerLift(move.toX, move.toY));
   }
 
-  function recordGemPlacementCandidates(app, moveResult, cost, path, bestCandidateByCell) {
+  function recordGemPlacementCandidates(engine, moveResult, cost, path, bestCandidateByCell) {
     moveResult.moves.forEach((move) => {
-      if (!canCollectGemAtMoveEndpoint(app, move)) {
+      if (!canCollectGemAtMoveEndpoint(engine, move)) {
         return;
       }
 
@@ -658,17 +550,19 @@
     return hardest;
   }
 
-  function findHardestGemPlacement(app, initialSnapshot) {
+  function findHardestGemPlacement(engine) {
     const open = new SolverHeap();
     const bestCostByKey = new Map();
     const bestCandidateByCell = new Map();
     let order = 0;
     let expanded = 0;
-    const initialKey = solverStateKey(initialSnapshot);
+    const initialState = engine.cloneState(engine.initialState);
+    const initialKey = engine.stateKey(initialState);
 
     bestCostByKey.set(initialKey, 0);
     open.push({
-      snapshot: initialSnapshot,
+      state: initialState,
+      key: initialKey,
       cost: 0,
       path: "",
       priority: 0,
@@ -678,9 +572,8 @@
 
     while (open.size > 0) {
       const current = open.pop();
-      const currentKey = solverStateKey(current.snapshot);
 
-      if (current.cost !== bestCostByKey.get(currentKey)) {
+      if (current.cost !== bestCostByKey.get(current.key)) {
         continue;
       }
 
@@ -696,8 +589,8 @@
       }
 
       solverDirections.forEach((direction) => {
-        restoreSolverSnapshot(app, current.snapshot);
-        const moveResult = app.tryMovePlayersInstant(direction.dx, direction.dy);
+        const nextState = engine.cloneState(current.state);
+        const moveResult = engine.move(nextState, direction.dx, direction.dy);
 
         if (!moveResult?.moved) {
           return;
@@ -705,11 +598,10 @@
 
         const nextCost = current.cost + 1;
         const nextPath = current.path + direction.label;
-        const nextSnapshot = captureSolverSnapshot(app);
-        const nextKey = solverStateKey(nextSnapshot);
+        const nextKey = engine.stateKey(nextState);
         const bestKnownCost = bestCostByKey.get(nextKey);
 
-        recordGemPlacementCandidates(app, moveResult, nextCost, nextPath, bestCandidateByCell);
+        recordGemPlacementCandidates(engine, moveResult, nextCost, nextPath, bestCandidateByCell);
 
         if (typeof bestKnownCost === "number" && bestKnownCost <= nextCost) {
           return;
@@ -717,7 +609,8 @@
 
         bestCostByKey.set(nextKey, nextCost);
         open.push({
-          snapshot: nextSnapshot,
+          state: nextState,
+          key: nextKey,
           cost: nextCost,
           path: nextPath,
           priority: nextCost,
@@ -1520,8 +1413,8 @@
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     try {
-      const app = createSolverApp(buildEditorPlayData({ includeGems: false }));
-      const result = findHardestGemPlacement(app, captureSolverSnapshot(app));
+      const engine = createSolverEngine(buildEditorPlayData({ includeGems: false }));
+      const result = findHardestGemPlacement(engine);
 
       if (result.candidate) {
         const placedValue = applyGemPlacement(result.candidate);
@@ -1591,8 +1484,8 @@
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     try {
-      const app = createSolverApp(playData);
-      const result = solveWithAStar(app, captureSolverSnapshot(app));
+      const engine = createSolverEngine(playData);
+      const result = solveWithAStar(engine);
 
       if (result.status === "solved") {
         setStatus(
