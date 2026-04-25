@@ -725,8 +725,10 @@ class MazeWorld(GridWorld):
         if self.tile_has_name(sprite.x, sprite.y, "hole"):
             if isinstance(sprite, FloatingFloor):
                 self.fill_hole_with_floor(sprite.x, sprite.y)
-            self.remove_sprite(sprite)
-            return
+
+            if not isinstance(sprite, Player) or sprite.elevation == 0:
+                self.remove_sprite(sprite)
+                return
 
         dx = sprite.x - old_position[0]
         dy = sprite.y - old_position[1]

@@ -955,7 +955,10 @@
           return;
         }
 
-        if (isHole(state, state.actorX[move.actorIndex], state.actorY[move.actorIndex])) {
+        if (
+          isHole(state, state.actorX[move.actorIndex], state.actorY[move.actorIndex]) &&
+          (!isPlayerType(move.actorType) || (move.toElevation ?? state.actorElevation[move.actorIndex] ?? 0) === 0)
+        ) {
           move.toRemoved = true;
         }
       });

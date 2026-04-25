@@ -66,6 +66,30 @@ function createState(playData) {
 
 {
   const terrain = floorTerrain(3, 1);
+  terrain[0][0] = { type: "wall" };
+  terrain[0][1] = { type: "hole" };
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [1, 0]);
+  assert.equal(state.actorElevation[0], 1);
+  assert.equal(state.actorRemoved[0], 0);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [1, 0]);
+  assert.equal(state.actorRemoved[1], 0);
+}
+
+{
+  const terrain = floorTerrain(3, 1);
   terrain[0][2] = { type: "hole" };
   const { engine, state } = createState({
     width: 3,
