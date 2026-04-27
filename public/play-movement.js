@@ -156,6 +156,7 @@
     function performPlayerMove(dx, dy, options = {}) {
       const animate = options.animate !== false;
       const recordHistory = options.recordHistory !== false;
+      const onFinish = typeof options.onFinish === "function" ? options.onFinish : null;
       const engine = createCurrentEngine();
       const engineState = engine.cloneState(engine.initialState);
       const previousState = {
@@ -177,6 +178,7 @@
           applyMoveLogicalPositions(moves);
           app.gateRenderOverride = raisedPlayerGates;
           app.animateMoves(moves, null, {
+            onFinish,
             startLiftPhase: () => {
               liftToggles.forEach(({ x, y, raised }) => {
                 setPlayerLiftRaised(x, y, raised);
@@ -189,7 +191,12 @@
           });
           applyMoveFinalState(moves);
           app.gateRenderOverride = null;
+          if (onFinish) {
+            onFinish();
+          }
         }
+      } else if (onFinish) {
+        onFinish();
       }
 
       return {

@@ -30,6 +30,7 @@
     palette: document.getElementById("palette"),
     placeGem: document.getElementById("place-gem"),
     playLink: document.getElementById("author-play-link"),
+    playSolution: document.getElementById("play-solution"),
     rawOutput: document.getElementById("raw-output"),
     resizeLevel: document.getElementById("resize-level"),
     rotateLeft: document.getElementById("rotate-left"),
@@ -97,6 +98,12 @@
   const solverMaxExpandedStates = 1000000;
   const solverProgressYieldStateInterval = 4096;
   const solverProgressRenderIntervalMs = 80;
+  const solutionDirections = {
+    U: { label: "U", dx: 0, dy: -1 },
+    D: { label: "D", dx: 0, dy: 1 },
+    L: { label: "L", dx: -1, dy: 0 },
+    R: { label: "R", dx: 1, dy: 0 }
+  };
   const worldColumns =
     Array.isArray(authorData.worldColumns) && authorData.worldColumns.length > 0
       ? authorData.worldColumns
@@ -114,6 +121,7 @@
     filePath: authorData.initialLevel.filePath,
     height: authorData.initialLevel.height,
     isDirty: false,
+    isSolutionPlaying: false,
     isSolverBusy: false,
     levelId: authorData.initialLevel.levelId,
     message: authorData.initialLevel.exists
@@ -124,6 +132,8 @@
     selectedCell: { x: 0, y: 0 },
     selectedToken:
       authorData.defaultWallToken || authorData.palette[0]?.token || authorData.defaultFloorToken,
+    solverSolutionCellsKey: null,
+    solverSolutionPath: null,
     width: authorData.initialLevel.width
   };
 
@@ -183,6 +193,23 @@
 
   function serializeCells() {
     return state.cells.map((row) => row.join(authorData.separator)).join("\n");
+  }
+
+  function clearSolverSolution() {
+    state.solverSolutionCellsKey = null;
+    state.solverSolutionPath = null;
+  }
+
+  function rememberSolverSolution(path) {
+    state.solverSolutionCellsKey = serializeCells();
+    state.solverSolutionPath = String(path ?? "");
+  }
+
+  function hasPlayableSolution() {
+    return (
+      typeof state.solverSolutionPath === "string" &&
+      state.solverSolutionCellsKey === serializeCells()
+    );
   }
 
   function isSolverActorTool(tool) {
@@ -395,6 +422,9 @@
     }
 
     modules.registerRenderFunctions(app);
+    if (typeof modules.registerGameplayFunctions === "function") {
+      modules.registerGameplayFunctions(app);
+    }
     editorRenderer.app = app;
     return app;
   }
@@ -449,11 +479,13 @@
     const hasGem = levelHasGem();
     const hasPlayer = levelHasPlayer();
 
-    if (state.isSolverBusy) {
+    if (state.isSolverBusy || state.isSolutionPlaying) {
       elements.solveLevel.disabled = true;
-      elements.solveLevel.title = "Search is running.";
+      elements.solveLevel.title = state.isSolverBusy ? "Search is running." : "Solution is playing.";
       elements.placeGem.disabled = true;
-      elements.placeGem.title = "Search is running.";
+      elements.placeGem.title = elements.solveLevel.title;
+      elements.playSolution.disabled = true;
+      elements.playSolution.title = elements.solveLevel.title;
       return;
     }
 
@@ -465,6 +497,10 @@
     elements.placeGem.title = hasPlayer
       ? "Find the hardest empty terrain cell the player can reach."
       : "Add a player before finding a gem placement.";
+    elements.playSolution.disabled = !hasPlayableSolution();
+    elements.playSolution.title = hasPlayableSolution()
+      ? "Animate the last solver solution."
+      : "Run the solver successfully before playing a solution.";
   }
 
   function syncLevelSelectors() {
@@ -890,6 +926,7 @@
   }
 
   function markDirty() {
+    clearSolverSolution();
     state.isDirty = true;
     renderStatus();
     renderRawOutput();
@@ -930,6 +967,7 @@
     state.width = nextWidth;
     state.height = nextHeight;
     state.cells = nextCells;
+    clearSolverSolution();
     state.selectedCell = {
       x: Math.min(state.selectedCell.x, state.width - 1),
       y: Math.min(state.selectedCell.y, state.height - 1)
@@ -941,6 +979,7 @@
 
   function clearLevel() {
     state.cells = createBlankCells(state.width, state.height, authorData.defaultFloorToken);
+    clearSolverSolution();
     state.selectedCell = { x: 0, y: 0 };
     setStatus("Cleared the board to floor tiles.", "warning");
     state.isDirty = true;
@@ -989,6 +1028,7 @@
       }
     }
 
+    clearSolverSolution();
     setStatus("Wrapped the border and left 4-tile openings centered on each side.", "warning");
     state.isDirty = true;
     renderAll();
@@ -1054,6 +1094,7 @@
     state.width = nextWidth;
     state.height = nextHeight;
     state.cells = nextCells;
+    clearSolverSolution();
     state.selectedCell = nextSelectedCell;
     setStatus(message, "warning");
     state.isDirty = true;
@@ -1101,6 +1142,7 @@
       state.message = payload.exists ? "Loaded existing level." : "Fresh level. Paint something good.";
       state.messageTone = payload.exists ? "success" : "warning";
       state.selectedCell = { x: 0, y: 0 };
+      clearSolverSolution();
       state.width = payload.width;
       syncLevelSelectors();
       window.history.replaceState(
@@ -1147,6 +1189,9 @@
       state.isDirty = false;
       state.levelId = payload.levelId;
       state.width = payload.width;
+      if (state.solverSolutionCellsKey !== serializeCells()) {
+        clearSolverSolution();
+      }
       let previewMessage = payload.message || "Saved.";
       let previewTone = "success";
 
@@ -1202,6 +1247,7 @@
 
     const placedValue = gemPlacementValueForCell(candidate.x, candidate.y);
     state.cells[candidate.y][candidate.x] = placedValue;
+    clearSolverSolution();
     state.selectedCell = { x: candidate.x, y: candidate.y };
     state.isDirty = true;
     renderGrid();
@@ -1315,6 +1361,7 @@
       });
 
       if (result.status === "solved") {
+        rememberSolverSolution(result.path);
         setStatus(
           "Solver: possible in " +
             result.moves +
@@ -1326,6 +1373,7 @@
           "success"
         );
       } else if (result.status === "unsolved") {
+        clearSolverSolution();
         setStatus(
           "Solver: not possible. Explored " +
             formatStateCount(result.expanded) +
@@ -1335,6 +1383,7 @@
           "warning"
         );
       } else {
+        clearSolverSolution();
         setStatus(
           "Solver: no answer within " +
             formatStateCount(result.maxExpanded) +
@@ -1345,10 +1394,114 @@
         );
       }
     } catch (error) {
+      clearSolverSolution();
       setStatus(error instanceof Error ? error.message : "Solver failed.", "error");
     } finally {
       state.isSolverBusy = false;
       hideSolverProgress();
+      syncSolverButtonState();
+    }
+  }
+
+  function parseSolutionMoves(path) {
+    const moves = [];
+
+    for (const label of String(path ?? "")) {
+      const direction = solutionDirections[label];
+
+      if (!direction) {
+        throw new Error("Solution contains an unsupported move: " + label + ".");
+      }
+
+      moves.push(direction);
+    }
+
+    return moves;
+  }
+
+  function performSolutionMove(app, direction) {
+    let finishMove;
+    const completion = new Promise((resolve) => {
+      finishMove = resolve;
+    });
+    const result = app.movement.performPlayerMove(direction.dx, direction.dy, {
+      animate: true,
+      onFinish: finishMove,
+      recordHistory: false
+    });
+
+    return result.moved ? completion.then(() => result) : Promise.resolve(result);
+  }
+
+  async function playSolution() {
+    if (!hasPlayableSolution()) {
+      setStatus("Run Solver successfully before playing a solution.", "error");
+      syncSolverButtonState();
+      return;
+    }
+
+    const solutionPath = state.solverSolutionPath;
+    let moves;
+
+    try {
+      moves = parseSolutionMoves(solutionPath);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not read the solution.", "error");
+      syncSolverButtonState();
+      return;
+    }
+
+    const playData = buildEditorRenderPlayData();
+    const app = ensureEditorRenderApp(playData);
+
+    if (!app || !app.movement || typeof app.movement.performPlayerMove !== "function") {
+      setStatus("Solution playback is not available.", "error");
+      syncSolverButtonState();
+      return;
+    }
+
+    state.isSolutionPlaying = true;
+    setStatus("Playing solver solution...", "warning");
+    syncSolverButtonState();
+
+    try {
+      app.applyLevelState(playData, {
+        deferRender: true,
+        immediateCamera: true,
+        resetHistory: true,
+        resetLevelEntry: true
+      });
+      await app.preloadImagesForLevelState(playData);
+      app.render();
+
+      for (let index = 0; index < moves.length; index += 1) {
+        const result = await performSolutionMove(app, moves[index]);
+
+        if (!result.moved) {
+          throw new Error(
+            "Solution stopped at move " +
+              (index + 1) +
+              " (" +
+              moves[index].label +
+              ")."
+          );
+        }
+      }
+
+      setStatus(
+        "Played solution: " +
+          moves.length +
+          " move" +
+          (moves.length === 1 ? "" : "s") +
+          ". UDLR: " +
+          formatSolverPath(solutionPath) +
+          ".",
+        "success"
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not play the solution.", "error");
+    } finally {
+      state.isSolutionPlaying = false;
       syncSolverButtonState();
     }
   }
@@ -1542,6 +1695,7 @@
     transformLevel("flip-vertical");
   });
   elements.placeGem.addEventListener("click", placeGem);
+  elements.playSolution.addEventListener("click", playSolution);
   elements.applyCellValue.addEventListener("click", applySelectedCellValue);
   elements.cellValue.addEventListener("keydown", function (event) {
     if (event.key === "Enter") {

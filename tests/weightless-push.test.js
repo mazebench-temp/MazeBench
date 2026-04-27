@@ -274,6 +274,23 @@ function createUShapeActors(extraActors = []) {
 }
 
 {
+  const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
+  const app = createGameplayApp([player]);
+  let finished = false;
+  const result = app.movement.performPlayerMove(1, 0, {
+    animate: true,
+    onFinish: () => {
+      finished = true;
+    },
+    recordHistory: false
+  });
+
+  assert.equal(result.moved, true);
+  assert.equal(finished, true);
+  assert.deepEqual([player.x, player.y], [1, 0]);
+}
+
+{
   const gem = { type: "gem", x: 1, y: 0, removed: false };
   const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
   const terrain = createTerrain(8, 8);

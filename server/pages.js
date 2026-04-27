@@ -263,6 +263,10 @@ function createPageRenderer({
                 <div class="author-control-row">
                   <button id="place-gem" class="tool-button" type="button">Place Gem</button>
                   <button id="solve-level" class="tool-button" type="button">Solver</button>
+                  <button id="play-solution" class="tool-button" type="button">
+                    <span class="tool-button__icon" aria-hidden="true">&#9654;</span>
+                    <span>Play Solution</span>
+                  </button>
                 </div>
               </div>
             </details>
