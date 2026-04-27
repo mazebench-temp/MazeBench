@@ -82,10 +82,6 @@
         return "#c75652";
       }
 
-      if (family === "terrain:player_lift") {
-        return "#8a63d2";
-      }
-
       if (family === "terrain:orange_wall") {
         return "#b85f16";
       }

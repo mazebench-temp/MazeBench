@@ -1531,8 +1531,9 @@
         gateState,
         orangeWallState
       );
+      const family = families.values().next().value || null;
 
-      return families.values().next().value || null;
+      return family === "terrain:player_lift" ? null : family;
     }
 
     function isIce(x, y) {

@@ -26,6 +26,7 @@ function createStubContext() {
     setTransform: noop,
     rect: noop,
     translate: noop,
+    rotate: noop,
     scale: noop,
     closePath: noop,
     viewport: noop,
@@ -186,6 +187,31 @@ function createRenderApp({ terrain, actors, playData = {} }) {
 
   assert.equal(app.elevatedSideBleedCoverFamily(1, 0, 1), "actor:floating_floor");
   assert.equal(app.elevatedSideBleedCoverFamily(1, 0, -1), null);
+}
+
+{
+  const terrain = buildTerrain(4, 4);
+  terrain[0][2] = { type: "player_lift", raised: true, imageUrl: null, underlay: null };
+  terrain[1][1] = { type: "player_lift", raised: true, imageUrl: null, underlay: null };
+  terrain[1][2] = { type: "player_lift", raised: true, imageUrl: null, underlay: null };
+  const app = createRenderApp({
+    terrain,
+    actors: []
+  });
+
+  assert.equal(app.elevatedSideBleedCoverFamily(1, 0, 1), null);
+  assert.equal(app.renderTerrain.elevatedBleedCoverColor("terrain:player_lift"), null);
+
+  app.sceneCtx.__operations.length = 0;
+  app.renderActors.paintDepthSortedScene(0);
+  assert.equal(
+    app.sceneCtx.__operations.some(
+      (operation) =>
+        operation.fillStyle === "#8a63d2" &&
+        operation.args[2] === 5
+    ),
+    false
+  );
 }
 
 {
