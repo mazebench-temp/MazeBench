@@ -288,6 +288,114 @@ function createRenderApp({ terrain, actors, playData = {} }) {
     )
   );
   assert.equal(app.renderActors.actorDepthRow(app.state.actors[1]), 2);
+  assert.equal(app.renderActors.actorTieBreaker(app.state.actors[1]), 2.75);
+  assert.ok(app.renderActors.buildDrawItems(0).some((item) => item.tieBreaker === 3));
+}
+
+{
+  const app = createRenderApp({
+    terrain: buildTerrain(3, 4),
+    actors: [
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, removed: false, elevation: 1, renderElevation: 1, imageUrl: null },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 2, removed: false, elevation: 1, renderElevation: 1, imageUrl: null }
+    ]
+  });
+
+  app.state.actors.forEach((actor) => {
+    actor.elevation = 1;
+    actor.renderElevation = 1;
+  });
+
+  assert.ok(app.renderActors.buildDrawItems(0).some((item) => item.tieBreaker === 3.25));
+
+  app.sceneCtx.__operations.length = 0;
+  app.renderActors.paintDepthSortedScene(0);
+  assert.ok(
+    app.sceneCtx.__operations.some(
+      (operation) =>
+        operation.fillStyle === "#315991" &&
+        operation.args[0] === 66 &&
+        operation.args[1] === 45 &&
+        operation.args[2] === 60 &&
+        operation.args[3] === 5
+    )
+  );
+  assert.ok(
+    app.sceneCtx.__operations.some(
+      (operation) =>
+        operation.fillStyle === "#315991" &&
+        operation.args[0] === 66 &&
+        operation.args[1] === 109 &&
+        operation.args[2] === 60 &&
+        operation.args[3] === 5
+    )
+  );
+}
+
+{
+  const app = createRenderApp({
+    terrain: buildTerrain(3, 4),
+    actors: [
+      { type: "player", x: 1, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null }
+    ]
+  });
+
+  app.state.actors[0].elevation = 0;
+  app.state.actors[0].renderElevation = 0;
+  app.state.actors[1].elevation = 1;
+  app.state.actors[1].renderElevation = 1;
+
+  const drawItems = app.renderActors.buildDrawItems(0);
+  const playerDrawIndex = drawItems.findIndex((item) => item.order === 0);
+  const weightlessDrawIndex = drawItems.findIndex((item) => item.order === 1);
+
+  assert.notEqual(playerDrawIndex, -1);
+  assert.notEqual(weightlessDrawIndex, -1);
+  assert.ok(playerDrawIndex < weightlessDrawIndex);
+}
+
+{
+  const app = createRenderApp({
+    terrain: buildTerrain(3, 3),
+    actors: [
+      { type: "player", x: 1, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null }
+    ]
+  });
+
+  app.state.actors[0].elevation = 0;
+  app.state.actors[0].renderElevation = 0;
+  app.state.actors[1].elevation = 1;
+  app.state.actors[1].renderElevation = 1;
+
+  for (const renderY of [0.4, 1.6]) {
+    app.state.actors[0].renderY = renderY;
+
+    const drawItems = app.renderActors.buildDrawItems(0);
+    const playerDrawIndex = drawItems.findIndex((item) => item.order === 0);
+    const weightlessDrawIndex = drawItems.findIndex((item) => item.order === 1);
+
+    assert.equal(app.renderActors.actorDepthRow(app.state.actors[0]), 1);
+    assert.notEqual(playerDrawIndex, -1);
+    assert.notEqual(weightlessDrawIndex, -1);
+    assert.ok(playerDrawIndex < weightlessDrawIndex);
+  }
+
+  app.state.actors[0].y = 2;
+  app.state.actors[0].renderY = 1.4;
+
+  {
+    const drawItems = app.renderActors.buildDrawItems(0);
+    const playerDrawIndex = drawItems.findIndex((item) => item.order === 0);
+    const weightlessDrawIndex = drawItems.findIndex((item) => item.order === 1);
+
+    assert.equal(app.renderActors.actorDepthRow(app.state.actors[0]), 1);
+    assert.notEqual(playerDrawIndex, -1);
+    assert.notEqual(weightlessDrawIndex, -1);
+    assert.ok(playerDrawIndex < weightlessDrawIndex);
+  }
 }
 
 {

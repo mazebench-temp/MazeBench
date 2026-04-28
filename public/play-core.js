@@ -1279,7 +1279,9 @@
         actorsAt(
           x,
           y,
-          (actor) => actor.type === "floating_floor" || actor.type === "weightless_box"
+          (actor) =>
+            actorElevation(actor) === 0 &&
+            (actor.type === "floating_floor" || actor.type === "weightless_box")
         ).length > 0
       );
     }
@@ -1896,37 +1898,60 @@
     }
 
     function initializeActorElevations() {
-      const gateState = computeRaisedPlayerGateSet(app.state.actors);
-      const orangeWallState = computeRaisedOrangeWallSet(app.state.actors);
-      const initializedWeightlessGroups = new Set();
-
       app.state.actors.forEach((actor) => {
-        if (isPlayerActor(actor)) {
-          const elevation = playerSurfaceHeightAt(actor.x, actor.y, gateState, orangeWallState) === 1 ? 1 : 0;
-          actor.elevation = elevation;
-          actor.renderElevation = elevation;
-          return;
-        }
-
-        if (actor.type !== "weightless_box") {
+        if (!isPlayerActor(actor) && actor.type !== "weightless_box") {
           actor.elevation = 0;
           actor.renderElevation = 0;
-          return;
         }
+      });
 
-        if (initializedWeightlessGroups.has(actor.groupId)) {
-          return;
-        }
+      let gateState = computeRaisedPlayerGateSet(app.state.actors);
+      let orangeWallState = computeRaisedOrangeWallSet(app.state.actors);
 
-        initializedWeightlessGroups.add(actor.groupId);
+      for (let iteration = 0; iteration < 4; iteration += 1) {
+        const initializedWeightlessGroups = new Set();
+        let changed = false;
 
-        const members = weightlessGroupMembers(actor.groupId);
-        const elevation = weightlessGroupSupportedElevation(members, gateState, orangeWallState);
+        app.state.actors.forEach((actor) => {
+          if (actor.type !== "weightless_box" || actor.removed) {
+            return;
+          }
 
-        members.forEach((member) => {
-          member.elevation = elevation;
-          member.renderElevation = elevation;
+          if (initializedWeightlessGroups.has(actor.groupId)) {
+            return;
+          }
+
+          initializedWeightlessGroups.add(actor.groupId);
+
+          const members = weightlessGroupMembers(actor.groupId);
+          const elevation = weightlessGroupSupportedElevation(members, gateState, orangeWallState);
+
+          members.forEach((member) => {
+            if (member.elevation !== elevation) {
+              changed = true;
+            }
+
+            member.elevation = elevation;
+            member.renderElevation = elevation;
+          });
         });
+
+        gateState = computeRaisedPlayerGateSet(app.state.actors);
+        orangeWallState = computeRaisedOrangeWallSet(app.state.actors);
+
+        if (!changed) {
+          break;
+        }
+      }
+
+      app.state.actors.forEach((actor) => {
+        if (!isPlayerActor(actor)) {
+          return;
+        }
+
+        const elevation = playerSurfaceHeightAt(actor.x, actor.y, gateState, orangeWallState) === 1 ? 1 : 0;
+        actor.elevation = elevation;
+        actor.renderElevation = elevation;
       });
     }
 

@@ -343,6 +343,72 @@
       );
     }
 
+    function paintWeightlessGroupSeamCovers(members, offsetX = 0, offsetY = 0, context = sceneCtx) {
+      const memberKeys = new Set(members.map((member) => `${member.x},${member.y}`));
+      const seamRows = new Map();
+      const coverHeight = 5;
+      const coverInsetX = 2;
+      const coverTopOffset = Math.floor(coverHeight / 2);
+
+      members.forEach((member) => {
+        if (!memberKeys.has(`${member.x},${member.y + 1}`)) {
+          return;
+        }
+
+        const seamY = member.y + 1;
+        const row = seamRows.get(seamY) || [];
+        row.push(member.x);
+        seamRows.set(seamY, row);
+      });
+
+      if (seamRows.size === 0) {
+        return;
+      }
+
+      context.save();
+      context.fillStyle = "#315991";
+
+      seamRows.forEach((columns, seamY) => {
+        columns.sort((left, right) => left - right);
+        let spanStart = columns[0];
+        let previous = columns[0];
+
+        for (let index = 1; index <= columns.length; index += 1) {
+          const column = columns[index];
+
+          if (column === previous + 1) {
+            previous = column;
+            continue;
+          }
+
+          context.fillRect(
+            spanStart * TILE_SIZE + offsetX + coverInsetX,
+            seamY * TILE_SIZE + offsetY - coverTopOffset,
+            (previous - spanStart + 1) * TILE_SIZE - coverInsetX * 2,
+            coverHeight
+          );
+
+          spanStart = column;
+          previous = column;
+        }
+      });
+
+      context.restore();
+    }
+
+    function hasWeightlessGroupSeams(members) {
+      const memberKeys = new Set(members.map((member) => `${member.x},${member.y}`));
+
+      return members.some((member) => memberKeys.has(`${member.x},${member.y + 1}`));
+    }
+
+    function isWeightlessGroupTransformAnimation(groupState) {
+      return (
+        Math.abs((groupState.scale ?? 1) - 1) > 0.001 ||
+        Math.abs(groupState.sink ?? 0) > 0.001
+      );
+    }
+
     function paintWeightlessGroup(groupId) {
       const groupState = weightlessGroupRenderState(groupId);
 
@@ -370,6 +436,11 @@
             groupState.offsetY - (groupState.surfaceLift ?? 0)
           );
         });
+        paintWeightlessGroupSeamCovers(
+          members,
+          groupState.offsetX,
+          groupState.offsetY - (groupState.surfaceLift ?? 0)
+        );
         return;
       }
 
@@ -403,6 +474,7 @@
       members.forEach((member) => {
         paintWeightlessBoxTile(member, tileOffsetX, tileOffsetY, weightlessGroupCtx);
       });
+      paintWeightlessGroupSeamCovers(members, tileOffsetX, tileOffsetY, weightlessGroupCtx);
 
       sceneCtx.save();
       if (groupState.sink > 0.001) {
@@ -420,8 +492,52 @@
       sceneCtx.restore();
     }
 
+    function queueWeightlessGroupSeamCoverItems(drawItems) {
+      const groupIds = new Set();
+
+      state.actors.forEach((actor) => {
+        if (actor.removed || actor.type !== "weightless_box") {
+          return;
+        }
+
+        groupIds.add(actor.groupId);
+      });
+
+      groupIds.forEach((groupId) => {
+        const groupState = weightlessGroupRenderState(groupId);
+        const members = animatedWeightlessGroupMembers(groupId);
+
+        if (
+          members.length < 2 ||
+          (groupState.renderElevation ?? 0) <= 0.001 ||
+          isWeightlessGroupTransformAnimation(groupState) ||
+          !hasWeightlessGroupSeams(members)
+        ) {
+          return;
+        }
+
+        drawItems.push({
+          depth: 1 + Math.ceil(Math.max(...members.map((member) => member.renderY ?? member.y))),
+          tieBreaker: 3.25,
+          order: drawItems.length,
+          paint: function () {
+            paintWeightlessGroupSeamCovers(
+              members,
+              groupState.offsetX,
+              groupState.offsetY - (groupState.surfaceLift ?? 0)
+            );
+          }
+        });
+      });
+    }
+
     function actorDepthRow(actor) {
       const renderY = actor.renderY ?? actor.y;
+      const underElevatedWeightlessDepthRow = actorUnderElevatedWeightlessDepthRow(actor);
+
+      if (underElevatedWeightlessDepthRow !== null) {
+        return underElevatedWeightlessDepthRow;
+      }
 
       if (!isPlayerActor(actor) && actor.type !== "weightless_box") {
         return renderY;
@@ -432,6 +548,66 @@
       }
 
       return Math.ceil(renderY);
+    }
+
+    function actorUnderElevatedWeightlessDepthRow(actor) {
+      if (actorRenderElevation(actor) > 0.001) {
+        return null;
+      }
+
+      const actorRenderX = actor.renderX ?? actor.x;
+      const actorRenderY = actor.renderY ?? actor.y;
+      const epsilon = 0.001;
+      let depthRow = null;
+
+      state.actors.forEach((candidate) => {
+        if (
+          candidate === actor ||
+          candidate.removed ||
+          candidate.type !== "weightless_box" ||
+          actorRenderElevation(candidate) <= 0.001
+        ) {
+          return;
+        }
+
+        const candidateRenderX = candidate.renderX ?? candidate.x;
+        const candidateRenderY = candidate.renderY ?? candidate.y;
+        const overlapsX =
+          actorRenderX < candidateRenderX + 1 - epsilon &&
+          actorRenderX + 1 > candidateRenderX + epsilon;
+        const overlapsY =
+          actorRenderY < candidateRenderY + 1 - epsilon &&
+          actorRenderY + 1 > candidateRenderY + epsilon;
+
+        if (!overlapsX || !overlapsY) {
+          return;
+        }
+
+        const candidateDepthRow = Math.ceil(candidateRenderY);
+        depthRow = depthRow === null ? candidateDepthRow : Math.min(depthRow, candidateDepthRow);
+      });
+
+      return depthRow;
+    }
+
+    function actorTieBreaker(actor) {
+      if (actor.renderInHole) {
+        return -1;
+      }
+
+      if (isCollectibleActor(actor)) {
+        return 0;
+      }
+
+      if (actor.type === "weightless_box" && actorRenderElevation(actor) > 0.001) {
+        return 2.75;
+      }
+
+      if (isPlayerActor(actor)) {
+        return 2;
+      }
+
+      return 1;
     }
 
     function buildDrawItems(now = performance.now()) {
@@ -487,8 +663,7 @@
 
         if (actor.type === "weightless_box") {
           const groupState = weightlessGroupRenderState(actor.groupId);
-          const isGroupedAnimation =
-            Math.abs((groupState.scale ?? 1) - 1) > 0.001 || Math.abs(groupState.sink ?? 0) > 0.001;
+          const isGroupedAnimation = isWeightlessGroupTransformAnimation(groupState);
 
           if (isGroupedAnimation) {
             if (animatedWeightlessGroups.has(actor.groupId)) {
@@ -504,8 +679,15 @@
 
             drawItems.push({
               depth:
-                (actor.renderInHole ? 0 : 1) + Math.max(...members.map((member) => member.renderY)),
-              tieBreaker: actor.renderInHole ? -1 : 1,
+                (actor.renderInHole ? 0 : 1) +
+                ((groupState.renderElevation ?? 0) > 0.001
+                  ? Math.ceil(Math.max(...members.map((member) => member.renderY)))
+                  : Math.max(...members.map((member) => member.renderY))),
+              tieBreaker: actor.renderInHole
+                ? -1
+                : (groupState.renderElevation ?? 0) > 0.001
+                  ? 2.75
+                  : 1,
               order: index,
               paint: function () {
                 paintWeightlessGroup(actor.groupId);
@@ -518,7 +700,7 @@
         const depthRow = actorDepthRow(actor);
         drawItems.push({
           depth: depthRow + (actor.renderInHole ? 0 : 1),
-          tieBreaker: actor.renderInHole ? -1 : isCollectibleActor(actor) ? 0 : isPlayerActor(actor) ? 2 : 1,
+          tieBreaker: actorTieBreaker(actor),
           order: index,
           paint: function () {
             paintActor(actor, now);
@@ -526,6 +708,7 @@
         });
       });
 
+      queueWeightlessGroupSeamCoverItems(drawItems);
       queueElevatedSideBleedCoverItems(drawItems, now);
 
       drawItems.sort((left, right) => {
@@ -750,7 +933,10 @@
       paintFloatingFloor,
       animatedWeightlessGroupMembers,
       paintWeightlessGroup,
+      paintWeightlessGroupSeamCovers,
+      queueWeightlessGroupSeamCoverItems,
       actorDepthRow,
+      actorTieBreaker,
       paintDepthSortedScene,
       buildDrawItems,
       paintActor

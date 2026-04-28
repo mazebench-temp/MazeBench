@@ -127,9 +127,29 @@
         state.actorRemoved[index] = actor?.removed ? 1 : 0;
       });
 
-      const gateState = computeRaisedPlayerGateSet(state);
-      const orangeButtonsPressed = areOrangeButtonsPressed(state);
-      const initializedWeightlessGroups = new Set();
+      for (let index = 0; index < actorCount; index += 1) {
+        if (!isPlayerActor(index) && actorTypes[index] !== "weightless_box") {
+          state.actorElevation[index] = 0;
+        }
+      }
+
+      let gateState = computeRaisedPlayerGateSet(state);
+      let orangeButtonsPressed = areOrangeButtonsPressed(state);
+
+      for (let iteration = 0; iteration < 4; iteration += 1) {
+        const changed = syncWeightlessGroupElevations(
+          state,
+          gateState,
+          orangeButtonsPressed
+        );
+
+        gateState = computeRaisedPlayerGateSet(state);
+        orangeButtonsPressed = areOrangeButtonsPressed(state);
+
+        if (!changed) {
+          break;
+        }
+      }
 
       for (let index = 0; index < actorCount; index += 1) {
         if (isPlayerActor(index)) {
@@ -143,11 +163,18 @@
             ) === 1
               ? 1
               : 0;
-          continue;
         }
+      }
 
-        if (actorTypes[index] !== "weightless_box") {
-          state.actorElevation[index] = 0;
+      return state;
+    }
+
+    function syncWeightlessGroupElevations(state, gateState, orangeButtonsPressed) {
+      const initializedWeightlessGroups = new Set();
+      let changed = false;
+
+      for (let index = 0; index < actorCount; index += 1) {
+        if (actorTypes[index] !== "weightless_box" || state.actorRemoved[index]) {
           continue;
         }
 
@@ -168,11 +195,14 @@
         );
 
         members.forEach((member) => {
-          state.actorElevation[member] = elevation;
+          if (state.actorElevation[member] !== elevation) {
+            state.actorElevation[member] = elevation;
+            changed = true;
+          }
         });
       }
 
-      return state;
+      return changed;
     }
 
     function createStateBuffer() {
@@ -261,6 +291,22 @@
       return isPlayerActor(actorIndex) || actorTypes[actorIndex] === "weightless_box"
         ? state.actorElevation[actorIndex] || 0
         : 0;
+    }
+
+    function elevationMask(elevation) {
+      return elevation === 1 ? 2 : 1;
+    }
+
+    function isOccupiedAtElevation(occupied, x, y, elevation) {
+      return (occupied[cellIndex(x, y)] & elevationMask(elevation)) !== 0;
+    }
+
+    function addOccupiedAtElevation(occupied, x, y, elevation) {
+      occupied[cellIndex(x, y)] |= elevationMask(elevation);
+    }
+
+    function removeOccupiedAtElevation(occupied, x, y, elevation) {
+      occupied[cellIndex(x, y)] &= ~elevationMask(elevation);
     }
 
     function isTerrainTypeAt(state, x, y, type) {
@@ -392,7 +438,10 @@
           continue;
         }
 
-        if (actorTypes[index] === "floating_floor" || actorTypes[index] === "weightless_box") {
+        if (
+          actorElevation(state, index) === 0 &&
+          (actorTypes[index] === "floating_floor" || actorTypes[index] === "weightless_box")
+        ) {
           return true;
         }
       }
@@ -467,7 +516,12 @@
           continue;
         }
 
-        occupied[actorCell(state, index)] = 1;
+        addOccupiedAtElevation(
+          occupied,
+          state.actorX[index],
+          state.actorY[index],
+          actorElevation(state, index)
+        );
       }
 
       return occupied;
@@ -558,7 +612,7 @@
       return members;
     }
 
-    function canMoveInto(state, x, y, occupied, gateState, orangeButtonsPressed) {
+    function canMoveInto(state, x, y, occupied, gateState, orangeButtonsPressed, elevation = 0) {
       if (!isInsideBoard(x, y)) {
         return false;
       }
@@ -567,14 +621,14 @@
         return false;
       }
 
-      return occupied[cellIndex(x, y)] === 0;
+      return !isOccupiedAtElevation(occupied, x, y, elevation);
     }
 
-    function findSlideDestination(state, startX, startY, dx, dy, occupied, gateState, orangeButtonsPressed) {
+    function findSlideDestination(state, startX, startY, dx, dy, occupied, gateState, orangeButtonsPressed, elevation = 0) {
       let nextX = startX;
       let nextY = startY;
 
-      while (canMoveInto(state, nextX + dx, nextY + dy, occupied, gateState, orangeButtonsPressed)) {
+      while (canMoveInto(state, nextX + dx, nextY + dy, occupied, gateState, orangeButtonsPressed, elevation)) {
         nextX += dx;
         nextY += dy;
 
@@ -589,7 +643,8 @@
     function moveBox(state, actorIndex, dx, dy, occupied, moves, gateState, orangeButtonsPressed, searchMode) {
       const fromX = state.actorX[actorIndex];
       const fromY = state.actorY[actorIndex];
-      occupied[cellIndex(fromX, fromY)] = 0;
+      const elevation = actorElevation(state, actorIndex);
+      removeOccupiedAtElevation(occupied, fromX, fromY, elevation);
 
       const target = findSlideDestination(
         state,
@@ -599,11 +654,12 @@
         dy,
         occupied,
         gateState,
-        orangeButtonsPressed
+        orangeButtonsPressed,
+        elevation
       );
 
       if (target.x === fromX && target.y === fromY) {
-        occupied[cellIndex(fromX, fromY)] = 1;
+        addOccupiedAtElevation(occupied, fromX, fromY, elevation);
         return false;
       }
 
@@ -624,7 +680,7 @@
       }
 
       moves.push(moveRecord);
-      occupied[cellIndex(target.x, target.y)] = 1;
+      addOccupiedAtElevation(occupied, target.x, target.y, elevation);
       return true;
     }
 
@@ -756,7 +812,12 @@
           return false;
         }
 
-        return occupied[cellIndex(targetX, targetY)] === 0;
+        return !isOccupiedAtElevation(
+          occupied,
+          targetX,
+          targetY,
+          actorElevation(state, member)
+        );
       });
     }
 
@@ -797,16 +858,12 @@
                 !ignoredActors.has(candidate) &&
                 candidate !== member &&
                 !isCollectibleActor(candidate) &&
+                actorElevation(state, candidate) === actorElevation(state, member) &&
                 !(actorTypes[candidate] === "weightless_box" && clusterGroupIds.has(actorGroupIds[candidate]))
             );
 
             if (blocker === -1) {
               continue;
-            }
-
-            if (actorElevation(state, blocker) !== actorElevation(state, member)) {
-              blockers.push(null);
-              return;
             }
 
             if (!isPushableActor(blocker)) {
@@ -869,7 +926,12 @@
       const groupElevation = actorElevation(state, members[0]);
 
       members.forEach((member) => {
-        occupied[actorCell(state, member)] = 0;
+        removeOccupiedAtElevation(
+          occupied,
+          state.actorX[member],
+          state.actorY[member],
+          actorElevation(state, member)
+        );
       });
 
       let moved = false;
@@ -896,7 +958,7 @@
 
       if (!moved) {
         startPositions.forEach(({ fromX, fromY }) => {
-          occupied[cellIndex(fromX, fromY)] = 1;
+          addOccupiedAtElevation(occupied, fromX, fromY, groupElevation);
         });
         return false;
       }
@@ -924,7 +986,12 @@
       });
 
       members.forEach((member) => {
-        occupied[actorCell(state, member)] = 1;
+        addOccupiedAtElevation(
+          occupied,
+          state.actorX[member],
+          state.actorY[member],
+          actorElevation(state, member)
+        );
       });
 
       return true;
@@ -1000,15 +1067,12 @@
             (candidate) =>
               !ignoredActors.has(candidate) &&
               !memberSet.has(candidate) &&
-              !isCollectibleActor(candidate)
+              !isCollectibleActor(candidate) &&
+              actorElevation(state, candidate) === actorElevation(state, member)
           );
 
           if (blocker === -1) {
             continue;
-          }
-
-          if (actorElevation(state, blocker) !== actorElevation(state, member)) {
-            return null;
           }
 
           if (!isPushableActor(blocker)) {
@@ -1343,7 +1407,7 @@
         const fromX = state.actorX[player];
         const fromY = state.actorY[player];
         const fromElevation = actorElevation(state, player);
-        occupied[cellIndex(fromX, fromY)] = 0;
+        removeOccupiedAtElevation(occupied, fromX, fromY, fromElevation);
 
         let nextX = fromX;
         let nextY = fromY;
@@ -1499,7 +1563,12 @@
           }
         }
 
-        occupied[cellIndex(state.actorX[player], state.actorY[player])] = 1;
+        addOccupiedAtElevation(
+          occupied,
+          state.actorX[player],
+          state.actorY[player],
+          actorElevation(state, player)
+        );
       });
 
       if (moves.length > 0) {

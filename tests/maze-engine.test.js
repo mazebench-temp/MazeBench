@@ -366,4 +366,31 @@ function createState(playData) {
   assert.equal(boxMove.toRemoved, true);
 }
 
+{
+  const terrain = floorTerrain(3, 2);
+  terrain[0][1] = { type: "orange_wall" };
+  const { engine, state } = createState({
+    width: 3,
+    height: 2,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, removed: false }
+    ]
+  });
+
+  assert.equal(state.actorElevation[1], 1);
+  assert.equal(state.actorElevation[2], 1);
+
+  const result = engine.move(state, 1, 0);
+  const playerMove = result.moves.find((move) => move.actorIndex === 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [1, 1]);
+  assert.equal(state.actorElevation[0], 0);
+  assert.equal(playerMove.toElevation, 0);
+  assert.equal(state.actorElevation[2], 1);
+}
+
 console.log("maze-engine tests passed");

@@ -144,12 +144,16 @@
       context.restore();
     }
 
-    function elevatedBleedCoverTieBreaker(family) {
+    function elevatedBleedCoverTieBreaker(family, placement = null) {
       if (family === "actor:player") {
         return 2.5;
       }
 
-      if (family === "actor:floating_floor" || family?.startsWith("actor:weightless_box:")) {
+      if (family?.startsWith("actor:weightless_box:")) {
+        return (placement?.renderElevation ?? 0) > 0.001 ? 3 : 1.5;
+      }
+
+      if (family === "actor:floating_floor") {
         return 1.5;
       }
 
@@ -235,7 +239,8 @@
             centerY: groupState.centerY,
             scale: groupState.scale,
             sink: groupState.sink
-          }
+          },
+          renderElevation: groupState.renderElevation ?? 0
         };
       }
 
@@ -325,7 +330,7 @@
 
             drawItems.push({
               depth: y + 2 + placement.depthOffset,
-              tieBreaker: elevatedBleedCoverTieBreaker(family),
+              tieBreaker: elevatedBleedCoverTieBreaker(family, placement),
               order: drawItems.length,
               paint: function () {
                 paintElevatedSideBleedCover(
