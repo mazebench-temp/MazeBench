@@ -693,7 +693,21 @@
       return depthRow;
     }
 
-    function actorTieBreaker(actor) {
+    function actorUnderElevatedWeightlessTieBreaker(actor) {
+      const depthRow = actorUnderElevatedWeightlessDepthRow(actor);
+
+      if (depthRow === null) {
+        return null;
+      }
+
+      const renderY = actor.renderY ?? actor.y;
+      const normalTieBreaker = actorTieBreakerWithoutElevatedWeightless(actor);
+      const typeOffset = Math.max(0, Math.min(0.2, normalTieBreaker * 0.05));
+
+      return 1 + Math.max(0, Math.min(1.5, renderY - depthRow + 1)) + typeOffset;
+    }
+
+    function actorTieBreakerWithoutElevatedWeightless(actor) {
       if (actor.renderInHole) {
         return -1;
       }
@@ -711,6 +725,16 @@
       }
 
       return 1;
+    }
+
+    function actorTieBreaker(actor) {
+      const underElevatedWeightlessTieBreaker = actorUnderElevatedWeightlessTieBreaker(actor);
+
+      if (underElevatedWeightlessTieBreaker !== null) {
+        return underElevatedWeightlessTieBreaker;
+      }
+
+      return actorTieBreakerWithoutElevatedWeightless(actor);
     }
 
     function buildDrawItems(now = performance.now()) {

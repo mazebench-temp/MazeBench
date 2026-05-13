@@ -367,6 +367,30 @@ function createState(playData) {
 }
 
 {
+  const { engine, state } = createState({
+    width: 4,
+    height: 1,
+    terrain: floorTerrain(4, 1),
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M1", x: 1, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [1, 0]);
+  assert.equal(state.actorElevation[0], 0);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [2, 0]);
+  assert.equal(state.actorElevation[1], 0);
+  assert.deepEqual([state.actorX[2], state.actorY[2]], [1, 0]);
+  assert.equal(state.actorElevation[2], 1);
+  assert.equal(result.moves.some((move) => move.actorIndex === 2), false);
+}
+
+{
   const terrain = floorTerrain(3, 1);
   terrain[0][0] = { type: "orange_wall" };
   terrain[0][1] = { type: "orange_wall" };

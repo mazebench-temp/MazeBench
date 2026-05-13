@@ -438,6 +438,33 @@
       return false;
     }
 
+    function hasWeightlessSupportActorSurfaceAt(state, x, y, ignoredActors = null) {
+      for (let index = 0; index < actorCount; index += 1) {
+        if (state.actorRemoved[index]) {
+          continue;
+        }
+
+        if (ignoredActors?.has(index)) {
+          continue;
+        }
+
+        if (state.actorX[index] !== x || state.actorY[index] !== y) {
+          continue;
+        }
+
+        if (
+          actorElevation(state, index) === 0 &&
+          (isPlayerActor(index) ||
+            actorTypes[index] === "floating_floor" ||
+            actorTypes[index] === "weightless_box")
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function weightlessGroupSupportedElevation(state, members, gateState, orangeButtonsPressed) {
       const memberSet = new Set(members);
 
@@ -447,7 +474,7 @@
 
         return (
           terrainSurfaceHeightAt(state, x, y, gateState, orangeButtonsPressed) === 1 ||
-          hasElevatedActorSurfaceAt(state, x, y, memberSet)
+          hasWeightlessSupportActorSurfaceAt(state, x, y, memberSet)
         );
       })
         ? 1

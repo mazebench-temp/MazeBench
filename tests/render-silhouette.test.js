@@ -427,6 +427,40 @@ function createRenderApp({ terrain, actors, playData = {} }) {
   const app = createRenderApp({
     terrain: buildTerrain(3, 4),
     actors: [
+      { type: "player", x: 1, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "M1", x: 1, y: 2, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null }
+    ]
+  });
+
+  app.state.actors[0].renderX = 1;
+  app.state.actors[0].renderY = 0.5;
+  app.state.actors[0].renderElevation = 0;
+  app.state.actors[1].renderX = 1;
+  app.state.actors[1].renderY = 1.5;
+  app.state.actors[1].renderElevation = 0;
+  app.state.actors[2].renderX = 1;
+  app.state.actors[2].renderY = 1;
+  app.state.actors[2].renderElevation = 1;
+
+  const drawItems = app.renderActors.buildDrawItems(0);
+  const playerDrawIndex = drawItems.findIndex((item) => item.order === 0);
+  const bottomBoxDrawIndex = drawItems.findIndex((item) => item.order === 1);
+  const topBoxDrawIndex = drawItems.findIndex((item) => item.order === 2);
+
+  assert.equal(app.renderActors.actorDepthRow(app.state.actors[0]), 1);
+  assert.equal(app.renderActors.actorDepthRow(app.state.actors[1]), 1);
+  assert.notEqual(playerDrawIndex, -1);
+  assert.notEqual(bottomBoxDrawIndex, -1);
+  assert.notEqual(topBoxDrawIndex, -1);
+  assert.ok(playerDrawIndex < bottomBoxDrawIndex);
+  assert.ok(bottomBoxDrawIndex < topBoxDrawIndex);
+}
+
+{
+  const app = createRenderApp({
+    terrain: buildTerrain(3, 4),
+    actors: [
       { type: "weightless_box", groupId: "M1", x: 1, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
       { type: "weightless_box", groupId: "M2", x: 1, y: 2, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
       { type: "player", x: 1, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null },

@@ -1287,6 +1287,21 @@
       );
     }
 
+    function hasWeightlessSupportActorSurfaceAt(x, y, ignoredActors = null) {
+      return (
+        actorsAt(
+          x,
+          y,
+          (actor) =>
+            !ignoredActors?.has(actor) &&
+            actorElevation(actor) === 0 &&
+            (isPlayerActor(actor) ||
+              actor.type === "floating_floor" ||
+              actor.type === "weightless_box")
+        ).length > 0
+      );
+    }
+
     function playerSurfaceHeightAt(
       x,
       y,
@@ -1312,7 +1327,7 @@
       return members.some(
         (member) =>
           terrainSurfaceHeightAt(member.x, member.y, gateState, orangeWallState) === 1 ||
-          hasElevatedActorSurfaceAt(member.x, member.y, memberSet)
+          hasWeightlessSupportActorSurfaceAt(member.x, member.y, memberSet)
       )
         ? 1
         : 0;
