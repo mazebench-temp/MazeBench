@@ -459,6 +459,48 @@ function createRenderApp({ terrain, actors, playData = {} }) {
 
 {
   const app = createRenderApp({
+    terrain: buildTerrain(5, 3),
+    actors: [
+      { type: "player", x: 2, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null },
+      { type: "weightless_box", groupId: "S0", x: 1, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "S1", x: 2, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "S2", x: 3, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },
+      { type: "weightless_box", groupId: "M0", x: 3, y: 1, removed: false, elevation: 1, renderElevation: 1, imageUrl: null }
+    ]
+  });
+
+  app.state.actors[0].renderX = 1.5;
+  app.state.actors[0].renderY = 1;
+  app.state.actors[0].renderElevation = 1;
+  app.state.actors[1].renderX = 1;
+  app.state.actors[1].renderY = 1;
+  app.state.actors[1].renderElevation = 0;
+  app.state.actors[2].renderX = 2;
+  app.state.actors[2].renderY = 1;
+  app.state.actors[2].renderElevation = 0;
+  app.state.actors[3].renderX = 3;
+  app.state.actors[3].renderY = 1;
+  app.state.actors[3].renderElevation = 0;
+  app.state.actors[4].renderX = 2.5;
+  app.state.actors[4].renderY = 1;
+  app.state.actors[4].renderElevation = 1;
+
+  const drawItems = app.renderActors.buildDrawItems(0);
+  const playerDrawIndex = drawItems.findIndex((item) => item.order === 0);
+  const supportDrawIndex = drawItems.findIndex((item) => item.order === 2);
+  const pushedBoxDrawIndex = drawItems.findIndex((item) => item.order === 4);
+
+  assert.equal(app.renderActors.actorDepthRow(app.state.actors[0]), 1);
+  assert.equal(app.renderActors.actorDepthRow(app.state.actors[2]), 1);
+  assert.notEqual(playerDrawIndex, -1);
+  assert.notEqual(supportDrawIndex, -1);
+  assert.notEqual(pushedBoxDrawIndex, -1);
+  assert.ok(supportDrawIndex < playerDrawIndex);
+  assert.ok(playerDrawIndex < pushedBoxDrawIndex);
+}
+
+{
+  const app = createRenderApp({
     terrain: buildTerrain(3, 4),
     actors: [
       { type: "weightless_box", groupId: "M1", x: 1, y: 1, removed: false, elevation: 0, renderElevation: 0, imageUrl: null },

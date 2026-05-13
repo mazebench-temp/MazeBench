@@ -619,7 +619,10 @@
     }
 
     function actorUnderElevatedWeightlessDepthRow(actor) {
-      if (actorRenderElevation(actor) > 0.001) {
+      const actorIsElevated = actorRenderElevation(actor) > 0.001;
+      const actorCanShareElevatedWeightlessDepth = !actorIsElevated || isPlayerActor(actor);
+
+      if (!actorCanShareElevatedWeightlessDepth) {
         return null;
       }
 
@@ -681,12 +684,16 @@
         }
 
         const candidateRenderY = candidate.renderY ?? candidate.y;
+        const candidateDepthRow = Math.ceil(candidateRenderY);
 
         if (!actorStackBoundsOverlap(actor, candidate)) {
           return;
         }
 
-        const candidateDepthRow = Math.ceil(candidateRenderY);
+        if (actorIsElevated && candidateDepthRow !== Math.ceil(actor.renderY ?? actor.y)) {
+          return;
+        }
+
         depthRow = depthRow === null ? candidateDepthRow : Math.min(depthRow, candidateDepthRow);
       });
 
