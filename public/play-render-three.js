@@ -53,6 +53,8 @@
     const imageMaterialCache = new Map();
     const outlineOffsetCache = new Map();
     const levelStateSignatureCache = new WeakMap();
+    const groupLabelTextureCache = new Map();
+    const groupLabelMaterialCache = new Map();
 
     function renderState() {
       return activeRenderContext?.state || app.state;
@@ -122,6 +124,10 @@
 
     function transitionSceneVisibility() {
       return 1;
+    }
+
+    function isEditorRenderMode() {
+      return app.currentLevelId === "__editor_render__" || renderState().levelId === "__editor_render__";
     }
 
     function transitionPieceProgressForCell() {
@@ -678,6 +684,76 @@
       }
 
       return imageMaterialCache.get(key);
+    }
+
+    function weightlessGroupLabel(groupId) {
+      const value = String(groupId || "").trim();
+      const match = value.match(/^M(.+)$/i);
+
+      return match ? match[1] : value;
+    }
+
+    function groupLabelTexture(label) {
+      const normalizedLabel = String(label || "").trim();
+
+      if (!normalizedLabel) {
+        return null;
+      }
+
+      if (!groupLabelTextureCache.has(normalizedLabel)) {
+        const size = 128;
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+
+        canvas.width = size;
+        canvas.height = size;
+
+        if (context) {
+          context.clearRect(0, 0, size, size);
+          context.font = "800 92px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillStyle = "rgba(0, 0, 0, 0.9)";
+          context.fillText(normalizedLabel, size / 2, size / 2 + 3);
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        groupLabelTextureCache.set(normalizedLabel, texture);
+      }
+
+      return groupLabelTextureCache.get(normalizedLabel);
+    }
+
+    function groupLabelMaterial(label, opacity = 1) {
+      const texture = groupLabelTexture(label);
+
+      if (!texture) {
+        return null;
+      }
+
+      const alpha = clamp01(opacity);
+      const key = `${label}:${Math.round(alpha * 1000)}`;
+
+      if (!groupLabelMaterialCache.has(key)) {
+        groupLabelMaterialCache.set(
+          key,
+          new THREE.MeshBasicMaterial({
+            alphaTest: 0.04,
+            depthWrite: false,
+            map: texture,
+            opacity: alpha,
+            polygonOffset: true,
+            polygonOffsetFactor: -2,
+            polygonOffsetUnits: -2,
+            side: THREE.DoubleSide,
+            transparent: true
+          })
+        );
+      }
+
+      return groupLabelMaterialCache.get(key);
     }
 
     function edgeOutlinesEnabled() {
@@ -1505,6 +1581,103 @@
         b * elevationUnit + actorVisualLift,
         plane * unit + renderOffsetZ()
       ];
+    }
+
+    function groupLabelPlaneGeometry(kind) {
+      const key = `group-label-plane:${kind}`;
+
+      if (!geometryCache.has(key)) {
+        const geometry = new THREE.PlaneGeometry(unit * 0.68, unit * 0.68);
+
+        if (kind === "top") {
+          geometry.rotateX(-Math.PI / 2);
+        } else if (kind === "bottom") {
+          geometry.rotateX(Math.PI / 2);
+        } else if (kind === "xplus") {
+          geometry.rotateY(Math.PI / 2);
+        } else if (kind === "xminus") {
+          geometry.rotateY(-Math.PI / 2);
+        } else if (kind === "zminus") {
+          geometry.rotateY(Math.PI);
+        }
+
+        geometryCache.set(key, geometry);
+      }
+
+      return geometryCache.get(key);
+    }
+
+    function groupLabelPositionForFace(kind, plane, a, b, renderOffset) {
+      const normalOffset = Math.max(0.9, unit * 0.014);
+
+      if (kind === "top" || kind === "bottom") {
+        return {
+          x: (a + 0.5) * unit + renderOffsetX() + renderOffset.x,
+          y:
+            plane * elevationUnit +
+            actorVisualLift +
+            renderOffset.y +
+            (kind === "top" ? normalOffset : -normalOffset),
+          z: (b + 0.5) * unit + renderOffsetZ() + renderOffset.z
+        };
+      }
+
+      if (kind === "xplus" || kind === "xminus") {
+        return {
+          x:
+            plane * unit +
+            renderOffsetX() +
+            renderOffset.x +
+            (kind === "xplus" ? normalOffset : -normalOffset),
+          y: (b + 0.5) * elevationUnit + actorVisualLift + renderOffset.y,
+          z: (a + 0.5) * unit + renderOffsetZ() + renderOffset.z
+        };
+      }
+
+      return {
+        x: (a + 0.5) * unit + renderOffsetX() + renderOffset.x,
+        y: (b + 0.5) * elevationUnit + actorVisualLift + renderOffset.y,
+        z:
+          plane * unit +
+          renderOffsetZ() +
+          renderOffset.z +
+          (kind === "zplus" ? normalOffset : -normalOffset)
+      };
+    }
+
+    function addWeightlessGroupFaceLabels(voxels, groupId, renderOffset, opacity) {
+      if (!isEditorRenderMode()) {
+        return;
+      }
+
+      const label = weightlessGroupLabel(groupId);
+      const labelMaterial = groupLabelMaterial(label, opacity);
+
+      if (!labelMaterial) {
+        return;
+      }
+
+      collectPolycubeFaceCells(voxels).forEach((faceGroup) => {
+        faceGroup.cells.forEach((cellKey) => {
+          const [a, b] = cellKey.split(",").map(Number);
+          const labelMesh = new THREE.Mesh(
+            groupLabelPlaneGeometry(faceGroup.kind),
+            labelMaterial
+          );
+          const position = groupLabelPositionForFace(
+            faceGroup.kind,
+            faceGroup.plane,
+            a,
+            b,
+            renderOffset
+          );
+
+          labelMesh.position.set(position.x, position.y, position.z);
+          labelMesh.castShadow = false;
+          labelMesh.receiveShadow = false;
+          scene.add(labelMesh);
+        });
+      });
     }
 
     function pushQuadPositions(positions, vertices) {
@@ -3077,6 +3250,7 @@
 
         const opacity = Math.min(...columns.map((column) => column.opacity)) * visibility;
         const fade = Math.min(...columns.map((column) => column.fade));
+        const edgeOpacity = fade * visibility;
         const bottomY = Math.min(...columns.map((column) => column.bottomY));
         const topY = Math.max(...columns.map((column) => column.topY));
         const renderOffset = {
@@ -3113,7 +3287,7 @@
             edgeGeometry: polycubeEdgeGeometry(voxels),
             edgeThreshold: 18,
             opacity,
-            edgeOpacity: fade * visibility,
+            edgeOpacity,
             castShadow: renderContextCastsShadows(),
             receiveShadow: false,
             editorPick: {
@@ -3124,6 +3298,13 @@
               bottomY
             }
           }
+        );
+
+        addWeightlessGroupFaceLabels(
+          voxels,
+          columns[0].groupId,
+          renderOffset,
+          Math.min(0.92, edgeOpacity)
         );
       };
       const renderPolycubeGroup = (columns) => {
