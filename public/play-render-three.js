@@ -2066,6 +2066,45 @@
       addTopRoundedComponent(cells, height, color, topY, options);
     }
 
+    function componentTopPlaneGeometry(cells) {
+      const key = [
+        "component-top-plane",
+        cells
+          .map((cell) =>
+            [
+              Math.round(cell.left * 100),
+              Math.round(cell.right * 100),
+              Math.round(cell.top * 100),
+              Math.round(cell.bottom * 100)
+            ].join(",")
+          )
+          .join("|")
+      ].join(":");
+
+      if (geometryCache.has(key)) {
+        return geometryCache.get(key);
+      }
+
+      const positions = [];
+
+      cells.forEach((cell) => {
+        positions.push(
+          cell.left, 0, cell.top,
+          cell.right, 0, cell.bottom,
+          cell.right, 0, cell.top,
+          cell.left, 0, cell.top,
+          cell.left, 0, cell.bottom,
+          cell.right, 0, cell.bottom
+        );
+      });
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geometry.computeVertexNormals();
+      geometryCache.set(key, geometry);
+      return geometry;
+    }
+
     function edgeGeometryFor(geometry, threshold) {
       if (!geometryCacheHas(geometry)) {
         return new THREE.EdgesGeometry(geometry, threshold);
@@ -2122,6 +2161,14 @@
 
     function isStackableFloorType(type) {
       return type === "floor" || type === "ice";
+    }
+
+    function playerLiftPlateThickness() {
+      return Math.max(2, unit * 0.06);
+    }
+
+    function playerLiftPlateOffset() {
+      return Math.max(0.75, unit * 0.012);
     }
 
     function isGridFloorDescriptor(descriptor) {
@@ -2827,14 +2874,22 @@
       const layer = bestTerrainLayer(x, y, terrainHeight, now);
       const topHeight = Math.max(0, terrainHeight ?? 0) * elevationUnit;
       const type = layer.type || "floor";
+      const visualLayerDescriptor =
+        type === "player_lift" ? terrainPieceDescriptorForLayer(layer, x, y, now) : null;
       const isSunkenFloor = terrainHeight === 0 && isSunkenFloorType(type);
-      const blockHeight =
-        terrainHeight === null
-          ? floorThickness
-          : terrainHeight > 0
-            ? Math.max(1, topHeight)
-            : floorThickness;
-      const topY = terrainHeight === null ? 0 : topHeight - (isSunkenFloor ? floorDrop : 0);
+      let blockHeight = floorThickness;
+
+      if (visualLayerDescriptor) {
+        blockHeight = visualLayerDescriptor.blockHeight;
+      } else if (terrainHeight > 0) {
+        blockHeight = Math.max(1, topHeight);
+      }
+
+      const topY = visualLayerDescriptor
+        ? visualLayerDescriptor.topY
+        : terrainHeight === null
+          ? 0
+          : topHeight - (isSunkenFloor ? floorDrop : 0);
 
       return {
         blockHeight,
@@ -2878,21 +2933,27 @@
       const topHeight = Math.max(0, terrainHeight) * elevationUnit;
       const baseHeight = Math.max(0, elevation) * elevationUnit;
       const isRaisedPiece = terrainHeight > elevation;
+      const isLoweredPlayerLift = type === "player_lift" && !isRaisedPiece;
       const isStackedFloorCube = !isRaisedPiece && elevation > 0 && isStackableFloorType(type);
       const isSunkenFloor = !isRaisedPiece && terrainHeight === 0 && isSunkenFloorType(type);
-      const topY = isRaisedPiece || isStackedFloorCube
-        ? topHeight
-        : topHeight - (isSunkenFloor ? floorDrop : 0);
+      const topY = isLoweredPlayerLift
+        ? topHeight + playerLiftPlateOffset()
+        : isRaisedPiece || isStackedFloorCube
+          ? topHeight
+          : topHeight - (isSunkenFloor ? floorDrop : 0);
       const blockHeight = isRaisedPiece
         ? Math.max(1, topHeight - baseHeight)
-        : isStackedFloorCube
-          ? elevationUnit
-        : floorThickness;
+        : isLoweredPlayerLift
+          ? playerLiftPlateThickness()
+          : isStackedFloorCube
+            ? elevationUnit
+            : floorThickness;
       const bottomY = topY - blockHeight;
       const descriptor = {
         blockHeight,
         bottomY,
         elevation,
+        isLoweredPlayerLift,
         isVoid: false,
         layer,
         terrainHeight,
@@ -3082,11 +3143,43 @@
         return;
       }
 
+      if (descriptor.isLoweredPlayerLift) {
+        addOutlinedMesh(
+          componentTopPlaneGeometry(cells),
+          terrainColor(descriptor.type),
+          { x: renderOffsetX(), y: descriptor.topY, z: renderOffsetZ() },
+          {
+            edgeThreshold: 18,
+            opacity: visibility,
+            castShadow: false,
+            receiveShadow: false,
+            editorPick: {
+              kind: "terrain",
+              cells: cells.map((cell) => ({
+                gridX: cell.gridX,
+                gridY: cell.gridY,
+                left: cell.left + renderOffsetX(),
+                right: cell.right + renderOffsetX(),
+                top: cell.top + renderOffsetZ(),
+                bottom: cell.bottom + renderOffsetZ()
+              })),
+              topY: descriptor.topY,
+              bottomY: descriptor.bottomY,
+              sourceLayer: descriptor.elevation ?? 0
+            }
+          }
+        );
+        return;
+      }
+
       addComponent(cells, descriptor.blockHeight, terrainColor(descriptor.type), descriptor.topY, {
         outline: shouldOutlineTerrainRegion(descriptor),
         radius: shapeCornerRadius,
         rounded: !descriptor.isSunkenFloor,
-        castShadow: (descriptor.terrainHeight ?? 0) > 0 && renderContextCastsShadows(),
+        castShadow:
+          !descriptor.isLoweredPlayerLift &&
+          (descriptor.terrainHeight ?? 0) > 0 &&
+          renderContextCastsShadows(),
         receiveShadow: descriptor.type !== "orange_wall",
         opacity: visibility,
         editorPick: {
