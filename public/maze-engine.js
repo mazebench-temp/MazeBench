@@ -718,6 +718,61 @@
       return height !== null && height > elevation;
     }
 
+    function terrainLayerBlocksElevation(
+      state,
+      cell,
+      layer,
+      gateState,
+      orangeButtonsPressed,
+      elevation
+    ) {
+      const layerElevation = layer.elevation ?? 0;
+
+      if (layer.type === terrainTypes.wall) {
+        return layerElevation === elevation;
+      }
+
+      if (layer.type === terrainTypes.player_gate) {
+        return gateState.has(cell) && layerElevation === elevation;
+      }
+
+      if (layer.type === terrainTypes.player_lift) {
+        return state.liftRaised[cell] === 1 && layerElevation === elevation;
+      }
+
+      if (layer.type === terrainTypes.orange_wall) {
+        return !orangeButtonsPressed && layerElevation === elevation;
+      }
+
+      return false;
+    }
+
+    function terrainBlocksElevation(
+      state,
+      x,
+      y,
+      elevation,
+      gateState,
+      orangeButtonsPressed = areOrangeButtonsPressed(state)
+    ) {
+      if (!isInsideBoard(x, y)) {
+        return true;
+      }
+
+      const cell = cellIndex(x, y);
+
+      return terrainLayersForCell(state, cell).some((layer) =>
+        terrainLayerBlocksElevation(
+          state,
+          cell,
+          layer,
+          gateState,
+          orangeButtonsPressed,
+          elevation
+        )
+      );
+    }
+
     function actorSupportSurfaceHeightsAt(state, x, y, ignoredActors = null, includePlayers = false) {
       const heights = [];
 
@@ -761,6 +816,10 @@
       orangeButtonsPressed = areOrangeButtonsPressed(state),
       ignoredActors = null
     ) {
+      if (terrainBlocksElevation(state, x, y, elevation, gateState, orangeButtonsPressed)) {
+        return false;
+      }
+
       return (
         terrainSupportsElevation(state, x, y, elevation, gateState, orangeButtonsPressed) ||
         actorSupportsElevation(state, x, y, elevation, ignoredActors, false)
@@ -990,6 +1049,10 @@
 
     function canMoveInto(state, x, y, occupied, gateState, orangeButtonsPressed, elevation = 0) {
       if (!isInsideBoard(x, y)) {
+        return false;
+      }
+
+      if (terrainBlocksElevation(state, x, y, elevation, gateState, orangeButtonsPressed)) {
         return false;
       }
 

@@ -566,4 +566,55 @@ function createState(playData) {
   assert.equal(state.actorRemoved[1], 1);
 }
 
+{
+  const elevatedIce = {
+    type: "ice",
+    layers: [
+      { type: "ice", elevation: 0 },
+      { type: "ice", elevation: 1 }
+    ]
+  };
+  const oneHighWall = {
+    type: "wall",
+    layers: [{ type: "wall", elevation: 0 }]
+  };
+  const twoHighWall = {
+    type: "wall",
+    layers: [
+      { type: "wall", elevation: 0 },
+      { type: "wall", elevation: 1 }
+    ]
+  };
+
+  {
+    const { engine, state } = createState({
+      width: 2,
+      height: 1,
+      terrain: [[elevatedIce, oneHighWall]],
+      actors: [{ type: "player", x: 0, y: 0, elevation: 1, removed: false }]
+    });
+
+    const result = engine.move(state, 1, 0);
+
+    assert.equal(result.moved, true);
+    assert.deepEqual([state.actorX[0], state.actorY[0]], [1, 0]);
+    assert.equal(state.actorElevation[0], 1);
+  }
+
+  {
+    const { engine, state } = createState({
+      width: 2,
+      height: 1,
+      terrain: [[elevatedIce, twoHighWall]],
+      actors: [{ type: "player", x: 0, y: 0, elevation: 1, removed: false }]
+    });
+
+    const result = engine.move(state, 1, 0);
+
+    assert.equal(result.moved, false);
+    assert.deepEqual([state.actorX[0], state.actorY[0]], [0, 0]);
+    assert.equal(state.actorElevation[0], 1);
+  }
+}
+
 console.log("maze-engine tests passed");
