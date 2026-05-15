@@ -90,6 +90,8 @@
           return;
         }
 
+        app.skipNextStaticRenderAfterTransition = true;
+
         if (app.queuedAction) {
           const nextAction = app.queuedAction;
           app.queuedAction = null;
@@ -97,6 +99,21 @@
             app.runAction?.(nextAction);
           }, 0);
         }
+
+        return;
+      }
+
+      if (
+        app.skipNextStaticRenderAfterTransition &&
+        !app.isAnimating &&
+        !isCameraActive &&
+        app.cameraFrameId === null &&
+        app.gateAnimationFrameId === null &&
+        app.orangeWallAnimationFrameId === null &&
+        app.playerLiftAnimationFrameId === null
+      ) {
+        app.skipNextStaticRenderAfterTransition = false;
+        return;
       }
 
       renderCompositor.drawScene(now);

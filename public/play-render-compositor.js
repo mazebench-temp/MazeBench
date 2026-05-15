@@ -26,6 +26,18 @@
       paintRaisedPlayer
     } = app.renderActors;
 
+    function canvasTextureVersion(canvas) {
+      return canvas?.__pixelGameTextureVersion ?? "unversioned";
+    }
+
+    function markCanvasTextureChanged(canvas) {
+      if (!canvas) {
+        return;
+      }
+
+      canvas.__pixelGameTextureVersion = (canvas.__pixelGameTextureVersion || 0) + 1;
+    }
+
     function drawViewportFromScene(
       context,
       sourceCanvas,
@@ -95,6 +107,23 @@
         return sceneCanvas;
       }
 
+      const signature = [
+        canvasTextureVersion(sceneCanvas),
+        sceneCanvas.width,
+        sceneCanvas.height,
+        viewportRect.width,
+        viewportRect.height,
+        boardRect.width,
+        boardRect.height,
+        Math.round(app.cameraX * 1000),
+        Math.round(app.cameraY * 1000),
+        Boolean(app.threeRenderer) ? 1 : 0
+      ].join(":");
+
+      if (viewCanvas.__pixelGameViewportSignature === signature) {
+        return viewCanvas;
+      }
+
       viewCtx.clearRect(0, 0, viewportRect.width, viewportRect.height);
       viewCtx.fillStyle = "#d6bd94";
       viewCtx.fillRect(0, 0, viewportRect.width, viewportRect.height);
@@ -106,6 +135,8 @@
         app.cameraX,
         app.cameraY
       );
+      viewCanvas.__pixelGameViewportSignature = signature;
+      markCanvasTextureChanged(viewCanvas);
       return viewCanvas;
     }
 
@@ -117,6 +148,7 @@
       sceneCtx.clearRect(0, 0, boardRect.width, boardRect.height);
       paintGround(now);
       paintDepthSortedScene(now);
+      markCanvasTextureChanged(sceneCanvas);
     }
 
     function cloneCanvas(sourceCanvas, width = sourceCanvas.width, height = sourceCanvas.height) {

@@ -233,6 +233,56 @@
       return cloneStoredLevelSnapshot(levelState) || levelState;
     }
 
+    async function preloadTransitionNeighborhood(outgoingLevelId, incomingLevelId) {
+      if (
+        typeof loadHorizontalNeighborLevelState !== "function" ||
+        typeof app.threeRenderer?.prewarmAdjacentLevelTransition !== "function"
+      ) {
+        return;
+      }
+
+      const levelIds = new Set();
+      const addNeighborhood = (levelId) => {
+        if (!levelId) {
+          return;
+        }
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) {
+              continue;
+            }
+
+            const neighborLevelId = adjacentWorldLevelId(levelId, dx, dy);
+
+            if (neighborLevelId) {
+              levelIds.add(neighborLevelId);
+            }
+          }
+        }
+      };
+
+      addNeighborhood(outgoingLevelId);
+      addNeighborhood(incomingLevelId);
+      levelIds.delete(outgoingLevelId);
+      levelIds.delete(incomingLevelId);
+
+      await Promise.all(
+        Array.from(levelIds, (levelId) => {
+          const cachedLevelState =
+            typeof cachedHorizontalNeighborLevelState === "function"
+              ? cachedHorizontalNeighborLevelState(levelId)
+              : null;
+
+          if (cachedLevelState) {
+            return cachedLevelState;
+          }
+
+          return loadHorizontalNeighborLevelState(levelId).catch(() => null);
+        })
+      );
+    }
+
     function edgeTransitionForMove(dx, dy) {
       const players = state.actors.filter((actor) => isPlayerActor(actor) && !actor.removed);
 
@@ -316,6 +366,10 @@
           return false;
         }
 
+        if (typeof app.threeRenderer?.prewarmAdjacentLevelTransition === "function") {
+          await preloadTransitionNeighborhood(previousLevelSnapshot.levelId, nextLevelState.levelId);
+        }
+
         const entersHole = targetType === "hole";
         const targetElevation = edgeTransitionElevationForTarget(targetType);
         const transferredPlayer = {
@@ -356,21 +410,25 @@
           incomingRaisedOrangeWalls
         );
         const incomingPlayer = state.actors.find((actor) => isPlayerActor(actor) && !actor.removed) || null;
+        const durationMs = app.LEVEL_TRANSITION_DURATION_MS || 1000;
+        const transitionData = {
+          kind: "adjacent-scene",
+          dx: transition.dx,
+          dy: transition.dy,
+          outgoingLevel: previousLevelSnapshot,
+          outgoingResetLevel: previousEntryRenderSnapshot,
+          incomingLevel: incomingLevelSnapshot,
+          incomingRaisedPlayerGates: incomingLevelSnapshot.raisedPlayerGates,
+          incomingRaisedOrangeWalls: incomingLevelSnapshot.raisedOrangeWalls,
+          sourcePlayer: { ...transition.player },
+          targetPlayer: incomingPlayer ? { ...incomingPlayer } : null
+        };
+
+        app.threeRenderer?.prewarmAdjacentLevelTransition?.(transitionData, durationMs);
         startLevelTransition(null, null, transition.dx, transition.dy, null, null, null, {
-          durationMs: app.LEVEL_TRANSITION_DURATION_MS || 1000,
+          durationMs,
           renderImmediately: false,
-          transitionData: {
-            kind: "adjacent-scene",
-            dx: transition.dx,
-            dy: transition.dy,
-            outgoingLevel: previousLevelSnapshot,
-            outgoingResetLevel: previousEntryRenderSnapshot,
-            incomingLevel: incomingLevelSnapshot,
-            incomingRaisedPlayerGates: incomingLevelSnapshot.raisedPlayerGates,
-            incomingRaisedOrangeWalls: incomingLevelSnapshot.raisedOrangeWalls,
-            sourcePlayer: { ...transition.player },
-            targetPlayer: incomingPlayer ? { ...incomingPlayer } : null
-          },
+          transitionData,
           onComplete:
             entersHole && reviveStartPlayer
               ? () => playEntryHoleFallAndRespawn(incomingPlayer, reviveStartPlayer)

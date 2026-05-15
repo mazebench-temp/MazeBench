@@ -34,6 +34,14 @@
         return false;
       }
 
+      const sourceVersion = sourceCanvas.__pixelGameTextureVersion;
+      const canReuseTexture =
+        sourceVersion !== undefined &&
+        renderer.textureSource === sourceCanvas &&
+        renderer.textureSourceWidth === sourceCanvas.width &&
+        renderer.textureSourceHeight === sourceCanvas.height &&
+        renderer.textureSourceVersion === sourceVersion;
+
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.clearColor(0.839, 0.741, 0.58, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -43,10 +51,18 @@
       gl.vertexAttribPointer(renderer.attribs.position, 2, gl.FLOAT, false, 0, 0);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, renderer.texture);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+
+      if (!canReuseTexture) {
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+        renderer.textureSource = sourceCanvas;
+        renderer.textureSourceWidth = sourceCanvas.width;
+        renderer.textureSourceHeight = sourceCanvas.height;
+        renderer.textureSourceVersion = sourceVersion;
+      }
+
       gl.uniform1i(renderer.uniforms.texture, 0);
       gl.uniform2f(renderer.uniforms.logicalResolution, sourceCanvas.width, sourceCanvas.height);
       gl.uniform1f(renderer.uniforms.bleed, settings.bleed);

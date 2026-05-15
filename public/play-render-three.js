@@ -13,6 +13,7 @@
     let lastWidth = 0;
     let lastHeight = 0;
     let lastSceneSignature = "";
+    let lastSceneContentSignature = "";
     let lastCameraFitSignature = "";
     let lastCameraFitHeight = 0;
     let hasRenderedScene = false;
@@ -55,6 +56,9 @@
     const levelStateSignatureCache = new WeakMap();
     const groupLabelTextureCache = new Map();
     const groupLabelMaterialCache = new Map();
+    const polycubeFaceCellsCache = new Map();
+    let polycubeComponentNeighborOffsetCache = null;
+    let polycubeEdgeContactOffsetCache = null;
 
     function renderState() {
       return activeRenderContext?.state || app.state;
@@ -1372,6 +1376,7 @@
 
       const edges = new THREE.LineSegments(edgeGeometry || edgeGeometryFor(geometry, threshold), lineMaterial("#000000", lineOpacity));
       edges.position.copy(position);
+      edges.userData.edgeBasePosition = position.clone();
       edgeScene.add(edges);
       return edges;
     }
@@ -1382,6 +1387,12 @@
 
       edgeScene.children.forEach((child) => {
         if (child.isLineSegments) {
+          const basePosition = child.userData.edgeBasePosition;
+
+          if (basePosition) {
+            child.position.copy(basePosition);
+          }
+
           child.position.addScaledVector(cameraDirection, -edgeDepthBias);
         }
       });
@@ -1507,11 +1518,22 @@
       return `${x},${y},${z}`;
     }
 
+    function polycubeVoxelSignature(voxels) {
+      return voxels
+        .map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z))
+        .sort()
+        .join("|");
+    }
+
     function polycubeFaceKey(kind, plane) {
       return `${kind}:${plane}`;
     }
 
     function polycubeComponentNeighborOffsets() {
+      if (polycubeComponentNeighborOffsetCache) {
+        return polycubeComponentNeighborOffsetCache;
+      }
+
       const offsets = [];
 
       for (let x = -1; x <= 1; x += 1) {
@@ -1526,11 +1548,16 @@
         }
       }
 
-      return offsets;
+      polycubeComponentNeighborOffsetCache = offsets;
+      return polycubeComponentNeighborOffsetCache;
     }
 
     function polycubeEdgeContactOffsets() {
-      return polycubeComponentNeighborOffsets().filter((offset) => {
+      if (polycubeEdgeContactOffsetCache) {
+        return polycubeEdgeContactOffsetCache;
+      }
+
+      polycubeEdgeContactOffsetCache = polycubeComponentNeighborOffsets().filter((offset) => {
         const nonZeroAxes = [offset.x, offset.y, offset.z]
           .filter((value) => value !== 0)
           .length;
@@ -1541,9 +1568,17 @@
           (offset.x > 0 || (offset.x === 0 && offset.y > 0))
         );
       });
+
+      return polycubeEdgeContactOffsetCache;
     }
 
     function collectPolycubeFaceCells(voxels) {
+      const cacheKey = polycubeVoxelSignature(voxels);
+
+      if (polycubeFaceCellsCache.has(cacheKey)) {
+        return polycubeFaceCellsCache.get(cacheKey);
+      }
+
       const voxelKeys = new Set(voxels.map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z)));
       const faceGroups = new Map();
       const addFaceCell = (kind, plane, a, b) => {
@@ -1586,6 +1621,7 @@
         }
       });
 
+      polycubeFaceCellsCache.set(cacheKey, faceGroups);
       return faceGroups;
     }
 
@@ -1776,6 +1812,17 @@
     }
 
     function polycubeGeometry(voxels) {
+      const cacheKey = [
+        "polycube-geometry",
+        Math.round(renderOffsetX() * 100),
+        Math.round(renderOffsetZ() * 100),
+        polycubeVoxelSignature(voxels)
+      ].join(":");
+
+      if (geometryCache.has(cacheKey)) {
+        return geometryCache.get(cacheKey);
+      }
+
       const positions = [];
 
       collectPolycubeFaceCells(voxels).forEach((faceGroup) => {
@@ -1788,6 +1835,7 @@
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
+      geometryCache.set(cacheKey, geometry);
       return geometry;
     }
 
@@ -1980,6 +2028,20 @@
     }
 
     function polycubeEdgeGeometry(voxels, options = {}) {
+      const cacheKey = [
+        "polycube-edges",
+        Math.round(renderOffsetX() * 100),
+        Math.round(renderOffsetZ() * 100),
+        options?.suppressSharedRoomEdges ? "shared" : "normal",
+        options?.descriptor?.key || "",
+        activeRenderContext?.state?.levelId || "",
+        polycubeVoxelSignature(voxels)
+      ].join(":");
+
+      if (edgeGeometryCache.has(cacheKey)) {
+        return edgeGeometryCache.get(cacheKey);
+      }
+
       const positions = [];
       const seenSegments = new Set();
       const suppressedEdges = polycubeContactEdgeKeys(voxels);
@@ -1990,6 +2052,7 @@
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      edgeGeometryCache.set(cacheKey, geometry);
       return geometry;
     }
 
@@ -2176,6 +2239,14 @@
         descriptor.terrainHeight === 0 &&
         (descriptor.type === "floor" || descriptor.type === "exit" || descriptor.type === "orange_button")
       );
+    }
+
+    function shouldRenderFloorGridLines() {
+      return activeRenderContext?.role !== "neighbor";
+    }
+
+    function shouldRenderTileTopDetails() {
+      return activeRenderContext?.role !== "neighbor";
     }
 
     function renderIsInsideBoard(x, y, state = renderState()) {
@@ -3360,15 +3431,18 @@
         activeRenderContext.terrainDescriptors = previousTerrainDescriptors;
       }
 
-      addFloorGridLines(descriptors);
-
-      for (let y = 0; y < state.height; y += 1) {
-        for (let x = 0; x < state.width; x += 1) {
-          const descriptor = descriptors[y][x];
-          addTileTopDetails(x, y, descriptor.layer, descriptor.topY, now);
-        }
+      if (shouldRenderFloorGridLines()) {
+        addFloorGridLines(descriptors);
       }
 
+      if (shouldRenderTileTopDetails()) {
+        for (let y = 0; y < state.height; y += 1) {
+          for (let x = 0; x < state.width; x += 1) {
+            const descriptor = descriptors[y][x];
+            addTileTopDetails(x, y, descriptor.layer, descriptor.topY, now);
+          }
+        }
+      }
     }
 
     function actorFadeVisibility(actor) {
@@ -4294,10 +4368,7 @@
           app.levelTransition ||
           app.gateAnimationFrameId !== null ||
           app.orangeWallAnimationFrameId !== null ||
-          app.playerLiftAnimationFrameId !== null ||
-          app.floatingFloorFrameId !== null ||
-          debugCameraAnimationFrameId ||
-          debugCameraTiltHoldFrameId
+          app.playerLiftAnimationFrameId !== null
       );
     }
 
@@ -4307,12 +4378,19 @@
           app.levelTransition ||
           app.gateAnimationFrameId !== null ||
           app.orangeWallAnimationFrameId !== null ||
-          app.playerLiftAnimationFrameId !== null ||
-          app.floatingFloorFrameId !== null
+          app.playerLiftAnimationFrameId !== null
       );
     }
 
-    function sceneSignature(now) {
+    function floatingFloorAnimationSignature(now) {
+      if (app.floatingFloorFrameId === null) {
+        return "";
+      }
+
+      return `floating-floor:${Math.floor(now / Math.max(1, app.FLOATING_FLOOR_HOVER_FRAME_MS || 33))}`;
+    }
+
+    function sceneContentSignature(now) {
       const transition = app.levelTransition?.transitionData;
       const surroundingViews = surroundingLevelViews();
       const parts = [
@@ -4321,8 +4399,8 @@
         app.boardRect.width,
         app.boardRect.height,
         edgeOutlinesEnabled() ? "edges:on" : "edges:off",
-        debugCameraSignature(),
         animationSignature(now),
+        floatingFloorAnimationSignature(now),
         transition
           ? [
               transition.kind,
@@ -4354,6 +4432,13 @@
       });
 
       return parts.join(";");
+    }
+
+    function sceneSignature(now) {
+      return [
+        sceneContentSignature(now),
+        debugCameraSignature()
+      ].join(";");
     }
 
     function syncRendererSize() {
@@ -5005,37 +5090,7 @@
       });
     }
 
-    function renderScene(now = performance.now()) {
-      if (!THREE || !renderer || !camera) {
-        return false;
-      }
-
-      syncRendererSize();
-      const forceRender = hasActiveSceneAnimation();
-      const signature = forceRender ? "" : sceneSignature(now);
-      const shouldUpdateShadowMap =
-        !hasRenderedScene || hasShadowAffectingAnimation() || (!forceRender && signature !== lastSceneSignature);
-
-      if (!forceRender && hasRenderedScene && signature === lastSceneSignature) {
-        app.sceneCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
-        app.sceneCtx.drawImage(compositeCanvas, 0, 0);
-        return true;
-      }
-
-      resetScene();
-
-      if (app.levelTransition?.transitionData?.kind === "adjacent-scene") {
-        renderAdjacentLevelTransition(now);
-      } else {
-        const surroundingViews = surroundingLevelViews();
-
-        renderSurroundingLevelViews(now, surroundingViews);
-        addTerrainRegions(now);
-        renderActorsForCurrentContext(now);
-        fitCameraToScene(editorSurroundingFitOptions() || {});
-      }
-
-      addEditorHoverHighlight();
+    function renderSceneToComposite(shouldUpdateShadowMap) {
       renderer.setClearColor("#050608", 1);
       renderer.clear(true, true, true);
       renderer.shadowMap.needsUpdate = shouldUpdateShadowMap;
@@ -5053,7 +5108,92 @@
 
       app.sceneCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
       app.sceneCtx.drawImage(compositeCanvas, 0, 0);
+      app.sceneCanvas.__pixelGameTextureVersion =
+        (app.sceneCanvas.__pixelGameTextureVersion || 0) + 1;
+    }
+
+    function prewarmAdjacentLevelTransition(transitionData, durationMs = app.LEVEL_TRANSITION_DURATION_MS || 1000) {
+      if (!THREE || !renderer || !camera || transitionData?.kind !== "adjacent-scene") {
+        return;
+      }
+
+      const previousTransition = app.levelTransition;
+      const previousCameraFitSignature = lastCameraFitSignature;
+      const previousCameraFitHeight = lastCameraFitHeight;
+      const now = performance.now();
+
+      app.levelTransition = {
+        transitionData,
+        startMs: now - durationMs * 0.18,
+        durationMs
+      };
+
+      try {
+        resetScene();
+        renderAdjacentLevelTransition(now);
+        renderer.shadowMap.needsUpdate = true;
+        renderer.render(scene, camera);
+
+        if (edgeOutlinesEnabled()) {
+          biasEdgeSceneTowardCamera();
+          renderer.render(edgeScene, camera);
+        }
+      } finally {
+        app.levelTransition = previousTransition;
+        lastCameraFitSignature = previousCameraFitSignature;
+        lastCameraFitHeight = previousCameraFitHeight;
+        lastSceneSignature = "";
+        lastSceneContentSignature = "";
+        hasRenderedScene = false;
+      }
+    }
+
+    function renderScene(now = performance.now()) {
+      if (!THREE || !renderer || !camera) {
+        return false;
+      }
+
+      syncRendererSize();
+      const forceRender = hasActiveSceneAnimation();
+      const contentSignature = forceRender ? "" : sceneContentSignature(now);
+      const signature = forceRender ? "" : `${contentSignature};${debugCameraSignature()}`;
+      const contentChanged =
+        forceRender ||
+        !hasRenderedScene ||
+        contentSignature !== lastSceneContentSignature;
+      const shouldUpdateShadowMap =
+        contentChanged || hasShadowAffectingAnimation();
+
+      if (!forceRender && hasRenderedScene && signature === lastSceneSignature) {
+        app.sceneCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
+        app.sceneCtx.drawImage(compositeCanvas, 0, 0);
+        return true;
+      }
+
+      if (!contentChanged) {
+        fitCameraToScene(editorSurroundingFitOptions() || {});
+        renderSceneToComposite(false);
+        lastSceneSignature = signature;
+        return true;
+      }
+
+      resetScene();
+
+      if (app.levelTransition?.transitionData?.kind === "adjacent-scene") {
+        renderAdjacentLevelTransition(now);
+      } else {
+        const surroundingViews = surroundingLevelViews();
+
+        renderSurroundingLevelViews(now, surroundingViews);
+        addTerrainRegions(now);
+        renderActorsForCurrentContext(now);
+        fitCameraToScene(editorSurroundingFitOptions() || {});
+      }
+
+      addEditorHoverHighlight();
+      renderSceneToComposite(shouldUpdateShadowMap);
       lastSceneSignature = forceRender ? "" : signature;
+      lastSceneContentSignature = forceRender ? "" : contentSignature;
       hasRenderedScene = true;
       return true;
     }
@@ -5093,6 +5233,7 @@
       pickEditorFace,
       setEditorHoverTarget,
       useLevelPreviewCamera,
+      prewarmAdjacentLevelTransition,
       renderScene,
       threeCanvas
     };
