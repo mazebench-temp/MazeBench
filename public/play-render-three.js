@@ -2175,7 +2175,7 @@
       }
 
       if (actor.type === "floating_floor") {
-        return "#7fb6db";
+        return "#d6bd94";
       }
 
       if (actor.type === "gem") {
@@ -3719,6 +3719,40 @@
       addEdgeLines(gem.geometry, gem.position, 1, fade * visibility);
     }
 
+    function addFloatingFloor(actor, center, elevation, scale, sink, fade, opacity, visibility, now) {
+      const hover = Math.max(0, app.floatingFloorHoverOffset(actor, now));
+      const width = unit * scale;
+      const depth = unit * scale;
+      const height = Math.max(4, unit * 0.32 * scale);
+      const bottomY = elevation * elevationUnit - sink + actorVisualLift + hover;
+      const topY = bottomY + height;
+      const actorBounds = {
+        gridX: actor.x,
+        gridY: actor.y,
+        left: center.x - width / 2,
+        right: center.x + width / 2,
+        top: center.z - depth / 2,
+        bottom: center.z + depth / 2
+      };
+
+      addTopRoundedCuboid(width, depth, height, shapeCornerRadius, actorRenderColor(actor), {
+        x: center.x,
+        y: topY,
+        z: center.z
+      }, {
+        opacity,
+        edgeOpacity: fade * visibility,
+        castShadow: renderContextCastsShadows(),
+        receiveShadow: false,
+        editorPick: {
+          kind: "actor",
+          cells: [actorBounds],
+          topY,
+          bottomY
+        }
+      });
+    }
+
     function addActor(actor, now = performance.now()) {
       if (!actorIsVisible(actor)) {
         return;
@@ -3741,6 +3775,11 @@
 
       if (actor.type === "gem") {
         addGem(actor, center.x, center.z, elevation, now);
+        return;
+      }
+
+      if (actor.type === "floating_floor") {
+        addFloatingFloor(actor, center, elevation, scale, sink, fade, opacity, visibility, now);
         return;
       }
 
@@ -4159,6 +4198,7 @@
           app.gateAnimationFrameId !== null ||
           app.orangeWallAnimationFrameId !== null ||
           app.playerLiftAnimationFrameId !== null ||
+          app.floatingFloorFrameId !== null ||
           debugCameraAnimationFrameId ||
           debugCameraTiltHoldFrameId
       );
@@ -4170,7 +4210,8 @@
           app.levelTransition ||
           app.gateAnimationFrameId !== null ||
           app.orangeWallAnimationFrameId !== null ||
-          app.playerLiftAnimationFrameId !== null
+          app.playerLiftAnimationFrameId !== null ||
+          app.floatingFloorFrameId !== null
       );
     }
 
