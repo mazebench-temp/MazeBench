@@ -1089,6 +1089,7 @@
       groundFaceColor,
       paintGroundDropFace,
       paintWallTile,
+      paintRaisedTerrainStackTile,
       paintRaisedPlayerGateTile,
       paintRaisedPlayerLiftTile,
       paintRaisedOrangeWallTile,

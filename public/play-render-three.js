@@ -37,7 +37,7 @@
     const unit = app.TILE_SIZE;
     const elevationUnit = unit;
     const shapeCornerRadius = 0;
-    const floorThickness = Math.max(3, Math.round(unit * 0.5));
+    const floorThickness = Math.max(3, Math.round(unit * 0.34));
     const floorDrop = Math.max(3, Math.round(unit * 0.055));
     const actorVisualLift = 0;
     const edgeDepthBias = Math.max(1.25, unit * 0.024);
@@ -2111,6 +2111,10 @@
       return type === "floor" || type === "ice" || type === "exit" || type === "orange_button";
     }
 
+    function isStackableFloorType(type) {
+      return type === "floor" || type === "ice";
+    }
+
     function isGridFloorDescriptor(descriptor) {
       return (
         descriptor.terrainHeight === 0 &&
@@ -2437,6 +2441,40 @@
           sourceY: cell.gridY,
           topY: targetTopY
         };
+      }
+
+      const groundPoint = new THREE.Vector3();
+      const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+      if (raycaster.ray.intersectPlane(groundPlane, groundPoint)) {
+        const gridX = Math.floor((groundPoint.x - renderOffsetX()) / unit);
+        const gridY = Math.floor((groundPoint.z - renderOffsetZ()) / unit);
+
+        if (renderIsInsideBoard(gridX, gridY)) {
+          const left = gridX * unit + renderOffsetX();
+          const top = gridY * unit + renderOffsetZ();
+
+          return {
+            bottomY: -floorThickness,
+            bounds: {
+              left,
+              right: left + unit,
+              top,
+              bottom: top + unit
+            },
+            dx: 0,
+            dy: 0,
+            face: "top",
+            kind: "terrain",
+            paintLayer: 0,
+            paintX: gridX,
+            paintY: gridY,
+            sourceLayer: 0,
+            sourceX: gridX,
+            sourceY: gridY,
+            topY: 0
+          };
+        }
       }
 
       return null;
@@ -2828,12 +2866,15 @@
       const topHeight = Math.max(0, terrainHeight) * elevationUnit;
       const baseHeight = Math.max(0, elevation) * elevationUnit;
       const isRaisedPiece = terrainHeight > elevation;
+      const isStackedFloorCube = !isRaisedPiece && elevation > 0 && isStackableFloorType(type);
       const isSunkenFloor = !isRaisedPiece && terrainHeight === 0 && isSunkenFloorType(type);
-      const topY = isRaisedPiece
+      const topY = isRaisedPiece || isStackedFloorCube
         ? topHeight
         : topHeight - (isSunkenFloor ? floorDrop : 0);
       const blockHeight = isRaisedPiece
         ? Math.max(1, topHeight - baseHeight)
+        : isStackedFloorCube
+          ? elevationUnit
         : floorThickness;
       const bottomY = topY - blockHeight;
       const descriptor = {
@@ -2912,7 +2953,12 @@
 
     function canRenderTerrainPolycube(descriptor) {
       return (
-        (descriptor.type === "wall" || descriptor.type === "orange_wall") &&
+        (
+          descriptor.type === "wall" ||
+          descriptor.type === "orange_wall" ||
+          descriptor.type === "floor" ||
+          descriptor.type === "ice"
+        ) &&
         !descriptor.isSunkenFloor &&
         isTerrainPolycubeLevel(descriptor.bottomY) &&
         isTerrainPolycubeLevel(descriptor.topY) &&

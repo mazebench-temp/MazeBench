@@ -80,7 +80,9 @@
     getCellDescriptor,
     getCellTokens,
     getCellTools,
+    appendCellToken,
     isActorTool,
+    normalizeAuthoringCellValue,
     normalizeCellValue,
     setCellElevationToken,
     toolByName,
@@ -108,6 +110,16 @@
     R: { label: "R", dx: 1, dy: 0 }
   };
   const eraserToken = "__erase_top__";
+  const emptyCellToken = authorData.blockAdder || "+";
+  const noopToken = "__select_only__";
+  const noopTool = {
+    imageUrl: null,
+    label: "Select without painting",
+    name: "select_only",
+    selectable: true,
+    token: noopToken,
+    type: "select_only"
+  };
   const eraserTool = {
     imageUrl: null,
     label: "Eraser",
@@ -263,16 +275,18 @@
       return tokens.join(authorData.blockAdder);
     }
 
-    return tokens.concat(gemToken).join(authorData.blockAdder);
+    return appendCellToken(state.cells[y]?.[x] ?? emptyCellToken, gemToken);
   }
 
   function stripGemFromCellValue(value) {
     const gemToken = toolByName.get("gem")?.token || "G";
     const tokens = getCellTokens(value).filter((token) => token !== gemToken);
 
-    return tokens.some((token) => token.length > 0)
-      ? normalizeCellValue(tokens.join(authorData.blockAdder))
-      : authorData.defaultFloorToken;
+    return normalizeAuthoringCellValue(
+      tokens.some((token) => token.length > 0)
+        ? tokens.join(authorData.blockAdder)
+        : emptyCellToken
+    );
   }
 
   function buildEditorPlayData(options = {}) {
@@ -577,18 +591,27 @@
   }
 
   function selectablePaletteTools() {
-    return [eraserTool].concat(authorData.palette.filter((tool) => tool.selectable !== false));
+    return [noopTool, eraserTool].concat(
+      authorData.palette.filter((tool) => tool.selectable !== false && tool.name !== "hole")
+    );
   }
 
   function renderPalette() {
     elements.palette.innerHTML = selectablePaletteTools()
       .map((tool) => {
         const previewUrl = palettePreviewRenderer.previewsByToken.get(tool.token);
-        const swatchContents = previewUrl
-          ? '<img src="' + escapeHtml(previewUrl) + '" alt="">'
-          : '<span class="palette__swatch-placeholder" aria-hidden="true"></span>';
-        const accessibleLabel = tool.label + " (" + tool.token + ")";
-        const tokenLabel = tool.token === eraserToken ? "Erase" : tool.token;
+        const swatchContents =
+          tool.token === noopToken
+            ? '<span class="palette__swatch-glyph" aria-hidden="true">-</span>'
+            : previewUrl
+              ? '<img src="' + escapeHtml(previewUrl) + '" alt="">'
+              : '<span class="palette__swatch-placeholder" aria-hidden="true"></span>';
+        const accessibleLabel =
+          tool.token === noopToken
+            ? tool.label
+            : tool.label + " (" + tool.token + ")";
+        const tokenLabel =
+          tool.token === noopToken ? "Select" : tool.token === eraserToken ? "Erase" : tool.token;
 
         return (
           '<button class="tool-button palette__button' +
@@ -682,7 +705,9 @@
         return;
       }
 
-      const paletteTools = selectablePaletteTools().filter((tool) => tool.token !== eraserToken);
+      const paletteTools = selectablePaletteTools().filter(
+        (tool) => tool.token !== eraserToken && tool.token !== noopToken
+      );
 
       if (paletteTools.length === 0) {
         return;
@@ -750,12 +775,16 @@
 
   function renderSelectedTool() {
     const tool = toolByToken.get(state.selectedToken);
+    const isNoop = state.selectedToken === noopToken;
+    const isEraser = state.selectedToken === eraserToken;
 
     elements.selectedToolLabel.textContent =
-      state.selectedToken === eraserToken ? "Erase" : state.selectedToken;
+      isNoop ? "Select" : isEraser ? "Erase" : state.selectedToken;
     elements.selectedToolLabel.title =
-      state.selectedToken === eraserToken
-        ? eraserTool.label
+      isNoop
+        ? noopTool.label
+        : isEraser
+          ? eraserTool.label
         : tool
           ? tool.label
           : state.selectedToken;
@@ -974,7 +1003,7 @@
   }
 
   function selectToken(token) {
-    if (token !== eraserToken && !toolByToken.has(token)) {
+    if (token !== eraserToken && token !== noopToken && !toolByToken.has(token)) {
       return;
     }
 
@@ -1017,14 +1046,11 @@
   }
 
   function setCellValue(x, y, value) {
-    updateCellValue(x, y, normalizeCellValue(value));
+    updateCellValue(x, y, normalizeAuthoringCellValue(value));
   }
 
   function appendTokenToCellValue(currentValue, token) {
-    const normalizedToken = normalizeCellValue(token);
-    const tokens = getCellTokens(currentValue);
-
-    return normalizeCellValue(tokens.concat(normalizedToken).join(authorData.blockAdder));
+    return appendCellToken(currentValue, token);
   }
 
   function eraseTopCellValue(currentValue) {
@@ -1035,11 +1061,16 @@
     return normalizeCellValue(
       tokens.some((token) => token.length > 0)
         ? tokens.join(authorData.blockAdder)
-        : authorData.defaultFloorToken
+        : emptyCellToken
     );
   }
 
   function paintCell(x, y, value) {
+    if (value === noopToken) {
+      selectCell(x, y);
+      return;
+    }
+
     if (value === eraserToken) {
       updateCellValue(x, y, eraseTopCellValue(state.cells[y][x]));
       return;
@@ -1052,14 +1083,7 @@
     return x >= 0 && y >= 0 && x < state.width && y < state.height;
   }
 
-  function fallbackPaintTargetFromButton(button) {
-    if (!button) {
-      return null;
-    }
-
-    const x = Number(button.dataset.x);
-    const y = Number(button.dataset.y);
-
+  function fallbackPaintTargetFromCell(x, y) {
     if (!isInsideEditorCell(x, y)) {
       return null;
     }
@@ -1075,6 +1099,38 @@
     };
   }
 
+  function fallbackPaintTargetFromButton(button) {
+    if (!button) {
+      return null;
+    }
+
+    return fallbackPaintTargetFromCell(Number(button.dataset.x), Number(button.dataset.y));
+  }
+
+  function fallbackPaintTargetFromPoint(clientX, clientY) {
+    const rect = elements.grid.getBoundingClientRect();
+
+    if (
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      clientX < rect.left ||
+      clientX >= rect.right ||
+      clientY < rect.top ||
+      clientY >= rect.bottom
+    ) {
+      return null;
+    }
+
+    const x = Math.floor(((clientX - rect.left) / rect.width) * state.width);
+    const y = Math.floor(((clientY - rect.top) / rect.height) * state.height);
+
+    return fallbackPaintTargetFromCell(x, y);
+  }
+
+  function targetElementFromEvent(event) {
+    return event.target instanceof Element ? event.target : null;
+  }
+
   function paintTargetFromPointerEvent(event) {
     const pickedTarget = editorRenderer.app?.threeRenderer?.pickEditorFace?.(
       event.clientX,
@@ -1086,7 +1142,11 @@
       return pickedTarget;
     }
 
-    return fallbackPaintTargetFromButton(event.target.closest(".author-grid__cell"));
+    return (
+      fallbackPaintTargetFromButton(
+        targetElementFromEvent(event)?.closest(".author-grid__cell")
+      ) || fallbackPaintTargetFromPoint(event.clientX, event.clientY)
+    );
   }
 
   function syncEditorHoverFromPointerEvent(event) {
@@ -1109,15 +1169,20 @@
       return "level-switch:" + (target.levelId || "") + ":" + (target.dx || 0) + ":" + (target.dy || 0);
     }
 
+    if (state.selectedToken === noopToken) {
+      return "";
+    }
+
     const isEraser = state.selectedToken === eraserToken;
     const x = isEraser ? target.sourceX : target.paintX;
     const y = isEraser ? target.sourceY : target.paintY;
+    const paintLayer = adjustedPaintLayerForTarget(target);
 
     return [
       state.selectedToken,
       x,
       y,
-      target.paintLayer ?? "top",
+      paintLayer ?? "top",
       target.sourceLayer ?? "top",
       target.sourceX,
       target.sourceY,
@@ -1125,8 +1190,38 @@
     ].join(":");
   }
 
+  function isBaseSurfaceToken(token) {
+    const tool = toolByToken.get(token);
+    const type = tool?.type || tool?.name;
+
+    return type === "floor" || type === "ice";
+  }
+
+  function adjustedPaintLayerForTarget(target) {
+    if (!target || state.selectedToken === eraserToken || state.selectedToken === noopToken) {
+      return target?.paintLayer;
+    }
+
+    if (isBaseSurfaceToken(state.selectedToken)) {
+      return 0;
+    }
+
+    return target.paintLayer;
+  }
+
   function paintFaceTarget(target) {
     if (!target || target.kind === "levelSwitch") {
+      return false;
+    }
+
+    if (state.selectedToken === noopToken) {
+      const x = Number.isFinite(target.sourceX) ? target.sourceX : target.paintX;
+      const y = Number.isFinite(target.sourceY) ? target.sourceY : target.paintY;
+
+      if (isInsideEditorCell(x, y)) {
+        selectCell(x, y);
+      }
+
       return false;
     }
 
@@ -1149,17 +1244,16 @@
       return false;
     }
 
-    updateCellValue(
-      target.paintX,
-      target.paintY,
-      target.paintLayer === null || target.paintLayer === undefined
-        ? appendTokenToCellValue(state.cells[target.paintY][target.paintX], state.selectedToken)
-        : setCellElevationToken(
-            state.cells[target.paintY][target.paintX],
-            state.selectedToken,
-            target.paintLayer
-          )
-    );
+    const paintLayer = adjustedPaintLayerForTarget(target);
+    const currentValue = state.cells[target.paintY][target.paintX];
+    const nextValue =
+      paintLayer === null || paintLayer === undefined
+        ? appendTokenToCellValue(currentValue, state.selectedToken)
+        : setCellElevationToken(currentValue, state.selectedToken, paintLayer, {
+            preserveBaseSurface: true
+          });
+
+    updateCellValue(target.paintX, target.paintY, nextValue);
     return true;
   }
 
@@ -1181,11 +1275,16 @@
 
     return state.selectedToken === eraserToken
       ? target.sourceLayer
-      : target.paintLayer;
+      : adjustedPaintLayerForTarget(target);
   }
 
   function paintDragPlaneForTarget(target) {
-    if (!target || target.kind === "levelSwitch" || target.face !== "top") {
+    if (
+      !target ||
+      target.kind === "levelSwitch" ||
+      state.selectedToken === noopToken ||
+      target.face !== "top"
+    ) {
       return null;
     }
 
@@ -1281,7 +1380,7 @@
           state.cells[y][x] =
             isHorizontalOpening || isVerticalOpening
               ? authorData.defaultFloorToken
-              : authorData.defaultWallToken;
+              : appendCellToken(authorData.defaultFloorToken, authorData.defaultWallToken);
         }
       }
     }
@@ -1946,10 +2045,17 @@
       return;
     }
 
+    if (state.selectedToken === noopToken) {
+      paintFaceTarget(target);
+      return;
+    }
+
     state.paintPointerId = event.pointerId;
     state.lastPaintTargetKey = null;
     state.paintDragPlane = paintDragPlaneForTarget(target);
-    elements.grid.setPointerCapture?.(event.pointerId);
+    try {
+      elements.grid.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
     paintFaceTargetOnce(target);
   }
 
@@ -1972,10 +2078,70 @@
       state.paintPointerId = null;
       state.lastPaintTargetKey = null;
       state.paintDragPlane = null;
-      if (elements.grid.hasPointerCapture?.(event.pointerId)) {
-        elements.grid.releasePointerCapture(event.pointerId);
-      }
+      try {
+        if (elements.grid.hasPointerCapture?.(event.pointerId)) {
+          elements.grid.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
     }
+  }
+
+  function eventTargetsEditorGrid(event) {
+    return event.target instanceof Node && elements.grid.contains(event.target);
+  }
+
+  function handleDocumentGridPointerDown(event) {
+    if (eventTargetsEditorGrid(event) || !fallbackPaintTargetFromPoint(event.clientX, event.clientY)) {
+      return;
+    }
+
+    handleGridPointerDown(event);
+  }
+
+  function handleDocumentGridPointerMove(event) {
+    if (eventTargetsEditorGrid(event)) {
+      return;
+    }
+
+    const isActivePaintPointer = state.paintPointerId === event.pointerId;
+    const isOverGrid = Boolean(fallbackPaintTargetFromPoint(event.clientX, event.clientY));
+
+    if (!isActivePaintPointer && !isOverGrid) {
+      clearEditorHoverTarget();
+      return;
+    }
+
+    handleGridPointerMove(event);
+  }
+
+  function handleDocumentGridPointerEnd(event) {
+    if (!eventTargetsEditorGrid(event) && state.paintPointerId === event.pointerId) {
+      stopPainting(event);
+    }
+  }
+
+  function handleGridContextMenu(event) {
+    const target = paintTargetFromPointerEvent(event);
+
+    if (!target || !isInsideEditorCell(target.sourceX, target.sourceY)) {
+      return;
+    }
+
+    event.preventDefault();
+    const x = target.sourceX;
+    const y = target.sourceY;
+    const descriptor = getCellDescriptor(state.cells[y][x]);
+
+    selectCell(x, y);
+    selectToken(descriptor.topToken);
+  }
+
+  function handleDocumentGridContextMenu(event) {
+    if (eventTargetsEditorGrid(event) || !fallbackPaintTargetFromPoint(event.clientX, event.clientY)) {
+      return;
+    }
+
+    handleGridContextMenu(event);
   }
 
   function resetDisclosureBodyStyles(body) {
@@ -2090,21 +2256,12 @@
       clearEditorHoverTarget();
     }
   });
-  elements.grid.addEventListener("contextmenu", function (event) {
-    const target = paintTargetFromPointerEvent(event);
-
-    if (!target || !isInsideEditorCell(target.sourceX, target.sourceY)) {
-      return;
-    }
-
-    event.preventDefault();
-    const x = target.sourceX;
-    const y = target.sourceY;
-    const descriptor = getCellDescriptor(state.cells[y][x]);
-
-    selectCell(x, y);
-    selectToken(descriptor.topToken);
-  });
+  elements.grid.addEventListener("contextmenu", handleGridContextMenu);
+  document.addEventListener("pointerdown", handleDocumentGridPointerDown, true);
+  document.addEventListener("pointermove", handleDocumentGridPointerMove, true);
+  document.addEventListener("pointerup", handleDocumentGridPointerEnd, true);
+  document.addEventListener("pointercancel", handleDocumentGridPointerEnd, true);
+  document.addEventListener("contextmenu", handleDocumentGridContextMenu, true);
 
   if (elements.levelColumn && elements.levelRow) {
     elements.levelColumn.addEventListener("change", function () {
@@ -2160,9 +2317,16 @@
     }
 
     const nextLevelId = button.dataset.levelId;
+    const dx = Number(button.dataset.dx);
+    const dy = Number(button.dataset.dy);
 
     if (nextLevelId && nextLevelId !== state.levelId) {
-      loadLevel(nextLevelId);
+      switchToNeighborLevel({
+        dx,
+        dy,
+        kind: "levelSwitch",
+        levelId: nextLevelId
+      });
     }
   });
 

@@ -16,6 +16,7 @@
     "weightless_box"
   ]);
   const raisedTerrainNames = new Set(["wall", "orange_wall"]);
+  const baseSurfaceNames = new Set(["floor", "ice"]);
 
   function titleCaseName(name) {
     return String(name || "")
@@ -29,6 +30,7 @@
       typeof authorData?.blockAdder === "string" && authorData.blockAdder.length > 0
         ? authorData.blockAdder
         : "+";
+    const emptyCellToken = blockAdder;
     const defaultFloorToken = authorData?.defaultFloorToken || ".";
     const palette = Array.isArray(authorData?.palette) ? authorData.palette : [];
     const toolByToken = new Map(palette.map((tool) => [tool.token, tool]));
@@ -42,13 +44,13 @@
       const trimmedValue = String(value ?? "").trim();
 
       if (!trimmedValue) {
-        return defaultFloorToken;
+        return emptyCellToken;
       }
 
       const tokens = trimmedValue.split(blockAdder).map((token) => token.trim());
 
       if (tokens.length === 0 || tokens.every((token) => token.length === 0)) {
-        return defaultFloorToken;
+        return emptyCellToken;
       }
 
       const invalidToken = tokens.find((token) => token.length > 0 && !toolByToken.has(token));
@@ -146,13 +148,111 @@
       return tokens;
     }
 
+    function isAirToken(token) {
+      return String(token || "").trim().length === 0;
+    }
+
+    function isBaseSurfaceToken(token) {
+      return isBaseSurfaceTool(toolByToken.get(String(token || "").trim()));
+    }
+
+    function normalizeTokenRows(tokens) {
+      const trimmedTokens = trimTrailingAirTokens(tokens.slice());
+
+      return normalizeCellValue(
+        trimmedTokens.some((token) => !isAirToken(token))
+          ? trimmedTokens.join(blockAdder)
+          : emptyCellToken
+      );
+    }
+
+    function enforceBottomSurfaceRows(tokens) {
+      const rows = tokens.map((token) => String(token || "").trim());
+      let bottomSurfaceToken = null;
+
+      for (let index = 0; index < rows.length; index += 1) {
+        if (!isBaseSurfaceToken(rows[index])) {
+          continue;
+        }
+
+        bottomSurfaceToken = rows[index];
+        rows[index] = "";
+      }
+
+      if (bottomSurfaceToken !== null) {
+        if (isAirToken(rows[0])) {
+          rows[0] = bottomSurfaceToken;
+        } else {
+          rows.unshift(bottomSurfaceToken);
+        }
+      } else if (!isAirToken(rows[0]) && !isBaseSurfaceToken(rows[0])) {
+        rows.unshift("");
+      }
+
+      return trimTrailingAirTokens(rows);
+    }
+
+    function normalizeAuthoringCellValue(value) {
+      return normalizeTokenRows(enforceBottomSurfaceRows(getCellTokens(normalizeCellValue(value))));
+    }
+
+    function setBottomSurfaceToken(currentValue, token) {
+      const normalizedToken = normalizeCellValue(token);
+
+      if (!isBaseSurfaceToken(normalizedToken)) {
+        return normalizeAuthoringCellValue(currentValue);
+      }
+
+      const tokens = enforceBottomSurfaceRows(getCellTokens(currentValue));
+
+      if (tokens.length === 0) {
+        tokens.push(normalizedToken);
+      } else {
+        tokens[0] = normalizedToken;
+      }
+
+      return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
+    }
+
+    function setAboveBottomRowToken(currentValue, token) {
+      const normalizedToken = normalizeCellValue(token);
+
+      if (isBaseSurfaceToken(normalizedToken)) {
+        return setBottomSurfaceToken(currentValue, normalizedToken);
+      }
+
+      const tokens = enforceBottomSurfaceRows(getCellTokens(currentValue));
+
+      while (tokens.length < 2) {
+        tokens.push("");
+      }
+
+      tokens[1] = normalizedToken;
+
+      return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
+    }
+
+    function appendCellToken(currentValue, token) {
+      const normalizedToken = normalizeCellValue(token);
+
+      if (isBaseSurfaceToken(normalizedToken)) {
+        return setBottomSurfaceToken(currentValue, normalizedToken);
+      }
+
+      const tokens = enforceBottomSurfaceRows(getCellTokens(currentValue));
+
+      tokens.push(normalizedToken);
+
+      return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
+    }
+
     function getCellDescriptor(value) {
       const tokens = getCellTokens(value);
-      const topToken = tokens.slice().reverse().find((token) => token.length > 0) || defaultFloorToken;
+      const topToken = tokens.slice().reverse().find((token) => token.length > 0) || "";
       const tool = toolByToken.get(topToken) || toolByToken.get(tokens[0]) || null;
 
       return {
-        label: tool ? tool.label : topToken,
+        label: tool ? tool.label : topToken || "Empty",
         tool,
         topToken,
         tokens
@@ -174,6 +274,10 @@
         raisedTerrainNames.has(type) ||
         (type === "player_lift" && tool?.initialRaised === true)
       );
+    }
+
+    function isBaseSurfaceTool(tool) {
+      return baseSurfaceNames.has(toolType(tool));
     }
 
     function buildTerrainCell(type, tool = null, options = {}) {
@@ -314,16 +418,72 @@
       return buildCellStack(tools).terrain;
     }
 
-    function setCellElevationToken(currentValue, token, targetElevation) {
+    function canShareBaseSurface(tool) {
+      return raisedTerrainNames.has(toolType(tool));
+    }
+
+    function setCellElevationToken(currentValue, token, targetElevation, options = {}) {
       const normalizedToken = normalizeCellValue(token);
-      const tokens = getCellTokens(currentValue);
       const elevation = Math.max(0, Math.floor(Number(targetElevation) || 0));
+      const tool = toolByToken.get(normalizedToken);
+      const tokens = enforceBottomSurfaceRows(getCellTokens(currentValue));
+
+      if (isBaseSurfaceTool(tool)) {
+        return setBottomSurfaceToken(currentValue, normalizedToken);
+      }
+
+      if (elevation === 0) {
+        return setAboveBottomRowToken(currentValue, normalizedToken);
+      }
+
       let metadata = cellStackMetadata(tokens);
-      const matchingEntry = metadata.entries.find((entry) => entry.elevation === elevation);
+      const sameElevationEntries = metadata.entries.filter((entry) => entry.elevation === elevation);
+      const matchingEntries = sameElevationEntries.filter((entry) => !entry.isAir);
+
+      if (options.stackBaseSurface === true && isBaseSurfaceTool(tool)) {
+        const baseSurfaceEntry = matchingEntries
+          .slice()
+          .reverse()
+          .find((entry) => isBaseSurfaceTool(entry.tool));
+
+        if (baseSurfaceEntry) {
+          tokens.splice(baseSurfaceEntry.index + 1, 0, normalizedToken);
+          return normalizeCellValue(tokens.join(blockAdder));
+        }
+      }
+
+      if (
+        options.preserveBaseSurface === true &&
+        elevation === 0 &&
+        canShareBaseSurface(tool)
+      ) {
+        const topSharedEntry = matchingEntries
+          .slice()
+          .reverse()
+          .find((entry) => !isBaseSurfaceTool(entry.tool));
+
+        if (topSharedEntry) {
+          tokens[topSharedEntry.index] = normalizedToken;
+          return normalizeCellValue(tokens.join(blockAdder));
+        }
+
+        const baseSurfaceEntry = matchingEntries
+          .slice()
+          .reverse()
+          .find((entry) => isBaseSurfaceTool(entry.tool));
+
+        if (baseSurfaceEntry) {
+          tokens.splice(baseSurfaceEntry.index + 1, 0, normalizedToken);
+          return normalizeCellValue(tokens.join(blockAdder));
+        }
+      }
+
+      const matchingEntry = sameElevationEntries[0];
 
       if (matchingEntry) {
         tokens[matchingEntry.index] = normalizedToken;
-        return normalizeCellValue(tokens.join(blockAdder));
+        trimTrailingAirTokens(tokens);
+        return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
       }
 
       while (metadata.nextElevation < elevation) {
@@ -333,7 +493,7 @@
 
       tokens.push(normalizedToken);
 
-      return normalizeCellValue(tokens.join(blockAdder));
+      return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
     }
 
     function eraseCellElevationValue(currentValue, targetElevation) {
@@ -364,7 +524,7 @@
       return normalizeCellValue(
         tokens.some((token) => token.length > 0)
           ? tokens.join(blockAdder)
-          : defaultFloorToken
+          : emptyCellToken
       );
     }
 
@@ -380,7 +540,7 @@
         const terrainRow = [];
 
         for (let x = 0; x < width; x += 1) {
-          const entries = getCellStackEntries(cells[y]?.[x] || defaultFloorToken);
+          const entries = getCellStackEntries(cells[y]?.[x] ?? defaultFloorToken);
           const cellStack = buildCellStack(entries);
 
           terrainRow.push(cellStack.terrain);
@@ -428,7 +588,9 @@
       getCellDescriptor,
       getCellTokens,
       getCellTools,
+      appendCellToken,
       isActorTool,
+      normalizeAuthoringCellValue,
       normalizeCellValue,
       setCellElevationToken,
       toolByName,

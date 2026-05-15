@@ -905,6 +905,12 @@ pre {
     #eef1e8;
 }
 
+.palette__swatch-glyph {
+  font-size: 1.4rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
 .author-level-pills {
   display: flex;
   flex-wrap: wrap;

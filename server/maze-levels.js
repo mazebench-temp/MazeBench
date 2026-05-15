@@ -474,16 +474,17 @@ function createMazeLevelService({
       typeof game.parser?.rules?.block_adder === "string" && game.parser.rules.block_adder.length > 0
         ? game.parser.rules.block_adder
         : "+";
+    const emptyCellToken = blockAdder;
     const trimmedCell = String(cell ?? "").trim();
 
     if (!trimmedCell) {
-      return floorToken;
+      return emptyCellToken;
     }
 
     const tokens = parseCellStack(game.parser, trimmedCell).map((token) => String(token).trim());
 
     if (tokens.length === 0 || tokens.every((token) => token.length === 0)) {
-      return floorToken;
+      return emptyCellToken;
     }
 
     const invalidToken = tokens.find((token) => token.length > 0 && !definitions.byToken.has(token));
@@ -515,7 +516,7 @@ function createMazeLevelService({
       exists && rawRows.length > 0
         ? Array.from({ length: height }, (_, y) =>
             Array.from({ length: width }, (_, x) =>
-              normalizeEditorCellValue(game, definitions, rawRows[y]?.[x] || floorToken, floorToken)
+              normalizeEditorCellValue(game, definitions, rawRows[y]?.[x] ?? floorToken, floorToken)
             )
           )
         : buildBlankEditorCells(width, height, floorToken);
@@ -574,7 +575,7 @@ function createMazeLevelService({
               : definition?.label || titleCase(name)),
           initialRaised: definition.initialRaised || entry.initialRaised,
           name,
-          selectable: name !== "circle_player" && name !== "exit",
+          selectable: name !== "circle_player" && name !== "exit" && name !== "hole",
           token: entry.token,
           type: definition.type
         });
