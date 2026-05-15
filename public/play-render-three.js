@@ -1405,6 +1405,37 @@
       return `${kind}:${plane}`;
     }
 
+    function polycubeComponentNeighborOffsets() {
+      const offsets = [];
+
+      for (let x = -1; x <= 1; x += 1) {
+        for (let y = -1; y <= 1; y += 1) {
+          for (let z = -1; z <= 1; z += 1) {
+            const nonZeroAxes = [x, y, z].filter((value) => value !== 0).length;
+
+            if (nonZeroAxes > 0 && nonZeroAxes <= 2) {
+              offsets.push({ x, y, z });
+            }
+          }
+        }
+      }
+
+      return offsets;
+    }
+
+    function polycubeEdgeContactOffsets() {
+      return polycubeComponentNeighborOffsets().filter((offset) => {
+        const nonZeroAxes = [offset.x, offset.y, offset.z]
+          .filter((value) => value !== 0)
+          .length;
+
+        return (
+          nonZeroAxes === 2 &&
+          (offset.x > 0 || (offset.x === 0 && offset.y > 0))
+        );
+      });
+    }
+
     function collectPolycubeFaceCells(voxels) {
       const voxelKeys = new Set(voxels.map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z)));
       const faceGroups = new Map();
@@ -1556,11 +1587,16 @@
       return geometry;
     }
 
-    function addPolycubeEdgeSegment(positions, seenSegments, from, to) {
+    function polycubeEdgeSegmentKey(from, to) {
       const keyParts = [from, to].map((point) =>
         point.map((value) => Math.round(value * 1000)).join(",")
       ).sort();
-      const key = `${keyParts[0]}:${keyParts[1]}`;
+
+      return `${keyParts[0]}:${keyParts[1]}`;
+    }
+
+    function addPolycubeEdgeSegment(positions, seenSegments, from, to) {
+      const key = polycubeEdgeSegmentKey(from, to);
 
       if (seenSegments.has(key)) {
         return;
@@ -1570,7 +1606,124 @@
       positions.push(...from, ...to);
     }
 
-    function addPolycubeFaceBoundaryEdges(positions, seenSegments, faceGroup) {
+    function addPolycubeSuppressedEdge(suppressedEdges, from, to) {
+      suppressedEdges.add(polycubeEdgeSegmentKey(from, to));
+    }
+
+    function addPolycubeEdgeContact(suppressedEdges, voxel, offset) {
+      const worldX = (x) => x * unit + renderOffsetX();
+      const worldY = (z) => z * elevationUnit + actorVisualLift;
+      const worldZ = (y) => y * unit + renderOffsetZ();
+      const fixedX = offset.x === 0 ? null : worldX(voxel.x + (offset.x > 0 ? 1 : 0));
+      const fixedY = offset.z === 0 ? null : worldY(voxel.z + (offset.z > 0 ? 1 : 0));
+      const fixedZ = offset.y === 0 ? null : worldZ(voxel.y + (offset.y > 0 ? 1 : 0));
+
+      if (offset.x === 0) {
+        addPolycubeSuppressedEdge(
+          suppressedEdges,
+          [worldX(voxel.x), fixedY, fixedZ],
+          [worldX(voxel.x + 1), fixedY, fixedZ]
+        );
+        return;
+      }
+
+      if (offset.y === 0) {
+        addPolycubeSuppressedEdge(
+          suppressedEdges,
+          [fixedX, fixedY, worldZ(voxel.y)],
+          [fixedX, fixedY, worldZ(voxel.y + 1)]
+        );
+        return;
+      }
+
+      addPolycubeSuppressedEdge(
+        suppressedEdges,
+        [fixedX, worldY(voxel.z), fixedZ],
+        [fixedX, worldY(voxel.z + 1), fixedZ]
+      );
+    }
+
+    function polycubeContactEdgeKeys(voxels) {
+      const voxelKeys = new Set(voxels.map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z)));
+      const suppressedEdges = new Set();
+      const contactOffsets = polycubeEdgeContactOffsets();
+
+      voxels.forEach((voxel) => {
+        contactOffsets.forEach((offset) => {
+          if (
+            voxelKeys.has(
+              polycubeVoxelKey(
+                voxel.x + offset.x,
+                voxel.y + offset.y,
+                voxel.z + offset.z
+              )
+            )
+          ) {
+            addPolycubeEdgeContact(suppressedEdges, voxel, offset);
+          }
+        });
+      });
+
+      return suppressedEdges;
+    }
+
+    function polycubeComponents(voxels) {
+      const voxelMap = new Map();
+      const visited = new Set();
+      const components = [];
+      const neighborOffsets = polycubeComponentNeighborOffsets();
+
+      voxels.forEach((voxel) => {
+        const key = polycubeVoxelKey(voxel.x, voxel.y, voxel.z);
+
+        if (!voxelMap.has(key)) {
+          voxelMap.set(key, voxel);
+        }
+      });
+
+      voxelMap.forEach((startVoxel, startKey) => {
+        if (visited.has(startKey)) {
+          return;
+        }
+
+        const stack = [startVoxel];
+        const component = [];
+        visited.add(startKey);
+
+        while (stack.length > 0) {
+          const voxel = stack.pop();
+
+          component.push(voxel);
+
+          neighborOffsets.forEach((offset) => {
+            const key = polycubeVoxelKey(
+              voxel.x + offset.x,
+              voxel.y + offset.y,
+              voxel.z + offset.z
+            );
+
+            if (!voxelMap.has(key) || visited.has(key)) {
+              return;
+            }
+
+            visited.add(key);
+            stack.push(voxelMap.get(key));
+          });
+        }
+
+        components.push(component);
+      });
+
+      return components;
+    }
+
+    function addPolycubeFaceBoundaryEdges(
+      positions,
+      seenSegments,
+      faceGroup,
+      suppressedEdges,
+      options = {}
+    ) {
       faceGroup.cells.forEach((cellKey) => {
         const [a, b] = cellKey.split(",").map(Number);
         const neighbors = [
@@ -1585,22 +1738,41 @@
             return;
           }
 
+          const from = polycubePointForFace(faceGroup.kind, faceGroup.plane, edge.from[0], edge.from[1]);
+          const to = polycubePointForFace(faceGroup.kind, faceGroup.plane, edge.to[0], edge.to[1]);
+
+          if (suppressedEdges.has(polycubeEdgeSegmentKey(from, to))) {
+            return;
+          }
+
+          if (
+            options?.suppressSharedRoomEdges &&
+            sharedRoomBoundaryEdgeSegment(
+              { x: from[0], y: from[1], z: from[2] },
+              { x: to[0], y: to[1], z: to[2] },
+              options
+            )
+          ) {
+            return;
+          }
+
           addPolycubeEdgeSegment(
             positions,
             seenSegments,
-            polycubePointForFace(faceGroup.kind, faceGroup.plane, edge.from[0], edge.from[1]),
-            polycubePointForFace(faceGroup.kind, faceGroup.plane, edge.to[0], edge.to[1])
+            from,
+            to
           );
         });
       });
     }
 
-    function polycubeEdgeGeometry(voxels) {
+    function polycubeEdgeGeometry(voxels, options = {}) {
       const positions = [];
       const seenSegments = new Set();
+      const suppressedEdges = polycubeContactEdgeKeys(voxels);
 
       collectPolycubeFaceCells(voxels).forEach((faceGroup) => {
-        addPolycubeFaceBoundaryEdges(positions, seenSegments, faceGroup);
+        addPolycubeFaceBoundaryEdges(positions, seenSegments, faceGroup, suppressedEdges, options);
       });
 
       const geometry = new THREE.BufferGeometry();
@@ -2450,6 +2622,116 @@
       return !["floor", "ice", "hole", "empty", "exit", "orange_button"].includes(descriptor.type);
     }
 
+    function terrainPolycubeLevel(value) {
+      return Math.round(value / elevationUnit);
+    }
+
+    function isTerrainPolycubeLevel(value) {
+      return Math.abs(value / elevationUnit - terrainPolycubeLevel(value)) <= 0.001;
+    }
+
+    function canRenderTerrainPolycube(descriptor) {
+      return (
+        (descriptor.type === "wall" || descriptor.type === "orange_wall") &&
+        !descriptor.isSunkenFloor &&
+        isTerrainPolycubeLevel(descriptor.bottomY) &&
+        isTerrainPolycubeLevel(descriptor.topY) &&
+        terrainPolycubeLevel(descriptor.topY) > terrainPolycubeLevel(descriptor.bottomY)
+      );
+    }
+
+    function addTerrainPolycubeComponent(voxels, now) {
+      const entries = Array.from(new Set(voxels.map((voxel) => voxel.entry)));
+      const cells = Array.from(
+        entries
+          .reduce((cellMap, entry) => {
+            const key = `${entry.x},${entry.y}`;
+
+            if (!cellMap.has(key)) {
+              cellMap.set(key, {
+                gridX: entry.x,
+                gridY: entry.y,
+                left: entry.x * unit + renderOffsetX(),
+                right: (entry.x + 1) * unit + renderOffsetX(),
+                top: entry.y * unit + renderOffsetZ(),
+                bottom: (entry.y + 1) * unit + renderOffsetZ()
+              });
+            }
+
+            return cellMap;
+          }, new Map())
+          .values()
+      );
+      const visibility = transitionPieceProgressForCells(cells);
+
+      if (visibility <= 0.015) {
+        return;
+      }
+
+      const descriptor = entries[0].descriptor;
+      const bottomY = Math.min(...entries.map((entry) => entry.descriptor.bottomY));
+      const topY = Math.max(...entries.map((entry) => entry.descriptor.topY));
+
+      addOutlinedMesh(
+        polycubeGeometry(voxels),
+        terrainColor(descriptor.type),
+        { x: 0, y: 0, z: 0 },
+        {
+          edgeGeometry: polycubeEdgeGeometry(voxels, {
+            descriptor,
+            now,
+            suppressSharedRoomEdges: descriptor.type === "wall"
+          }),
+          edgeThreshold: 18,
+          opacity: visibility,
+          castShadow: renderContextCastsShadows(),
+          receiveShadow: descriptor.type !== "orange_wall",
+          editorPick: {
+            kind: "terrain",
+            cells,
+            topY,
+            bottomY
+          }
+        }
+      );
+    }
+
+    function addTerrainPolycubeRegions(entries, now) {
+      const groups = new Map();
+
+      entries.forEach((entry) => {
+        const key = entry.descriptor.type;
+
+        if (!groups.has(key)) {
+          groups.set(key, []);
+        }
+
+        groups.get(key).push(entry);
+      });
+
+      groups.forEach((groupEntries) => {
+        const voxels = [];
+
+        groupEntries.forEach((entry) => {
+          const bottomLevel = terrainPolycubeLevel(entry.descriptor.bottomY);
+          const topLevel = terrainPolycubeLevel(entry.descriptor.topY);
+
+          for (let z = bottomLevel; z < topLevel; z += 1) {
+            voxels.push({
+              entry,
+              x: entry.x,
+              y: entry.y,
+              z
+            });
+          }
+        });
+
+        polycubeComponents(voxels).forEach((component) => {
+          addTerrainPolycubeComponent(component, now);
+        });
+      });
+    }
+
     function addTerrainComponent(cells, descriptor, now) {
       if (descriptor.isVoid) {
         return;
@@ -2550,6 +2832,7 @@
       const descriptors = [];
       const pieceMaps = [];
       const pieceEntries = [];
+      const polycubePieceEntries = [];
       const state = renderState();
 
       for (let y = 0; y < state.height; y += 1) {
@@ -2561,6 +2844,11 @@
 
           const pieceMap = new Map();
           terrainPieceDescriptorsAt(x, y, now).forEach((descriptor) => {
+            if (canRenderTerrainPolycube(descriptor)) {
+              polycubePieceEntries.push({ descriptor, x, y });
+              return;
+            }
+
             pieceMap.set(descriptor.key, descriptor);
             pieceEntries.push({ descriptor, x, y });
           });
@@ -2576,6 +2864,8 @@
       if (activeRenderContext) {
         activeRenderContext.terrainDescriptors = descriptors;
       }
+
+      addTerrainPolycubeRegions(polycubePieceEntries, now);
 
       const visitedPieces = new Set();
       const pieceVisitKey = (x, y, key) => `${x},${y}:${key}`;
@@ -2787,68 +3077,23 @@
         );
       };
       const renderPolycubeGroup = (columns) => {
-        const voxelMap = new Map();
+        const voxels = [];
 
         columns.forEach((column) => {
           const bottomLevel = roundedLevel(column.bottomY);
           const topLevel = roundedLevel(column.topY);
 
           for (let z = bottomLevel; z < topLevel; z += 1) {
-            const key = polycubeVoxelKey(column.gridX, column.gridY, z);
-
-            if (!voxelMap.has(key)) {
-              voxelMap.set(key, {
-                column,
-                x: column.gridX,
-                y: column.gridY,
-                z
-              });
-            }
-          }
-        });
-
-        const visited = new Set();
-        const neighborOffsets = [
-          { x: 1, y: 0, z: 0 },
-          { x: -1, y: 0, z: 0 },
-          { x: 0, y: 1, z: 0 },
-          { x: 0, y: -1, z: 0 },
-          { x: 0, y: 0, z: 1 },
-          { x: 0, y: 0, z: -1 }
-        ];
-
-        voxelMap.forEach((startVoxel, startKey) => {
-          if (visited.has(startKey)) {
-            return;
-          }
-
-          const stack = [startVoxel];
-          const component = [];
-          visited.add(startKey);
-
-          while (stack.length > 0) {
-            const voxel = stack.pop();
-
-            component.push(voxel);
-
-            neighborOffsets.forEach((offset) => {
-              const key = polycubeVoxelKey(
-                voxel.x + offset.x,
-                voxel.y + offset.y,
-                voxel.z + offset.z
-              );
-
-              if (!voxelMap.has(key) || visited.has(key)) {
-                return;
-              }
-
-              visited.add(key);
-              stack.push(voxelMap.get(key));
+            voxels.push({
+              column,
+              x: column.gridX,
+              y: column.gridY,
+              z
             });
           }
-
-          renderPolycubeComponent(component);
         });
+
+        polycubeComponents(voxels).forEach(renderPolycubeComponent);
       };
 
       state.actors.forEach((actor, index) => {
