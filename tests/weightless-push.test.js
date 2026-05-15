@@ -692,6 +692,57 @@ asyncTests.push(
 }
 
 {
+  const terrain = createTerrain(4, 1);
+  terrain[0][0] = { type: "wall" };
+  terrain[0][1] = { type: "wall" };
+  const upperBox = { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 1, removed: false };
+  const lowerBox = { type: "weightless_box", groupId: "M1", x: 2, y: 0, elevation: 0, removed: false };
+  const actors = [
+    { type: "player", x: 0, y: 0, elevation: 1, removed: false },
+    upperBox,
+    lowerBox
+  ];
+  const app = createGameplayApp(actors, {
+    height: 1,
+    terrain,
+    width: 4
+  });
+  const result = app.tryMovePlayersInstant(1, 0);
+  const upperBoxMove = result.moves.find((move) => move.actor === upperBox);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([upperBox.x, upperBox.y], [2, 0]);
+  assert.equal(upperBox.elevation, 1);
+  assert.deepEqual([lowerBox.x, lowerBox.y], [2, 0]);
+  assert.equal(lowerBox.elevation, 0);
+  assert.equal(upperBoxMove.fromElevation, 1);
+  assert.equal(upperBoxMove.toElevation, 1);
+}
+
+{
+  const bottomBox = { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 0, removed: false };
+  const topBox = { type: "weightless_box", groupId: "M1", x: 1, y: 0, elevation: 1, removed: false };
+  const actors = [
+    { type: "player", x: 0, y: 0, elevation: 0, removed: false },
+    bottomBox,
+    topBox
+  ];
+  const app = createGameplayApp(actors, {
+    height: 1,
+    width: 4
+  });
+  const result = app.tryMovePlayersInstant(1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([actors[0].x, actors[0].y], [1, 0]);
+  assert.deepEqual([bottomBox.x, bottomBox.y], [2, 0]);
+  assert.equal(bottomBox.elevation, 0);
+  assert.deepEqual([topBox.x, topBox.y], [1, 0]);
+  assert.equal(topBox.elevation, 1);
+  assert.equal(result.moves.some((move) => move.actor === topBox), false);
+}
+
+{
   const app = createGameplayApp([], {
     worldColumns: Array.from("ABCDEFGHIJKLMNOP"),
     worldRows: Array.from("ABCDEFGHIJKLMNOP")

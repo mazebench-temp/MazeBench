@@ -106,6 +106,30 @@ function createPageRenderer({
             </span>
           </button>`
       : "";
+    const edgeToggleMarkup = hasBoard
+      ? `<button
+            id="edge-toggle"
+            class="effect-toggle is-active"
+            type="button"
+            aria-pressed="true"
+            aria-label="Black edges"
+            title="Black edges"
+          >
+            <span class="effect-icon effect-icon--edges" aria-hidden="true"></span>
+            <span class="effect-toggle-track" aria-hidden="true">
+              <span class="effect-toggle-thumb"></span>
+            </span>
+          </button>`
+      : "";
+    const cameraModeToggleMarkup = hasBoard
+      ? `<button
+            id="camera-mode-toggle"
+            class="camera-mode-toggle"
+            type="button"
+            aria-pressed="true"
+            title="Switch camera projection"
+          >Perspective</button>`
+      : "";
     const boardMarkup =
       hasBoard
         ? `<section class="play-stage" aria-label="${escapeHtml(game.name)} board">
@@ -125,6 +149,7 @@ function createPageRenderer({
           <script src="/play-render-effects.js" defer></script>
           <script src="/play-render-terrain.js" defer></script>
           <script src="/play-render-actors.js" defer></script>
+          <script src="/play-render-three.js" defer></script>
           <script src="/play-render-compositor.js" defer></script>
           <script src="/play-render.js" defer></script>
           <script src="/maze-engine.js" defer></script>
@@ -142,9 +167,11 @@ function createPageRenderer({
           <h1>${escapeHtml(game.name)}</h1>
           <div class="play-header-meta">
             <a class="back-link" href="/games/${encodeURIComponent(game.id)}">Back</a>
-            <a class="back-link" href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Author</a>
+            <a class="back-link" data-play-author-link href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Author</a>
             <a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">World Map</a>
             <p>${escapeHtml(level.label)}</p>
+            ${cameraModeToggleMarkup}
+            ${edgeToggleMarkup}
             ${fuzzyToggleMarkup}
           </div>
         </header>
@@ -315,6 +342,7 @@ function createPageRenderer({
         <script src="/play-render-effects.js" defer></script>
         <script src="/play-render-terrain.js" defer></script>
         <script src="/play-render-actors.js" defer></script>
+        <script src="/play-render-three.js" defer></script>
         <script src="/play-render-compositor.js" defer></script>
         <script src="/play-render.js" defer></script>
         <script src="/maze-engine.js" defer></script>

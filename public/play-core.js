@@ -83,7 +83,10 @@
     playHeader,
     playStage,
     mazeFrame,
-    fuzzyToggle
+    fuzzyToggle,
+    edgeToggle,
+    cameraModeToggle,
+    enableCameraControls
   }) {
     const currentPathSegments = window.location.pathname.split("/").filter(Boolean);
     const currentGameId =
@@ -120,11 +123,16 @@
       worldColumns: playRules.normalizeAxisValues(playData?.worldColumns, defaultWorldAxis),
       worldRows: playRules.normalizeAxisValues(playData?.worldRows, defaultWorldAxis),
       canvas,
+      enableCameraControls:
+        enableCameraControls === true ||
+        (enableCameraControls !== false && Boolean(canvas?.isConnected)),
       playShell,
       playHeader,
       playStage,
       mazeFrame,
       fuzzyToggle,
+      edgeToggle,
+      cameraModeToggle,
       TILE_SIZE: 64,
       FUZZY_AMOUNT: 0.1,
       NOISE_FPS: 8,
@@ -137,7 +145,7 @@
       PLAYER_LIFT_FALL_DURATION_MS: 180,
       HOLE_FALL_DURATION_MS: 300,
       PLAYER_REVIVE_BLINK_DURATION_MS: 620,
-      HOLE_SINK_DISTANCE: 64 * 0.42,
+      HOLE_SINK_DISTANCE: 64 * 3,
       GEM_HOVER_BASE: 64 * 0.035,
       GEM_HOVER_BOB: 64 * 0.028,
       GEM_HOVER_PERIOD_MS: 1800,
@@ -153,28 +161,16 @@
       VIEWPORT_TILE_WIDTH: initialViewportTiles.width,
       VIEWPORT_TILE_HEIGHT: initialViewportTiles.height,
       CAMERA_FOLLOW_SMOOTHING_MS: 210,
-      LEVEL_TRANSITION_DURATION_MS: 340,
+      LEVEL_TRANSITION_DURATION_MS: 1000,
       PLAYER_LIFT_ARROW_URL: `/assets/${encodeURIComponent(currentGameId)}/images/arrow.png`,
       state: {
         width: playData.width,
         height: playData.height,
         terrain: playData.terrain,
-        actors: playData.actors.map((actor) => ({
-          ...actor,
-          hoverSeed:
-            (((actor.x + 1) * 0.61803398875 + (actor.y + 1) * 1.41421356237) % 1) * Math.PI * 2,
-          renderX: actor.x,
-          renderY: actor.y,
-          elevation: 0,
-          renderElevation: 0,
-          renderScale: 1,
-          renderAlpha: 1,
-          renderSink: 0,
-          renderInHole: false,
-          removed: false
-        })),
+        actors: playData.actors.map((actor) => ({ ...actor })),
         effects: {
           fuzzyEnabled: fuzzyToggle ? fuzzyToggle.getAttribute("aria-pressed") === "true" : true,
+          edgeOutlinesEnabled: edgeToggle ? edgeToggle.getAttribute("aria-pressed") === "true" : true,
           noisePhase: 0
         }
       },
@@ -232,17 +228,68 @@
       return playRules.adjacentWorldLevelId(levelId, dx, dy, app.worldColumns, app.worldRows);
     }
 
-    function rememberHorizontalNeighborLevelState(levelState) {
-      if (typeof levelState?.levelId !== "string" || !Array.isArray(levelState?.terrain)) {
+    function withTemporaryLevelState(levelState, callback) {
+      const previousWidth = app.state.width;
+      const previousHeight = app.state.height;
+      const previousTerrain = app.state.terrain;
+      const previousActors = app.state.actors;
+
+      app.state.width = levelState.width;
+      app.state.height = levelState.height;
+      app.state.terrain = levelState.terrain;
+      app.state.actors = levelState.actors;
+
+      try {
+        return callback();
+      } finally {
+        app.state.width = previousWidth;
+        app.state.height = previousHeight;
+        app.state.terrain = previousTerrain;
+        app.state.actors = previousActors;
+      }
+    }
+
+    function prepareLevelRenderState(levelState) {
+      if (!levelState || typeof levelState.levelId !== "string" || !Array.isArray(levelState.terrain)) {
         return null;
       }
 
-      const storedLevelState = {
+      const preparedState = {
+        ...levelState,
         levelId: levelState.levelId,
         width: Number(levelState.width) || 0,
         height: Number(levelState.height) || 0,
-        terrain: cloneTerrainState(levelState.terrain)
+        terrain: cloneTerrainState(levelState.terrain),
+        actors: (levelState.actors || []).map((actor) => createRuntimeActor(actor)),
+        raisedPlayerGates: Array.isArray(levelState.raisedPlayerGates)
+          ? levelState.raisedPlayerGates.slice()
+          : null,
+        raisedOrangeWalls: Array.isArray(levelState.raisedOrangeWalls)
+          ? levelState.raisedOrangeWalls.slice()
+          : null
       };
+
+      withTemporaryLevelState(preparedState, () => {
+        initializeActorElevations();
+
+        if (!Array.isArray(preparedState.raisedPlayerGates)) {
+          preparedState.raisedPlayerGates = Array.from(computeRaisedPlayerGateSet(preparedState.actors));
+        }
+
+        if (!Array.isArray(preparedState.raisedOrangeWalls)) {
+          preparedState.raisedOrangeWalls = Array.from(computeRaisedOrangeWallSet(preparedState.actors));
+        }
+      });
+
+      return preparedState;
+    }
+
+    function rememberHorizontalNeighborLevelState(levelState) {
+      const storedLevelState = prepareLevelRenderState(levelState);
+
+      if (!storedLevelState) {
+        return null;
+      }
 
       app.horizontalNeighborLevelStates.set(levelState.levelId, storedLevelState);
       return storedLevelState;
@@ -305,8 +352,15 @@
     }
 
     function syncHorizontalNeighborLevelStates() {
-      queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, -1, 0));
-      queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, 1, 0));
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) {
+            continue;
+          }
+
+          queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, dx, dy));
+        }
+      }
     }
 
     function hoverSeedForActor(actor) {
@@ -316,8 +370,7 @@
     function createRuntimeActor(actor) {
       const removed = Boolean(actor?.removed);
       const elevation = actor?.elevation ?? 0;
-
-      return {
+      const runtimeActor = {
         ...actor,
         hoverSeed: actor?.hoverSeed ?? hoverSeedForActor(actor),
         renderX: actor?.renderX ?? actor.x,
@@ -330,6 +383,12 @@
         renderInHole: Boolean(actor?.renderInHole),
         removed
       };
+
+      Object.defineProperty(runtimeActor, "__explicitElevation", {
+        value: Object.prototype.hasOwnProperty.call(actor ?? {}, "elevation")
+      });
+
+      return runtimeActor;
     }
 
     function registerImageUrl(url) {
@@ -376,7 +435,8 @@
     app.gl = canvas.getContext("webgl", {
       alpha: false,
       antialias: false,
-      premultipliedAlpha: false
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: false
     });
     app.fallbackCtx = app.gl ? null : canvas.getContext("2d");
 
@@ -606,9 +666,9 @@
         return;
       }
 
-      function step() {
+      function step(now) {
         app.cameraFrameId = null;
-        app.render();
+        app.render(now);
       }
 
       app.cameraFrameId = window.requestAnimationFrame(step);
@@ -745,6 +805,7 @@
     function cloneTerrainCell(cell) {
       return {
         ...cell,
+        layers: Array.isArray(cell?.layers) ? cell.layers.map((layer) => ({ ...layer })) : null,
         underlay: cell?.underlay ? cloneTerrainCell(cell.underlay) : null
       };
     }
@@ -811,6 +872,16 @@
 
       if (levelMeta && app.currentLevelLabel) {
         levelMeta.textContent = app.currentLevelLabel;
+      }
+
+      const authorLink =
+        app.playHeader?.querySelector("[data-play-author-link]") ||
+        Array.from(app.playHeader?.querySelectorAll("a") || []).find(
+          (link) => link.textContent?.trim() === "Author"
+        );
+
+      if (authorLink && app.currentGameId && app.currentLevelId) {
+        authorLink.href = `/author/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(app.currentLevelId)}`;
       }
 
       const gameTitle = app.playHeader?.querySelector("h1")?.textContent?.trim();
@@ -1014,18 +1085,10 @@
     }
 
     function actorElevation(actor) {
-      if (!isPlayerActor(actor) && actor?.type !== "weightless_box") {
-        return 0;
-      }
-
       return actor?.elevation ?? 0;
     }
 
     function actorRenderElevation(actor) {
-      if (!isPlayerActor(actor) && actor?.type !== "weightless_box") {
-        return 0;
-      }
-
       return actor?.renderElevation ?? actor?.elevation ?? 0;
     }
 
@@ -1140,20 +1203,89 @@
       return cell;
     }
 
+    function terrainLayersAt(x, y) {
+      const cell = terrainAt(x, y);
+
+      if (Array.isArray(cell.layers)) {
+        return cell.layers;
+      }
+
+      return cell.type === "empty"
+        ? []
+        : [
+            {
+              type: cell.type,
+              elevation: 0,
+              raised: cell.raised === true
+            }
+          ];
+    }
+
+    function terrainLayersOfType(x, y, type) {
+      return terrainLayersAt(x, y).filter((layer) => layer.type === type);
+    }
+
+    function terrainLayerSurfaceHeight(
+      layer,
+      x,
+      y,
+      gateState = app.liveRaisedPlayerGates,
+      orangeWallState = app.liveRaisedOrangeWalls
+    ) {
+      const elevation = layer.elevation ?? 0;
+
+      if (layer.type === "empty" || layer.type === "hole") {
+        return null;
+      }
+
+      if (layer.type === "wall") {
+        return elevation + 1;
+      }
+
+      if (layer.type === "player_gate") {
+        return gateState.has(posKey(x, y)) ? elevation + 1 : elevation;
+      }
+
+      if (layer.type === "player_lift") {
+        return isRaisedPlayerLift(x, y) ? elevation + 1 : elevation;
+      }
+
+      if (layer.type === "orange_wall") {
+        return orangeWallState.has(posKey(x, y)) ? elevation + 1 : elevation;
+      }
+
+      return elevation;
+    }
+
+    function terrainSurfaceHeightsAt(
+      x,
+      y,
+      gateState = app.liveRaisedPlayerGates,
+      orangeWallState = app.liveRaisedOrangeWalls
+    ) {
+      if (!isInsideBoard(x, y)) {
+        return [];
+      }
+
+      return terrainLayersAt(x, y)
+        .map((layer) => terrainLayerSurfaceHeight(layer, x, y, gateState, orangeWallState))
+        .filter((height) => height !== null);
+    }
+
     function isPlayerGate(x, y) {
-      return terrainAt(x, y).type === "player_gate";
+      return terrainLayersOfType(x, y, "player_gate").length > 0;
     }
 
     function isPlayerLift(x, y) {
-      return terrainAt(x, y).type === "player_lift";
+      return terrainLayersOfType(x, y, "player_lift").length > 0;
     }
 
     function isOrangeWall(x, y) {
-      return terrainAt(x, y).type === "orange_wall";
+      return terrainLayersOfType(x, y, "orange_wall").length > 0;
     }
 
     function isOrangeButton(x, y) {
-      return terrainAt(x, y).type === "orange_button";
+      return terrainLayersOfType(x, y, "orange_button").length > 0;
     }
 
     function eachOrangeWall(callback) {
@@ -1168,12 +1300,12 @@
       }
     }
 
-    function isOrangeButtonPressed(x, y, actors = app.state.actors) {
+    function isOrangeButtonPressed(x, y, actors = app.state.actors, elevation = 0) {
       return actors.some(
         (actor) =>
           !actor.removed &&
           !isCollectibleActor(actor) &&
-          actorElevation(actor) === 0 &&
+          actorElevation(actor) === elevation &&
           actor.x === x &&
           actor.y === y
       );
@@ -1190,7 +1322,11 @@
 
           hasOrangeButton = true;
 
-          if (!isOrangeButtonPressed(x, y, actors)) {
+          if (
+            !terrainLayersOfType(x, y, "orange_button").every((layer) =>
+              isOrangeButtonPressed(x, y, actors, layer.elevation ?? 0)
+            )
+          ) {
             return false;
           }
         }
@@ -1230,7 +1366,11 @@
     }
 
     function isRaisedPlayerLift(x, y) {
-      return isPlayerLift(x, y) && terrainAt(x, y).raised === true;
+      return (
+        isPlayerLift(x, y) &&
+        (terrainAt(x, y).raised === true ||
+          terrainLayersOfType(x, y, "player_lift").some((layer) => layer.raised === true))
+      );
     }
 
     function setPlayerLiftRaised(x, y, raised) {
@@ -1238,8 +1378,19 @@
         return false;
       }
 
-      terrainAt(x, y).raised = Boolean(raised);
-      return terrainAt(x, y).raised;
+      const cell = terrainAt(x, y);
+
+      cell.raised = Boolean(raised);
+
+      if (Array.isArray(cell.layers)) {
+        cell.layers.forEach((layer) => {
+          if (layer.type === "player_lift") {
+            layer.raised = Boolean(raised);
+          }
+        });
+      }
+
+      return cell.raised;
     }
 
     function togglePlayerLiftAt(x, y) {
@@ -1256,34 +1407,33 @@
         return null;
       }
 
-      if (
-        isTerrainWall(x, y) ||
-        isRaisedPlayerGate(x, y, gateState) ||
-        isRaisedPlayerLift(x, y) ||
-        isRaisedOrangeWall(x, y, orangeWallState)
-      ) {
-        return 1;
-      }
+      const heights = terrainSurfaceHeightsAt(x, y, gateState, orangeWallState);
 
-      const cell = terrainAt(x, y);
-
-      if (cell.type === "hole" || cell.type === "empty") {
-        return null;
-      }
-
-      return 0;
+      return heights.length > 0 ? Math.max(...heights) : null;
     }
 
-    function hasElevatedActorSurfaceAt(x, y) {
-      return (
-        actorsAt(
-          x,
-          y,
-          (actor) =>
-            actorElevation(actor) === 0 &&
-            (actor.type === "floating_floor" || actor.type === "weightless_box")
-        ).length > 0
+    function actorSupportSurfaceHeightsAt(x, y, ignoredActors = null, includePlayers = false) {
+      return actorsAt(
+        x,
+        y,
+        (actor) =>
+          !ignoredActors?.has(actor) &&
+          (includePlayers || !isPlayerActor(actor)) &&
+          (actor.type === "box" ||
+            actor.type === "floating_floor" ||
+            actor.type === "weightless_box" ||
+            isPlayerActor(actor))
+      ).map((actor) => actorElevation(actor) + 1);
+    }
+
+    function hasElevatedActorSurfaceAt(x, y, ignoredActors = null) {
+      return actorSupportSurfaceHeightsAt(x, y, ignoredActors, false).some(
+        (height) => height > 0
       );
+    }
+
+    function hasWeightlessSupportActorSurfaceAt(x, y, ignoredActors = null) {
+      return actorSupportSurfaceHeightsAt(x, y, ignoredActors, true).length > 0;
     }
 
     function playerSurfaceHeightAt(
@@ -1292,13 +1442,11 @@
       gateState = app.liveRaisedPlayerGates,
       orangeWallState = app.liveRaisedOrangeWalls
     ) {
-      const terrainHeight = terrainSurfaceHeightAt(x, y, gateState, orangeWallState);
+      const heights = terrainSurfaceHeightsAt(x, y, gateState, orangeWallState).concat(
+        actorSupportSurfaceHeightsAt(x, y, null, false)
+      );
 
-      if (terrainHeight === 1 || hasElevatedActorSurfaceAt(x, y)) {
-        return 1;
-      }
-
-      return terrainHeight;
+      return heights.length > 0 ? Math.max(...heights) : null;
     }
 
     function weightlessGroupSupportedElevation(
@@ -1306,20 +1454,34 @@
       gateState = app.liveRaisedPlayerGates,
       orangeWallState = app.liveRaisedOrangeWalls
     ) {
-      return members.some(
-        (member) => terrainSurfaceHeightAt(member.x, member.y, gateState, orangeWallState) === 1
-      )
-        ? 1
-        : 0;
+      const memberSet = new Set(members);
+
+      let baseElevation = 0;
+
+      members.forEach((member) => {
+        const relativeElevation = member.__weightlessRelativeElevation ?? 0;
+        const currentElevation = actorElevation(member);
+        const supportHeights = terrainSurfaceHeightsAt(
+          member.x,
+          member.y,
+          gateState,
+          orangeWallState
+        ).concat(actorSupportSurfaceHeightsAt(member.x, member.y, memberSet, true));
+
+        supportHeights.forEach((height) => {
+          if (height > currentElevation + 1) {
+            return;
+          }
+
+          baseElevation = Math.max(baseElevation, height - relativeElevation);
+        });
+      });
+
+      return Math.max(0, baseElevation);
     }
 
     function computeRaisedPlayerGateSet(actors = app.state.actors) {
       const activeActors = actors.filter((actor) => !actor.removed);
-      const occupiedGround = new Set(
-        activeActors
-          .filter((actor) => !isCollectibleActor(actor) && actorElevation(actor) === 0)
-          .map((actor) => posKey(actor.x, actor.y))
-      );
       const players = activeActors.filter((actor) => isPlayerActor(actor));
       const raised = new Set();
 
@@ -1329,22 +1491,43 @@
             continue;
           }
 
-          if (
-            players.some(
-              (actor) => actorElevation(actor) === 1 && actor.x === x && actor.y === y
-            )
-          ) {
-            raised.add(posKey(x, y));
-            continue;
-          }
+          terrainLayersOfType(x, y, "player_gate").forEach((gateLayer) => {
+            const gateElevation = gateLayer.elevation ?? 0;
 
-          if (occupiedGround.has(posKey(x, y))) {
-            continue;
-          }
+            if (
+              players.some(
+                (actor) =>
+                  actorElevation(actor) === gateElevation + 1 &&
+                  actor.x === x &&
+                  actor.y === y
+              )
+            ) {
+              raised.add(posKey(x, y));
+              return;
+            }
 
-          if (players.some((actor) => Math.abs(actor.x - x) + Math.abs(actor.y - y) === 1)) {
-            raised.add(posKey(x, y));
-          }
+            if (
+              activeActors.some(
+                (actor) =>
+                  !isCollectibleActor(actor) &&
+                  actorElevation(actor) === gateElevation &&
+                  actor.x === x &&
+                  actor.y === y
+              )
+            ) {
+              return;
+            }
+
+            if (
+              players.some(
+                (actor) =>
+                  actorElevation(actor) === gateElevation &&
+                  Math.abs(actor.x - x) + Math.abs(actor.y - y) === 1
+              )
+            ) {
+              raised.add(posKey(x, y));
+            }
+          });
         }
       }
 
@@ -1368,7 +1551,7 @@
     }
 
     function isTerrainWall(x, y) {
-      return terrainAt(x, y).type === "wall";
+      return terrainLayersOfType(x, y, "wall").length > 0;
     }
 
     function terrainCellAcrossHorizontalWorldEdge(x, y) {
@@ -1462,7 +1645,7 @@
           return;
         }
 
-        if (actor.type === "player" || actor.type === "floating_floor") {
+        if (actor.type === "player" || actor.type === "box" || actor.type === "floating_floor") {
           families.add(`actor:${actor.type}`);
         }
       });
@@ -1538,16 +1721,26 @@
       return family === "terrain:player_lift" ? null : family;
     }
 
-    function isIce(x, y) {
-      return terrainAt(x, y).type === "ice";
+    function terrainLayerOfTypeAtElevation(x, y, type, elevation = 0) {
+      return terrainLayersOfType(x, y, type).some((layer) => {
+        if (type === "hole") {
+          return (layer.elevation ?? 0) === elevation;
+        }
+
+        return terrainLayerSurfaceHeight(layer, x, y) === elevation;
+      });
     }
 
-    function isHole(x, y) {
-      return terrainAt(x, y).type === "hole";
+    function isIce(x, y, elevation = 0) {
+      return terrainLayerOfTypeAtElevation(x, y, "ice", elevation);
     }
 
-    function isIceOrHole(x, y) {
-      return isIce(x, y) || isHole(x, y);
+    function isHole(x, y, elevation = 0) {
+      return terrainLayerOfTypeAtElevation(x, y, "hole", elevation);
+    }
+
+    function isIceOrHole(x, y, elevation = 0) {
+      return isIce(x, y, elevation) || isHole(x, y, elevation);
     }
 
     function isGroundCell(cell) {
@@ -1609,6 +1802,10 @@
       return clamp(value, 0, 1.08);
     }
 
+    function canAuxiliaryTickerRender() {
+      return !app.isAnimating && !app.isTransitioningLevel && !app.levelTransition;
+    }
+
     function startGateAnimationLoop() {
       if (app.gateAnimationFrameId !== null) {
         return;
@@ -1631,7 +1828,9 @@
           hasActiveAnimation = true;
         });
 
-        app.render();
+        if (canAuxiliaryTickerRender()) {
+          app.render(now);
+        }
 
         if (hasActiveAnimation) {
           app.gateAnimationFrameId = window.requestAnimationFrame(step);
@@ -1730,7 +1929,9 @@
           hasActiveAnimation = true;
         });
 
-        app.render();
+        if (canAuxiliaryTickerRender()) {
+          app.render(now);
+        }
 
         if (hasActiveAnimation) {
           app.orangeWallAnimationFrameId = window.requestAnimationFrame(step);
@@ -1828,7 +2029,9 @@
           hasActiveAnimation = true;
         });
 
-        app.render();
+        if (canAuxiliaryTickerRender()) {
+          app.render(now);
+        }
 
         if (hasActiveAnimation) {
           app.playerLiftAnimationFrameId = window.requestAnimationFrame(step);
@@ -1898,11 +2101,37 @@
     }
 
     function initializeActorElevations() {
-      app.state.actors.forEach((actor) => {
-        if (!isPlayerActor(actor) && actor.type !== "weightless_box") {
-          actor.elevation = 0;
-          actor.renderElevation = 0;
+      app.state.actors.forEach((actor, index) => {
+        if (actor.type === "weightless_box" && !actor.__explicitElevation) {
+          const elevation = initialWeightlessStackElevation(actor, index);
+          actor.elevation = elevation;
+          actor.renderElevation = elevation;
         }
+      });
+
+      const weightlessGroupBases = new Map();
+
+      app.state.actors.forEach((actor) => {
+        if (actor.type !== "weightless_box") {
+          return;
+        }
+
+        const base = weightlessGroupBases.has(actor.groupId)
+          ? Math.min(weightlessGroupBases.get(actor.groupId), actor.elevation ?? 0)
+          : actor.elevation ?? 0;
+
+        weightlessGroupBases.set(actor.groupId, base);
+      });
+
+      app.state.actors.forEach((actor) => {
+        if (actor.type !== "weightless_box") {
+          return;
+        }
+
+        Object.defineProperty(actor, "__weightlessRelativeElevation", {
+          configurable: true,
+          value: (actor.elevation ?? 0) - (weightlessGroupBases.get(actor.groupId) ?? 0)
+        });
       });
 
       let gateState = computeRaisedPlayerGateSet(app.state.actors);
@@ -1924,9 +2153,16 @@
           initializedWeightlessGroups.add(actor.groupId);
 
           const members = weightlessGroupMembers(actor.groupId);
-          const elevation = weightlessGroupSupportedElevation(members, gateState, orangeWallState);
+
+          if (members.every((member) => member.__explicitElevation)) {
+            return;
+          }
+
+          const baseElevation = weightlessGroupSupportedElevation(members, gateState, orangeWallState);
 
           members.forEach((member) => {
+            const elevation = baseElevation + (member.__weightlessRelativeElevation ?? 0);
+
             if (member.elevation !== elevation) {
               changed = true;
             }
@@ -1949,10 +2185,38 @@
           return;
         }
 
-        const elevation = playerSurfaceHeightAt(actor.x, actor.y, gateState, orangeWallState) === 1 ? 1 : 0;
+        if (actor.__explicitElevation) {
+          return;
+        }
+
+        const elevation = playerSurfaceHeightAt(actor.x, actor.y, gateState, orangeWallState) ?? 0;
         actor.elevation = elevation;
         actor.renderElevation = elevation;
       });
+    }
+
+    function initialWeightlessStackElevation(actor, index) {
+      let elevation = 0;
+
+      for (let otherIndex = 0; otherIndex < index; otherIndex += 1) {
+        const other = app.state.actors[otherIndex];
+
+        if (
+          other &&
+          (other.type === "player" ||
+            other.type === "circle_player" ||
+            other.type === "box" ||
+            other.type === "floating_floor" ||
+            other.type === "weightless_box") &&
+          !other.removed &&
+          other.x === actor.x &&
+          other.y === actor.y
+        ) {
+          elevation = Math.max(elevation, (other.elevation ?? 0) + 1);
+        }
+      }
+
+      return elevation;
     }
 
     function syncFuzzyToggle() {
@@ -1962,6 +2226,15 @@
 
       app.fuzzyToggle.classList.toggle("is-active", app.state.effects.fuzzyEnabled);
       app.fuzzyToggle.setAttribute("aria-pressed", app.state.effects.fuzzyEnabled ? "true" : "false");
+    }
+
+    function syncEdgeToggle() {
+      if (!app.edgeToggle) {
+        return;
+      }
+
+      app.edgeToggle.classList.toggle("is-active", app.state.effects.edgeOutlinesEnabled);
+      app.edgeToggle.setAttribute("aria-pressed", app.state.effects.edgeOutlinesEnabled ? "true" : "false");
     }
 
     function syncNoiseTicker() {
@@ -1982,11 +2255,12 @@
         const phaseStep = Math.floor(elapsed / app.NOISE_FRAME_MS);
 
         if (phaseStep > 0) {
-          app.state.effects.noisePhase = (app.state.effects.noisePhase + phaseStep) % app.NOISE_PHASE_CYCLE;
-          app.lastNoiseTickMs += phaseStep * app.NOISE_FRAME_MS;
-
-          if (!app.isAnimating) {
-            app.render();
+          if (canAuxiliaryTickerRender()) {
+            app.state.effects.noisePhase = (app.state.effects.noisePhase + phaseStep) % app.NOISE_PHASE_CYCLE;
+            app.lastNoiseTickMs += phaseStep * app.NOISE_FRAME_MS;
+            app.render(now);
+          } else {
+            app.lastNoiseTickMs = now;
           }
         }
 
@@ -2026,8 +2300,8 @@
         ) {
           app.lastFloatingFloorTickMs = now;
 
-          if (!app.isAnimating) {
-            app.render();
+          if (canAuxiliaryTickerRender()) {
+            app.render(now);
           }
         }
 
@@ -2095,6 +2369,7 @@
       parseWorldLevelId,
       worldLevelId,
       adjacentWorldLevelId,
+      prepareLevelRenderState,
       rememberHorizontalNeighborLevelState,
       cachedHorizontalNeighborLevelState,
       loadHorizontalNeighborLevelState,
@@ -2139,6 +2414,10 @@
       isWeightlessBoxAt,
       isInsideBoard,
       terrainAt,
+      terrainLayersAt,
+      terrainLayersOfType,
+      terrainLayerSurfaceHeight,
+      terrainSurfaceHeightsAt,
       groundSurfaceCell,
       isPlayerGate,
       isPlayerLift,
@@ -2187,6 +2466,7 @@
       syncPlayerLiftAnimationTargets,
       initializeActorElevations,
       syncFuzzyToggle,
+      syncEdgeToggle,
       syncNoiseTicker,
       syncFloatingFloorTicker,
       setupCanvas,

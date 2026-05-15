@@ -42,7 +42,8 @@
       playHeader: null,
       playStage: null,
       mazeFrame: null,
-      fuzzyToggle: null
+      fuzzyToggle: null,
+      enableCameraControls: false
     });
 
     if (!app) {
@@ -62,6 +63,15 @@
     }
 
     await app.preloadImages();
+
+    if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
+      await app.threeRendererReady;
+    }
+
+    if (typeof app.threeRenderer?.useLevelPreviewCamera === "function") {
+      app.threeRenderer.useLevelPreviewCamera();
+    }
+
     app.render();
 
     if (app.gl && typeof app.gl.finish === "function") {

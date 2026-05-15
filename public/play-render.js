@@ -20,6 +20,10 @@
 
     modules.registerRenderActorFunctions(app);
 
+    if (typeof modules.registerThreeRenderFunctions === "function") {
+      modules.registerThreeRenderFunctions(app);
+    }
+
     if (typeof modules.registerRenderCompositorFunctions !== "function") {
       throw new Error("play-render-compositor.js must be loaded before play-render.js");
     }
@@ -28,11 +32,42 @@
 
     const { syncCameraTarget, advanceCamera } = app;
     const { renderCompositor } = app;
+    let lastActiveRenderNow = 0;
 
-    function render() {
-      const now = performance.now();
+    function syncLiveSurfaceState(now) {
+      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
+      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || app.computeRaisedOrangeWallSet();
+      app.syncGateAnimationTargets(now);
+      app.syncOrangeWallAnimationTargets(now);
+      app.syncPlayerLiftAnimationTargets(now);
+    }
+
+    function normalizeRenderNow(now) {
+      const nextNow = Number.isFinite(now) ? now : performance.now();
+      const hasActiveMotion = Boolean(
+        app.isAnimating ||
+          app.isTransitioningLevel ||
+          app.levelTransition ||
+          app.cameraFrameId !== null ||
+          app.gateAnimationFrameId !== null ||
+          app.orangeWallAnimationFrameId !== null ||
+          app.playerLiftAnimationFrameId !== null
+      );
+
+      if (!hasActiveMotion) {
+        lastActiveRenderNow = 0;
+        return nextNow;
+      }
+
+      lastActiveRenderNow = Math.max(lastActiveRenderNow, nextNow);
+      return lastActiveRenderNow;
+    }
+
+    function render(now = performance.now()) {
+      now = normalizeRenderNow(now);
       syncCameraTarget();
       const isCameraActive = advanceCamera(now);
+      syncLiveSurfaceState(now);
       const activeLevelTransition = renderCompositor.composeLevelTransitionSource(now);
 
       if (activeLevelTransition) {
@@ -64,11 +99,6 @@
         }
       }
 
-      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
-      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || app.computeRaisedOrangeWallSet();
-      app.syncGateAnimationTargets(now);
-      app.syncOrangeWallAnimationTargets(now);
-      app.syncPlayerLiftAnimationTargets(now);
       renderCompositor.drawScene(now);
       const settings = app.getEffectSettings();
       const sourceCanvas = renderCompositor.composeViewportSource();

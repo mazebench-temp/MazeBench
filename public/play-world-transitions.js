@@ -11,7 +11,6 @@
     const {
       state,
       moveHistory,
-      TILE_SIZE,
       PLAYER_REVIVE_BLINK_DURATION_MS,
       HOLE_SINK_DISTANCE
     } = app;
@@ -26,15 +25,14 @@
       computeRaisedOrangeWallSet,
       playerSurfaceHeightAt,
       cloneLevelSnapshot,
+      prepareLevelRenderState,
       applyLevelState,
       loadLevelState,
+      cachedHorizontalNeighborLevelState,
+      loadHorizontalNeighborLevelState,
       syncFloatingFloorTicker
     } = app;
     const {
-      captureSceneSnapshot,
-      captureForegroundOccluderSnapshot,
-      captureViewportSnapshot,
-      viewportPositionForActor,
       startLevelTransition
     } = renderCompositor;
 
@@ -105,6 +103,16 @@
       app.initialPositions = cloneActorPositions();
       app.initialTerrain = cloneTerrainState(state.terrain);
       app.levelEntrySnapshot = cloneLevelSnapshot();
+    }
+
+    function attachRaisedSurfaceState(snapshot, raisedPlayerGates, raisedOrangeWalls) {
+      if (!snapshot) {
+        return snapshot;
+      }
+
+      snapshot.raisedPlayerGates = Array.from(raisedPlayerGates || []);
+      snapshot.raisedOrangeWalls = Array.from(raisedOrangeWalls || []);
+      return snapshot;
     }
 
     function revivePlayerAtPosition(player, x, y, elevation) {
@@ -210,6 +218,21 @@
       return playRules.adjacentWorldLevelId(levelId, dx, dy, app.worldColumns, app.worldRows);
     }
 
+    async function loadTransitionLevelState(levelId) {
+      const cachedLevelState =
+        typeof cachedHorizontalNeighborLevelState === "function"
+          ? cachedHorizontalNeighborLevelState(levelId)
+          : null;
+      const levelState =
+        cachedLevelState ||
+        (typeof loadHorizontalNeighborLevelState === "function"
+          ? await loadHorizontalNeighborLevelState(levelId)
+          : null) ||
+        await loadLevelState(levelId);
+
+      return cloneStoredLevelSnapshot(levelState) || levelState;
+    }
+
     function edgeTransitionForMove(dx, dy) {
       const players = state.actors.filter((actor) => isPlayerActor(actor) && !actor.removed);
 
@@ -263,24 +286,21 @@
       }
 
       app.isTransitioningLevel = true;
-      const previousLevelSnapshot = cloneLevelSnapshot();
+      const previousLevelSnapshot = attachRaisedSurfaceState(
+        cloneLevelSnapshot(),
+        computeRaisedPlayerGateSet(),
+        computeRaisedOrangeWallSet()
+      );
       const previousEntrySnapshot = cloneStoredLevelSnapshot(app.levelEntrySnapshot || previousLevelSnapshot);
-      const outgoingCameraX = app.cameraX;
-      const outgoingCameraY = app.cameraY;
-      const outgoingPlayerPosition = viewportPositionForActor(transition.player);
-      const outgoingSceneSnapshot = captureSceneSnapshot({
-        skipActorsPredicate: (actor) => isPlayerActor(actor)
-      });
-      const outgoingForegroundSnapshot = captureForegroundOccluderSnapshot({
-        occludingActor: transition.player,
-        skipActorsPredicate: (actor) => isPlayerActor(actor)
-      });
-      const outgoingSnapshot = captureViewportSnapshot({
-        skipActorsPredicate: (actor) => isPlayerActor(actor)
-      });
+      const previousEntryRenderSnapshot =
+        prepareLevelRenderState?.(previousEntrySnapshot) || previousEntrySnapshot;
+
+      if (previousEntryRenderSnapshot) {
+        app.rememberHorizontalNeighborLevelState?.(previousEntryRenderSnapshot);
+      }
 
       try {
-        const nextLevelState = await loadLevelState(transition.nextLevelId);
+        const nextLevelState = await loadTransitionLevelState(transition.nextLevelId);
         const levelStartPlayer = playerStartForLevelState(nextLevelState, transition.player.type);
         const reviveStartPlayer = levelStartPlayer ? { ...levelStartPlayer } : null;
         const sourceType = transition.sourceType || terrainAt(transition.player.x, transition.player.y)?.type || "empty";
@@ -326,50 +346,31 @@
           deferRender: true
         });
 
-        if (transition.dx !== 0) {
-          app.cameraY = outgoingCameraY;
-        }
-
-        if (transition.dy !== 0) {
-          app.cameraX = outgoingCameraX;
-        }
-
+        const incomingRaisedPlayerGates = computeRaisedPlayerGateSet();
+        const incomingRaisedOrangeWalls = computeRaisedOrangeWallSet();
+        app.liveRaisedPlayerGates = incomingRaisedPlayerGates;
+        app.liveRaisedOrangeWalls = incomingRaisedOrangeWalls;
+        const incomingLevelSnapshot = attachRaisedSurfaceState(
+          cloneLevelSnapshot(),
+          incomingRaisedPlayerGates,
+          incomingRaisedOrangeWalls
+        );
         const incomingPlayer = state.actors.find((actor) => isPlayerActor(actor) && !actor.removed) || null;
-        const incomingPlayerPosition = incomingPlayer
-          ? viewportPositionForActor(incomingPlayer)
-          : outgoingPlayerPosition;
-        const incomingSnapshot = captureViewportSnapshot({
-          skipActorsPredicate: (actor) => isPlayerActor(actor)
-        });
-        startLevelTransition(outgoingSnapshot, incomingSnapshot, transition.dx, transition.dy, {
-          actor: incomingPlayer ? { ...incomingPlayer } : { ...transition.player },
-          from: outgoingPlayerPosition,
-          sourceActor: { ...transition.player },
-          to: incomingPlayerPosition,
-          targetActor: incomingPlayer
-        }, {
-          canvas: outgoingSceneSnapshot,
-          cameraX: outgoingCameraX,
-          cameraY: outgoingCameraY,
-          boardRect: {
-            width: previousLevelSnapshot.width * TILE_SIZE,
-            height: previousLevelSnapshot.height * TILE_SIZE
+        startLevelTransition(null, null, transition.dx, transition.dy, null, null, null, {
+          durationMs: app.LEVEL_TRANSITION_DURATION_MS || 1000,
+          renderImmediately: false,
+          transitionData: {
+            kind: "adjacent-scene",
+            dx: transition.dx,
+            dy: transition.dy,
+            outgoingLevel: previousLevelSnapshot,
+            outgoingResetLevel: previousEntryRenderSnapshot,
+            incomingLevel: incomingLevelSnapshot,
+            incomingRaisedPlayerGates: incomingLevelSnapshot.raisedPlayerGates,
+            incomingRaisedOrangeWalls: incomingLevelSnapshot.raisedOrangeWalls,
+            sourcePlayer: { ...transition.player },
+            targetPlayer: incomingPlayer ? { ...incomingPlayer } : null
           },
-          viewportRect: {
-            width: app.viewportRect.width,
-            height: app.viewportRect.height
-          }
-        }, {
-          canvas: outgoingForegroundSnapshot,
-          boardRect: {
-            width: previousLevelSnapshot.width * TILE_SIZE,
-            height: previousLevelSnapshot.height * TILE_SIZE
-          },
-          viewportRect: {
-            width: app.viewportRect.width,
-            height: app.viewportRect.height
-          }
-        }, {
           onComplete:
             entersHole && reviveStartPlayer
               ? () => playEntryHoleFallAndRespawn(incomingPlayer, reviveStartPlayer)

@@ -17,6 +17,7 @@
     } = app;
     const {
       terrainAt,
+      terrainSurfaceHeightAt,
       gateLiftAt,
       playerLiftAt,
       orangeWallLiftAt,
@@ -31,6 +32,7 @@
     const {
       roundRectPath,
       paintWallTile,
+      paintRaisedTerrainStackTile,
       paintRaisedPlayerGateTile,
       paintRaisedPlayerLiftTile,
       paintRaisedOrangeWallTile,
@@ -539,10 +541,6 @@
         return underElevatedWeightlessDepthRow;
       }
 
-      if (!isPlayerActor(actor) && actor.type !== "weightless_box") {
-        return renderY;
-      }
-
       if (actorRenderElevation(actor) <= 0.001) {
         return renderY;
       }
@@ -550,15 +548,128 @@
       return Math.ceil(renderY);
     }
 
-    function actorUnderElevatedWeightlessDepthRow(actor) {
-      if (actorRenderElevation(actor) > 0.001) {
+    function playerDownwardElevatedWeightlessPushDepthRow(actor) {
+      if (!isPlayerActor(actor) || actorRenderElevation(actor) <= 0.001) {
         return null;
       }
 
-      const actorRenderX = actor.renderX ?? actor.x;
-      const actorRenderY = actor.renderY ?? actor.y;
+      const renderX = actor.renderX ?? actor.x;
+      const renderY = actor.renderY ?? actor.y;
+      const downwardProgress = actor.y - renderY;
       const epsilon = 0.001;
       let depthRow = null;
+
+      if (downwardProgress <= epsilon) {
+        return null;
+      }
+
+      state.actors.forEach((candidate) => {
+        if (
+          candidate.removed ||
+          candidate.type !== "weightless_box" ||
+          actorRenderElevation(candidate) <= 0.001 ||
+          candidate.y !== actor.y + 1
+        ) {
+          return;
+        }
+
+        const candidateRenderX = candidate.renderX ?? candidate.x;
+        const candidateRenderY = candidate.renderY ?? candidate.y;
+        const sameColumn = Math.abs(candidateRenderX - renderX) <= epsilon;
+        const pushedOneTileAhead = Math.abs(candidateRenderY - renderY - 1) <= epsilon;
+
+        if (!sameColumn || !pushedOneTileAhead) {
+          return;
+        }
+
+        const candidateDepthRow = Math.ceil(candidateRenderY);
+        depthRow = depthRow === null ? candidateDepthRow : Math.max(depthRow, candidateDepthRow);
+      });
+
+      return depthRow;
+    }
+
+    function paintPlayerDownwardPushUpperOverlay(actor) {
+      if (actor.type !== "player") {
+        return;
+      }
+
+      const surfaceLift = Math.round(TILE_SIZE * 0.26 * actorRenderElevation(actor));
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const left = actor.renderX * TILE_SIZE;
+      const top = actor.renderY * TILE_SIZE - surfaceLift;
+      const bottom = top + TILE_SIZE;
+      const blockTop = top - faceHeight;
+      const overlayBottom = bottom - faceHeight;
+      const strokePadding = 4;
+
+      sceneCtx.save();
+      sceneCtx.beginPath();
+      sceneCtx.rect(
+        left - strokePadding,
+        blockTop - strokePadding,
+        TILE_SIZE + strokePadding * 2,
+        overlayBottom - blockTop + strokePadding
+      );
+      sceneCtx.clip();
+      paintRaisedPlayer(actor);
+      sceneCtx.restore();
+    }
+
+    function actorUnderElevatedWeightlessDepthRow(actor) {
+      const actorIsElevated = actorRenderElevation(actor) > 0.001;
+      const actorCanShareElevatedWeightlessDepth = !actorIsElevated || isPlayerActor(actor);
+
+      if (!actorCanShareElevatedWeightlessDepth) {
+        return null;
+      }
+
+      const epsilon = 0.001;
+      let depthRow = null;
+
+      function renderBounds(target) {
+        const renderX = target.renderX ?? target.x;
+        const renderY = target.renderY ?? target.y;
+
+        return {
+          left: renderX,
+          right: renderX + 1,
+          top: renderY,
+          bottom: renderY + 1
+        };
+      }
+
+      function logicalBounds(target) {
+        return {
+          left: target.x,
+          right: target.x + 1,
+          top: target.y,
+          bottom: target.y + 1
+        };
+      }
+
+      function boundsOverlap(left, right) {
+        return (
+          left.left < right.right - epsilon &&
+          left.right > right.left + epsilon &&
+          left.top < right.bottom - epsilon &&
+          left.bottom > right.top + epsilon
+        );
+      }
+
+      function actorStackBoundsOverlap(lowerActor, upperActor) {
+        const lowerRenderBounds = renderBounds(lowerActor);
+        const lowerLogicalBounds = logicalBounds(lowerActor);
+        const upperRenderBounds = renderBounds(upperActor);
+        const upperLogicalBounds = logicalBounds(upperActor);
+
+        return (
+          boundsOverlap(lowerRenderBounds, upperRenderBounds) ||
+          boundsOverlap(lowerRenderBounds, upperLogicalBounds) ||
+          boundsOverlap(lowerLogicalBounds, upperRenderBounds) ||
+          boundsOverlap(lowerLogicalBounds, upperLogicalBounds)
+        );
+      }
 
       state.actors.forEach((candidate) => {
         if (
@@ -570,27 +681,38 @@
           return;
         }
 
-        const candidateRenderX = candidate.renderX ?? candidate.x;
         const candidateRenderY = candidate.renderY ?? candidate.y;
-        const overlapsX =
-          actorRenderX < candidateRenderX + 1 - epsilon &&
-          actorRenderX + 1 > candidateRenderX + epsilon;
-        const overlapsY =
-          actorRenderY < candidateRenderY + 1 - epsilon &&
-          actorRenderY + 1 > candidateRenderY + epsilon;
+        const candidateDepthRow = Math.ceil(candidateRenderY);
 
-        if (!overlapsX || !overlapsY) {
+        if (!actorStackBoundsOverlap(actor, candidate)) {
           return;
         }
 
-        const candidateDepthRow = Math.ceil(candidateRenderY);
+        if (actorIsElevated && candidateDepthRow !== Math.ceil(actor.renderY ?? actor.y)) {
+          return;
+        }
+
         depthRow = depthRow === null ? candidateDepthRow : Math.min(depthRow, candidateDepthRow);
       });
 
       return depthRow;
     }
 
-    function actorTieBreaker(actor) {
+    function actorUnderElevatedWeightlessTieBreaker(actor) {
+      const depthRow = actorUnderElevatedWeightlessDepthRow(actor);
+
+      if (depthRow === null) {
+        return null;
+      }
+
+      const renderY = actor.renderY ?? actor.y;
+      const normalTieBreaker = actorTieBreakerWithoutElevatedWeightless(actor);
+      const typeOffset = Math.max(0, Math.min(0.2, normalTieBreaker * 0.05));
+
+      return 1 + Math.max(0, Math.min(1.5, renderY - depthRow + 1)) + typeOffset;
+    }
+
+    function actorTieBreakerWithoutElevatedWeightless(actor) {
       if (actor.renderInHole) {
         return -1;
       }
@@ -610,6 +732,16 @@
       return 1;
     }
 
+    function actorTieBreaker(actor) {
+      const underElevatedWeightlessTieBreaker = actorUnderElevatedWeightlessTieBreaker(actor);
+
+      if (underElevatedWeightlessTieBreaker !== null) {
+        return underElevatedWeightlessTieBreaker;
+      }
+
+      return actorTieBreakerWithoutElevatedWeightless(actor);
+    }
+
     function buildDrawItems(now = performance.now()) {
       const drawItems = [];
       const animatedWeightlessGroups = new Set();
@@ -620,12 +752,14 @@
           const gateLift = cell.type === "player_gate" ? gateLiftAt(x, y, now) : 0;
           const playerLift = cell.type === "player_lift" ? playerLiftAt(x, y, now) : 0;
           const orangeWallLift = cell.type === "orange_wall" ? orangeWallLiftAt(x, y, now) : 0;
+          const terrainHeight = terrainSurfaceHeightAt(x, y) ?? 0;
 
           if (
             cell.type !== "wall" &&
             gateLift <= 0.001 &&
             playerLift <= 0.001 &&
-            orangeWallLift <= 0.001
+            orangeWallLift <= 0.001 &&
+            terrainHeight <= 0
           ) {
             continue;
           }
@@ -647,6 +781,11 @@
 
               if (cell.type === "orange_wall") {
                 paintRaisedOrangeWallTile(x, y, cell, orangeWallLift);
+                return;
+              }
+
+              if (terrainHeight > 0 && cell.type !== "wall") {
+                paintRaisedTerrainStackTile(x, y, cell, terrainHeight);
                 return;
               }
 
@@ -706,6 +845,19 @@
             paintActor(actor, now);
           }
         });
+
+        const downwardPushDepthRow = playerDownwardElevatedWeightlessPushDepthRow(actor);
+
+        if (downwardPushDepthRow !== null && actor.type === "player") {
+          drawItems.push({
+            depth: downwardPushDepthRow + (actor.renderInHole ? 0 : 1),
+            tieBreaker: 3,
+            order: index + 0.5,
+            paint: function () {
+              paintPlayerDownwardPushUpperOverlay(actor);
+            }
+          });
+        }
       });
 
       queueWeightlessGroupSeamCoverItems(drawItems);

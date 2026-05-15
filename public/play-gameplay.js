@@ -25,6 +25,13 @@
       applyLevelState
     } = app;
     let movement = null;
+    const HOLE_FADE_START_PROGRESS = 0.42;
+    const HOLE_PRE_FADE_SINK_DISTANCE = Math.max(HOLE_SINK_DISTANCE * 0.62, app.TILE_SIZE * 2);
+    const HOLE_FADE_SINK_DISTANCE = Math.max(HOLE_SINK_DISTANCE * 0.72, app.TILE_SIZE * 2);
+
+    function localAnimationProgress(progress, start, duration) {
+      return Math.max(0, Math.min(1, (progress - start) / Math.max(0.0001, duration)));
+    }
 
     function fadeAlphaForMoveProgress(progress, fadeStartProgress = 0, fadeEndProgress = 1) {
       if (progress <= fadeStartProgress) {
@@ -38,6 +45,21 @@
       const duration = Math.max(0.0001, fadeEndProgress - fadeStartProgress);
       const localProgress = (progress - fadeStartProgress) / duration;
       return 1 - easeInOutQuad(localProgress);
+    }
+
+    function holeFallAlphaForProgress(progress) {
+      return fadeAlphaForMoveProgress(progress, HOLE_FADE_START_PROGRESS, 1);
+    }
+
+    function holeFallSinkForProgress(progress) {
+      const preFadeProgress = easeInOutQuad(
+        localAnimationProgress(progress, 0, HOLE_FADE_START_PROGRESS)
+      );
+      const fadeProgress = easeInOutQuad(
+        localAnimationProgress(progress, HOLE_FADE_START_PROGRESS, 1 - HOLE_FADE_START_PROGRESS)
+      );
+
+      return HOLE_PRE_FADE_SINK_DISTANCE * preFadeProgress + HOLE_FADE_SINK_DISTANCE * fadeProgress;
     }
 
     function moveDistance({ fromX, fromY, toX, toY }) {
@@ -171,6 +193,22 @@
       runAction(nextAction);
     }
 
+    function syncSurfaceAnimationTargets(now) {
+      app.liveRaisedPlayerGates = app.gateRenderOverride || computeRaisedPlayerGateSet();
+      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || computeRaisedOrangeWallSet();
+      app.syncGateAnimationTargets?.(now);
+      app.syncOrangeWallAnimationTargets?.(now);
+      app.syncPlayerLiftAnimationTargets?.(now);
+    }
+
+    function liftRenderElevation(fromElevation, toElevation, progress) {
+      const eased =
+        toElevation > fromElevation ? easeOutBack(progress) : easeInOutQuad(progress);
+      const cappedProgress = toElevation > fromElevation ? Math.min(1.08, eased) : eased;
+
+      return fromElevation + (toElevation - fromElevation) * cappedProgress;
+    }
+
     function finishAnimation(moves, options = {}) {
       const onFinish = typeof options.onFinish === "function" ? options.onFinish : null;
       movement.applyMoveFinalState(moves);
@@ -233,6 +271,7 @@
         const activeLiftMoveSet = new Set(activeLiftMoves);
         const commitElevationAtEnd = options.commitElevationAtEnd === true;
         const liftStartTime = performance.now();
+        syncSurfaceAnimationTargets(liftStartTime);
 
         function stepLift(now) {
           let hasActiveLift = false;
@@ -281,10 +320,7 @@
                   ? PLAYER_LIFT_RISE_DURATION_MS
                   : PLAYER_LIFT_FALL_DURATION_MS;
               const progress = Math.min(1, (now - liftStartTime) / duration);
-              const eased =
-                toElevation > fromElevation ? easeOutBack(progress) : easeInOutQuad(progress);
-
-              actor.renderElevation = fromElevation + (toElevation - fromElevation) * eased;
+              actor.renderElevation = liftRenderElevation(fromElevation, toElevation, progress);
               actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
 
               if (progress < 1) {
@@ -292,7 +328,7 @@
               }
           });
 
-          app.render();
+          app.render(now);
 
           if (hasActiveLift) {
             app.animationFrameId = window.requestAnimationFrame(stepLift);
@@ -318,7 +354,6 @@
         const startPostTerrainLiftPhase = () => {
           if (startLiftPhaseCallback) {
             startLiftPhaseCallback();
-            app.render();
           }
 
           runLiftAnimation(postTerrainLiftStateMoves, nextPhase);
@@ -387,7 +422,7 @@
             }
           );
 
-          app.render();
+          app.render(now);
 
           if (progress < 1) {
             app.animationFrameId = window.requestAnimationFrame(step);
@@ -441,14 +476,16 @@
               }
 
               if (fromRemoved && !toRemoved) {
-                actor.renderScale = eased;
+                actor.renderScale = 1;
+                actor.renderAlpha = eased;
                 actor.renderSink = HOLE_SINK_DISTANCE * (1 - eased);
                 return;
               }
 
               if (!fromRemoved && toRemoved) {
-                actor.renderScale = 1 - eased;
-                actor.renderSink = HOLE_SINK_DISTANCE * eased;
+                actor.renderScale = 1;
+                actor.renderAlpha = holeFallAlphaForProgress(progress);
+                actor.renderSink = holeFallSinkForProgress(progress);
                 return;
               }
 
@@ -457,7 +494,7 @@
             }
           );
 
-          app.render();
+          app.render(now);
 
           if (progress < 1) {
             app.animationFrameId = window.requestAnimationFrame(stepFall);
@@ -706,7 +743,11 @@
 
       if (directionalMoves[event.key]) {
         event.preventDefault();
-        const [dx, dy] = directionalMoves[event.key];
+        const [rawDx, rawDy] = directionalMoves[event.key];
+        const [dx, dy] =
+          typeof app.mapCameraRelativeDirection === "function"
+            ? app.mapCameraRelativeDirection(rawDx, rawDy)
+            : [rawDx, rawDy];
         movePlayers(dx, dy);
         return;
       }
