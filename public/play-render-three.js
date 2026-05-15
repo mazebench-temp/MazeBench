@@ -851,6 +851,25 @@
       return geometry;
     }
 
+    function cylinderGeometry(radius, height, segments = 32) {
+      const key = [
+        "cylinder",
+        Math.round(radius * 100),
+        Math.round(height * 100),
+        segments
+      ].join(":");
+
+      if (geometryCache.has(key)) {
+        return geometryCache.get(key);
+      }
+
+      const geometry = new THREE.CylinderGeometry(radius, radius, height, segments, 1, false);
+
+      geometry.computeVertexNormals();
+      geometryCache.set(key, geometry);
+      return geometry;
+    }
+
     function pointKey(point) {
       return `${Math.round(point.x * 1000)},${Math.round(point.z * 1000)}`;
     }
@@ -2665,19 +2684,19 @@
       const center = cellCenter(x, y);
 
       if (layer.type === "orange_button") {
-        const buttonHeight = Math.max(4, elevationUnit * 0.18);
-        addTopRoundedCuboid(
-          unit * 0.42,
-          unit * 0.3,
-          buttonHeight,
-          shapeCornerRadius,
+        const buttonHeight = Math.max(4, elevationUnit * 0.12);
+        const buttonRadius = unit * 0.21;
+
+        addOutlinedMesh(
+          cylinderGeometry(buttonRadius, buttonHeight),
           "#f59e0b",
           {
             x: center.x,
-            y: topY + buttonHeight,
-            z: center.z + unit * 0.08
+            y: topY + buttonHeight / 2,
+            z: center.z
           },
           {
+            edgeThreshold: 24,
             opacity: visibility
           }
         );

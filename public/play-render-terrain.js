@@ -419,13 +419,11 @@
       }
 
       if (cell.type === "orange_button") {
-        const buttonWidth = TILE_SIZE * 0.42;
-        const buttonHeight = TILE_SIZE * 0.3;
-        const buttonLeft = left + (TILE_SIZE - buttonWidth) / 2;
-        const buttonTop = top + TILE_SIZE * 0.38;
-        const buttonLift = Math.max(2, TILE_SIZE * 0.055);
-        const radius = TILE_SIZE * 0.07;
-        const radii = { tl: radius, tr: radius, br: radius, bl: radius };
+        const buttonRadius = TILE_SIZE * 0.21;
+        const buttonHeight = Math.max(3, TILE_SIZE * 0.12);
+        const buttonCenterX = left + TILE_SIZE / 2;
+        const buttonCenterY = top + TILE_SIZE / 2;
+        const ellipseHeight = buttonRadius * 0.72;
 
         sceneCtx.fillStyle = "#d6bd94";
         sceneCtx.fillRect(left, top, TILE_SIZE, TILE_SIZE);
@@ -433,11 +431,29 @@
         sceneCtx.lineWidth = 1.5;
         sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
 
-        roundRectPath(sceneCtx, buttonLeft, buttonTop + buttonLift, buttonWidth, buttonHeight, radii);
+        sceneCtx.beginPath();
+        sceneCtx.ellipse(
+          buttonCenterX,
+          buttonCenterY + buttonHeight,
+          buttonRadius,
+          ellipseHeight,
+          0,
+          0,
+          Math.PI * 2
+        );
         sceneCtx.fillStyle = "#b85f16";
         sceneCtx.fill();
 
-        roundRectPath(sceneCtx, buttonLeft, buttonTop, buttonWidth, buttonHeight, radii);
+        sceneCtx.beginPath();
+        sceneCtx.ellipse(
+          buttonCenterX,
+          buttonCenterY,
+          buttonRadius,
+          ellipseHeight,
+          0,
+          0,
+          Math.PI * 2
+        );
         sceneCtx.fillStyle = "#f59e0b";
         sceneCtx.fill();
         sceneCtx.lineWidth = 2;
