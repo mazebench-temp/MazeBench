@@ -62,6 +62,11 @@
     }
 
     await app.preloadImages();
+
+    if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
+      await app.threeRendererReady;
+    }
+
     app.render();
 
     if (app.gl && typeof app.gl.finish === "function") {

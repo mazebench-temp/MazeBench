@@ -8,6 +8,14 @@
     "floating_floor",
     "weightless_box"
   ]);
+  const supportActorNames = new Set([
+    "player",
+    "circle_player",
+    "box",
+    "floating_floor",
+    "weightless_box"
+  ]);
+  const raisedTerrainNames = new Set(["wall", "orange_wall"]);
 
   function titleCaseName(name) {
     return String(name || "")
@@ -85,49 +93,147 @@
       return actorNames.has(toolType(tool));
     }
 
+    function isSupportActorTool(tool) {
+      return supportActorNames.has(toolType(tool));
+    }
+
+    function isRaisedTerrainTool(tool) {
+      const type = toolType(tool);
+
+      return (
+        raisedTerrainNames.has(type) ||
+        (type === "player_lift" && tool?.initialRaised === true)
+      );
+    }
+
     function buildTerrainCell(type, tool = null, options = {}) {
       return {
         type,
         label: tool?.label || titleCaseName(type),
         imageUrl: tool?.imageUrl || null,
+        layers: Array.isArray(options.layers) ? options.layers : null,
         underlay: options.underlay || null,
         raised: options.raised === true
       };
     }
 
-    function buildCellState(tools) {
+    function buildTerrainLayer(tool, elevation) {
+      const type = toolType(tool);
+
+      return {
+        type,
+        label: tool?.label || titleCaseName(type),
+        imageUrl: tool?.imageUrl || null,
+        elevation,
+        raised: type === "player_lift" ? tool?.initialRaised === true : false
+      };
+    }
+
+    function buildCellStack(tools) {
       const floorTool = toolByName.get("floor") || null;
       const exitTool = toolByName.get("exit") || null;
-      const terrainTools = tools.filter((tool) => !isActorTool(tool));
-      const wallTool = terrainTools.find((tool) => toolType(tool) === "wall") || null;
-      const exitCellTool = terrainTools.find((tool) => toolType(tool) === "exit") || null;
-      const terrainTool = wallTool || exitCellTool || terrainTools[0] || null;
+      const terrainLayers = [];
+      const actors = [];
+      let surfaceHeight = null;
+      let previousSurfaceTerrain = false;
 
-      if (wallTool) {
-        const underlayTool = terrainTools.find((tool) => toolType(tool) !== "wall") || floorTool;
+      tools.forEach((tool) => {
+        if (isActorTool(tool)) {
+          const elevation = Math.max(0, surfaceHeight ?? 0);
 
-        return buildTerrainCell("wall", wallTool, {
-          underlay: buildTerrainCell(toolType(underlayTool) || "floor", underlayTool)
-        });
+          actors.push({
+            elevation,
+            tool
+          });
+
+          if (isSupportActorTool(tool)) {
+            surfaceHeight = elevation + 1;
+            previousSurfaceTerrain = false;
+          }
+
+          return;
+        }
+
+        const terrainType = toolType(tool);
+        const isRaisedTerrain = isRaisedTerrainTool(tool);
+        let elevation = Math.max(0, surfaceHeight ?? 0);
+
+        if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+          elevation = surfaceHeight + 1;
+        }
+
+        terrainLayers.push(buildTerrainLayer(tool, elevation));
+        surfaceHeight = elevation + (isRaisedTerrain ? 1 : 0);
+        previousSurfaceTerrain = !isRaisedTerrain;
+      });
+
+      const wallLayer = terrainLayers.find((layer) => layer.type === "wall") || null;
+      const exitLayer = terrainLayers.find((layer) => layer.type === "exit") || null;
+      const topLayer =
+        terrainLayers.length > 0
+          ? terrainLayers.reduce((highest, layer) =>
+              layer.elevation >= highest.elevation ? layer : highest
+            )
+          : null;
+      const terrainLayer = wallLayer || exitLayer || topLayer || null;
+      const terrainLayerTool = terrainLayer || null;
+      const layers = terrainLayers.map((layer) => ({ ...layer }));
+
+      if (wallLayer) {
+        const underlayLayer = terrainLayers.find((layer) => layer.type !== "wall") || null;
+        const underlayTool = underlayLayer || floorTool;
+
+        return {
+          actors,
+          terrain: buildTerrainCell("wall", terrainLayerTool || wallLayer, {
+            layers,
+            underlay: buildTerrainCell(
+              underlayLayer?.type || toolType(underlayTool) || "floor",
+              underlayTool
+            )
+          })
+        };
       }
 
-      if (toolType(terrainTool) === "exit") {
-        return buildTerrainCell("exit", exitTool || terrainTool);
+      if (terrainLayer?.type === "exit") {
+        return {
+          actors,
+          terrain: buildTerrainCell("exit", exitTool || terrainLayerTool || terrainLayer, {
+            layers
+          })
+        };
       }
 
-      if (terrainTool) {
-        const terrainType = toolType(terrainTool);
+      if (terrainLayer) {
+        const terrainType = terrainLayer.type;
+        const tool = terrainLayerTool || terrainLayer;
 
-        return buildTerrainCell(terrainType, terrainTool, {
-          raised: terrainType === "player_lift" ? terrainTool.initialRaised === true : undefined
-        });
+        return {
+          actors,
+          terrain: buildTerrainCell(terrainType, tool, {
+            layers,
+            raised: terrainType === "player_lift" ? terrainLayer.raised === true : undefined
+          })
+        };
       }
 
-      if (tools.some((tool) => isActorTool(tool))) {
-        return buildTerrainCell("floor", floorTool);
+      if (actors.length > 0) {
+        return {
+          actors,
+          terrain: buildTerrainCell("floor", floorTool, {
+            layers: [buildTerrainLayer(floorTool || { name: "floor", type: "floor" }, 0)]
+          })
+        };
       }
 
-      return buildTerrainCell("empty");
+      return {
+        actors,
+        terrain: buildTerrainCell("empty", null, { layers: [] })
+      };
+    }
+
+    function buildCellState(tools) {
+      return buildCellStack(tools).terrain;
     }
 
     function buildPlayData(options = {}) {
@@ -143,13 +249,10 @@
 
         for (let x = 0; x < width; x += 1) {
           const tools = getCellTools(cells[y]?.[x] || defaultFloorToken);
+          const cellStack = buildCellStack(tools);
 
-          terrainRow.push(buildCellState(tools));
-          tools.forEach((tool) => {
-            if (!isActorTool(tool)) {
-              return;
-            }
-
+          terrainRow.push(cellStack.terrain);
+          cellStack.actors.forEach(({ tool, elevation }) => {
             if (!includeGems && tool.name === "gem") {
               return;
             }
@@ -159,6 +262,7 @@
               groupId: toolType(tool) === "weightless_box" ? tool.token : null,
               label: tool.label,
               imageUrl: tool.imageUrl || null,
+              elevation,
               x,
               y
             });

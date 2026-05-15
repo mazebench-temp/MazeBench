@@ -14,6 +14,7 @@
       groundSurfaceCell,
       isGroundCell,
       terrainAt,
+      terrainSurfaceHeightAt,
       isHole,
       isPlayerGate,
       isPlayerLift,
@@ -351,9 +352,9 @@
       }
     }
 
-    function paintFloorTile(x, y, cell) {
+    function paintFloorTile(x, y, cell, offsetY = 0) {
       const left = x * TILE_SIZE;
-      const top = y * TILE_SIZE;
+      const top = y * TILE_SIZE + offsetY;
       const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
 
       if (image) {
@@ -472,6 +473,34 @@
       sceneCtx.strokeStyle = "rgba(0, 0, 0, 0.12)";
       sceneCtx.lineWidth = 1.5;
       sceneCtx.strokeRect(left + 0.75, top + 0.75, TILE_SIZE - 1.5, TILE_SIZE - 1.5);
+    }
+
+    function paintRaisedTerrainStackTile(x, y, cell, height) {
+      if (height <= 0) {
+        return;
+      }
+
+      const left = x * TILE_SIZE;
+      const top = y * TILE_SIZE;
+      const bottom = top + TILE_SIZE;
+      const faceHeight = Math.round(TILE_SIZE * 0.26);
+      const travel = faceHeight * height;
+      const platformBottom = bottom - travel;
+
+      sceneCtx.fillStyle = groundFaceColor(cell);
+      sceneCtx.fillRect(left, platformBottom, TILE_SIZE, travel);
+      sceneCtx.lineWidth = 3;
+      sceneCtx.strokeStyle = "#000000";
+      sceneCtx.beginPath();
+      sceneCtx.moveTo(left, platformBottom);
+      sceneCtx.lineTo(left + TILE_SIZE, platformBottom);
+      sceneCtx.moveTo(left, platformBottom);
+      sceneCtx.lineTo(left, bottom);
+      sceneCtx.moveTo(left + TILE_SIZE, platformBottom);
+      sceneCtx.lineTo(left + TILE_SIZE, bottom);
+      sceneCtx.stroke();
+
+      paintFloorTile(x, y, cell, -travel);
     }
 
     function groundFaceColor(cell) {

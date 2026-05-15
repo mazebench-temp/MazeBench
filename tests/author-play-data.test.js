@@ -98,4 +98,27 @@ assert.deepEqual(
   [["weightless_box", 1, 0]]
 );
 
+const stackedPlayData = adapter.buildPlayData({
+  cells: [["W+L+B+G", "B+B"]],
+  height: 1,
+  width: 2
+});
+
+assert.deepEqual(
+  stackedPlayData.terrain[0][0].layers.map((layer) => [layer.type, layer.elevation, layer.raised]),
+  [
+    ["wall", 0, false],
+    ["player_lift", 1, true]
+  ]
+);
+assert.deepEqual(
+  stackedPlayData.actors.map((actor) => [actor.type, actor.x, actor.y, actor.elevation]),
+  [
+    ["weightless_box", 0, 0, 2],
+    ["gem", 0, 0, 3],
+    ["weightless_box", 1, 0, 0],
+    ["weightless_box", 1, 0, 1]
+  ]
+);
+
 console.log("author play data tests passed");

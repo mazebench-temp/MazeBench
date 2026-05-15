@@ -30,6 +30,7 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/play-render-effects.js",
     "/play-render-terrain.js",
     "/play-render-actors.js",
+    "/play-render-three.js",
     "/play-render-compositor.js",
     "/play-render.js",
     "/play-movement.js",
@@ -42,6 +43,15 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/world-map.js",
     "/level-preview.js"
   ].map((routePath) => [routePath, path.join(PUBLIC_DIR, routePath.slice(1))])
+);
+
+PUBLIC_FILE_ROUTES.set(
+  "/vendor/three.module.js",
+  path.join(ROOT_DIR, "node_modules", "three", "build", "three.module.js")
+);
+PUBLIC_FILE_ROUTES.set(
+  "/vendor/three.core.js",
+  path.join(ROOT_DIR, "node_modules", "three", "build", "three.core.js")
 );
 
 function buildGameAssetUrl(gameId, relativePath) {

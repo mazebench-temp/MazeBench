@@ -105,6 +105,15 @@
     L: { label: "L", dx: -1, dy: 0 },
     R: { label: "R", dx: 1, dy: 0 }
   };
+  const eraserToken = "__erase_top__";
+  const eraserTool = {
+    imageUrl: null,
+    label: "Eraser",
+    name: "eraser",
+    selectable: true,
+    token: eraserToken,
+    type: "eraser"
+  };
   const worldColumns =
     Array.isArray(authorData.worldColumns) && authorData.worldColumns.length > 0
       ? authorData.worldColumns
@@ -555,7 +564,7 @@
   }
 
   function selectablePaletteTools() {
-    return authorData.palette.filter((tool) => tool.selectable !== false);
+    return [eraserTool].concat(authorData.palette.filter((tool) => tool.selectable !== false));
   }
 
   function renderPalette() {
@@ -566,6 +575,7 @@
           ? '<img src="' + escapeHtml(previewUrl) + '" alt="">'
           : '<span class="palette__swatch-placeholder" aria-hidden="true"></span>';
         const accessibleLabel = tool.label + " (" + tool.token + ")";
+        const tokenLabel = tool.token === eraserToken ? "Erase" : tool.token;
 
         return (
           '<button class="tool-button palette__button' +
@@ -581,7 +591,7 @@
           swatchContents +
           "</span>" +
           '<span class="palette__token">' +
-          escapeHtml(tool.token) +
+          escapeHtml(tokenLabel) +
           "</span>" +
           "</button>"
         );
@@ -591,7 +601,7 @@
 
   function createPalettePreviewPlayData() {
     const stride = 3;
-    const paletteTools = selectablePaletteTools();
+    const paletteTools = selectablePaletteTools().filter((tool) => tool.token !== eraserToken);
     const columns = Math.max(1, Math.min(4, paletteTools.length));
     const rows = Math.max(1, Math.ceil(paletteTools.length / columns));
     const width = columns * stride;
@@ -691,6 +701,11 @@
 
       modules.registerRenderFunctions(app);
       await app.preloadImagesForLevelState(playData);
+
+      if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
+        await app.threeRendererReady;
+      }
+
       app.setupCanvas();
       app.liveRaisedPlayerGates = app.computeRaisedPlayerGateSet();
       app.liveRaisedOrangeWalls = app.computeRaisedOrangeWallSet();
@@ -718,8 +733,14 @@
   function renderSelectedTool() {
     const tool = toolByToken.get(state.selectedToken);
 
-    elements.selectedToolLabel.textContent = state.selectedToken;
-    elements.selectedToolLabel.title = tool ? tool.label : state.selectedToken;
+    elements.selectedToolLabel.textContent =
+      state.selectedToken === eraserToken ? "Erase" : state.selectedToken;
+    elements.selectedToolLabel.title =
+      state.selectedToken === eraserToken
+        ? eraserTool.label
+        : tool
+          ? tool.label
+          : state.selectedToken;
   }
 
   function renderNeighborButtons() {
@@ -933,7 +954,7 @@
   }
 
   function selectToken(token) {
-    if (!toolByToken.has(token)) {
+    if (token !== eraserToken && !toolByToken.has(token)) {
       return;
     }
 
@@ -959,9 +980,7 @@
     syncSolverButtonState();
   }
 
-  function paintCell(x, y, value) {
-    const normalizedValue = normalizeCellValue(value);
-
+  function updateCellValue(x, y, normalizedValue) {
     if (state.cells[y][x] === normalizedValue) {
       selectCell(x, y);
       return;
@@ -975,6 +994,36 @@
     renderGrid();
     renderSelectedCell();
     markDirty();
+  }
+
+  function setCellValue(x, y, value) {
+    updateCellValue(x, y, normalizeCellValue(value));
+  }
+
+  function appendTokenToCellValue(currentValue, token) {
+    const normalizedToken = normalizeCellValue(token);
+    const tokens = getCellTokens(currentValue);
+
+    return normalizeCellValue(tokens.concat(normalizedToken).join(authorData.blockAdder));
+  }
+
+  function eraseTopCellValue(currentValue) {
+    const tokens = getCellTokens(currentValue);
+
+    tokens.pop();
+
+    return normalizeCellValue(
+      tokens.length > 0 ? tokens.join(authorData.blockAdder) : authorData.defaultFloorToken
+    );
+  }
+
+  function paintCell(x, y, value) {
+    if (value === eraserToken) {
+      updateCellValue(x, y, eraseTopCellValue(state.cells[y][x]));
+      return;
+    }
+
+    updateCellValue(x, y, appendTokenToCellValue(state.cells[y][x], value));
   }
 
   function resizeLevel() {
@@ -1129,7 +1178,7 @@
 
   function applySelectedCellValue() {
     try {
-      paintCell(state.selectedCell.x, state.selectedCell.y, elements.cellValue.value);
+      setCellValue(state.selectedCell.x, state.selectedCell.y, elements.cellValue.value);
       setStatus("Updated that cell.", "warning");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not update that cell.", "error");

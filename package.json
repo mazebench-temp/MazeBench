@@ -6,5 +6,8 @@
     "test": "node tests/maze-engine.test.js && node tests/maze-solver.test.js && node tests/weightless-push.test.js && node tests/render-silhouette.test.js && node tests/author-play-data.test.js",
     "start": "node server.js",
     "dev": "node server.js"
+  },
+  "dependencies": {
+    "three": "0.184.0"
   }
 }

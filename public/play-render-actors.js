@@ -17,6 +17,7 @@
     } = app;
     const {
       terrainAt,
+      terrainSurfaceHeightAt,
       gateLiftAt,
       playerLiftAt,
       orangeWallLiftAt,
@@ -31,6 +32,7 @@
     const {
       roundRectPath,
       paintWallTile,
+      paintRaisedTerrainStackTile,
       paintRaisedPlayerGateTile,
       paintRaisedPlayerLiftTile,
       paintRaisedOrangeWallTile,
@@ -539,10 +541,6 @@
         return underElevatedWeightlessDepthRow;
       }
 
-      if (!isPlayerActor(actor) && actor.type !== "weightless_box") {
-        return renderY;
-      }
-
       if (actorRenderElevation(actor) <= 0.001) {
         return renderY;
       }
@@ -754,12 +752,14 @@
           const gateLift = cell.type === "player_gate" ? gateLiftAt(x, y, now) : 0;
           const playerLift = cell.type === "player_lift" ? playerLiftAt(x, y, now) : 0;
           const orangeWallLift = cell.type === "orange_wall" ? orangeWallLiftAt(x, y, now) : 0;
+          const terrainHeight = terrainSurfaceHeightAt(x, y) ?? 0;
 
           if (
             cell.type !== "wall" &&
             gateLift <= 0.001 &&
             playerLift <= 0.001 &&
-            orangeWallLift <= 0.001
+            orangeWallLift <= 0.001 &&
+            terrainHeight <= 0
           ) {
             continue;
           }
@@ -781,6 +781,11 @@
 
               if (cell.type === "orange_wall") {
                 paintRaisedOrangeWallTile(x, y, cell, orangeWallLift);
+                return;
+              }
+
+              if (terrainHeight > 0 && cell.type !== "wall") {
+                paintRaisedTerrainStackTile(x, y, cell, terrainHeight);
                 return;
               }
 

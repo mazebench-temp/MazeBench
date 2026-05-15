@@ -13,6 +13,37 @@
     return;
   }
 
+  function ensureEdgeToggle() {
+    const existing = document.getElementById("edge-toggle");
+
+    if (existing) {
+      return existing;
+    }
+
+    const fuzzyToggle = document.getElementById("fuzzy-toggle");
+
+    if (!fuzzyToggle || !fuzzyToggle.parentNode) {
+      return null;
+    }
+
+    const edgeToggle = document.createElement("button");
+    edgeToggle.id = "edge-toggle";
+    edgeToggle.className = "effect-toggle is-active";
+    edgeToggle.type = "button";
+    edgeToggle.setAttribute("aria-pressed", "true");
+    edgeToggle.setAttribute("aria-label", "Black edges");
+    edgeToggle.title = "Black edges";
+    edgeToggle.innerHTML = [
+      '<span class="effect-icon effect-icon--edges" aria-hidden="true"></span>',
+      '<span class="effect-toggle-track" aria-hidden="true">',
+      '<span class="effect-toggle-thumb"></span>',
+      "</span>"
+    ].join("");
+    fuzzyToggle.parentNode.insertBefore(edgeToggle, fuzzyToggle);
+    return edgeToggle;
+  }
+
+  const edgeToggle = ensureEdgeToggle();
   const app = modules.createPlayCore({
     playData,
     canvas,
@@ -20,11 +51,17 @@
     playHeader: document.querySelector(".play-header"),
     playStage: document.querySelector(".play-stage"),
     mazeFrame: document.querySelector(".maze-frame"),
-    fuzzyToggle: document.getElementById("fuzzy-toggle")
+    fuzzyToggle: document.getElementById("fuzzy-toggle"),
+    edgeToggle,
+    cameraModeToggle: document.getElementById("camera-mode-toggle")
   });
 
   if (!app) {
     return;
+  }
+
+  if (window.__PIXEL_GAME_DEBUG__ === true) {
+    window.__PIXEL_GAME_APP__ = app;
   }
 
   modules.registerRenderFunctions(app);
@@ -85,10 +122,20 @@
     });
   }
 
+  if (app.edgeToggle && app.edgeToggle.dataset.edgeToggleBound !== "true") {
+    app.edgeToggle.dataset.edgeToggleBound = "true";
+    app.edgeToggle.addEventListener("click", function () {
+      app.state.effects.edgeOutlinesEnabled = !app.state.effects.edgeOutlinesEnabled;
+      app.syncEdgeToggle();
+      app.render();
+    });
+  }
+
   app.syncPlayLayout();
   app.setupCanvas();
   app.syncCameraTarget(true);
   app.syncFuzzyToggle();
+  app.syncEdgeToggle();
   app.syncNoiseTicker();
   app.syncFloatingFloorTicker();
   app.preloadImages().finally(app.render);

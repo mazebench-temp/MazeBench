@@ -208,6 +208,7 @@ function createMazeLevelService({
       type,
       label: definition?.label || titleCase(type),
       imageUrl: definition?.imageUrl || null,
+      layers: Array.isArray(options.layers) ? options.layers : null,
       underlay: options.underlay || null,
       raised: Boolean(options.raised)
     };
@@ -230,49 +231,146 @@ function createMazeLevelService({
     );
   }
 
+  function isSupportActorDefinition(definition) {
+    const type = definitionType(definition);
+
+    return (
+      type === "player" ||
+      type === "circle_player" ||
+      type === "box" ||
+      type === "floating_floor" ||
+      type === "weightless_box"
+    );
+  }
+
   function isTerrainDefinition(definition) {
     return Boolean(definition) && !isActorDefinition(definition);
   }
 
+  function isRaisedTerrainDefinition(definition) {
+    const type = definitionType(definition);
+
+    return (
+      type === "wall" ||
+      type === "orange_wall" ||
+      (type === "player_lift" && definition?.initialRaised === true)
+    );
+  }
+
+  function buildTerrainLayer(definition, elevation) {
+    const type = definitionType(definition);
+
+    return {
+      type,
+      label: definition?.label || titleCase(type),
+      imageUrl: definition?.imageUrl || null,
+      elevation,
+      raised: type === "player_lift" ? definition?.initialRaised === true : false
+    };
+  }
+
+  function buildCellStack(cellDefinitions, floorDefinition, exitDefinition) {
+    const terrainLayers = [];
+    const actors = [];
+    let surfaceHeight = null;
+    let previousSurfaceTerrain = false;
+
+    cellDefinitions.forEach((definition) => {
+      if (isActorDefinition(definition)) {
+        const elevation = Math.max(0, surfaceHeight ?? 0);
+
+        actors.push({
+          definition,
+          elevation
+        });
+
+        if (isSupportActorDefinition(definition)) {
+          surfaceHeight = elevation + 1;
+          previousSurfaceTerrain = false;
+        }
+
+        return;
+      }
+
+      if (!isTerrainDefinition(definition)) {
+        return;
+      }
+
+      const isRaisedTerrain = isRaisedTerrainDefinition(definition);
+      let elevation = Math.max(0, surfaceHeight ?? 0);
+
+      if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+        elevation = surfaceHeight + 1;
+      }
+
+      terrainLayers.push(buildTerrainLayer(definition, elevation));
+      surfaceHeight = elevation + (isRaisedTerrain ? 1 : 0);
+      previousSurfaceTerrain = !isRaisedTerrain;
+    });
+
+    const wallLayer = terrainLayers.find((layer) => layer.type === "wall") || null;
+    const exitLayer = terrainLayers.find((layer) => layer.type === "exit") || null;
+    const topLayer =
+      terrainLayers.length > 0
+        ? terrainLayers.reduce((highest, layer) =>
+            layer.elevation >= highest.elevation ? layer : highest
+          )
+        : null;
+    const terrainLayer = wallLayer || exitLayer || topLayer || null;
+    const layers = terrainLayers.map((layer) => ({ ...layer }));
+
+    if (wallLayer) {
+      const underlayLayer = terrainLayers.find((layer) => layer.type !== "wall") || null;
+      const underlayDefinition = underlayLayer || floorDefinition || null;
+
+      return {
+        actors,
+        terrain: buildTerrainCell("wall", terrainLayer || wallLayer, {
+          layers,
+          underlay: buildTerrainCell(
+            underlayLayer?.type || definitionType(underlayDefinition) || "floor",
+            underlayDefinition
+          )
+        })
+      };
+    }
+
+    if (terrainLayer?.type === "exit") {
+      return {
+        actors,
+        terrain: buildTerrainCell("exit", exitDefinition || terrainLayer, {
+          layers
+        })
+      };
+    }
+
+    if (terrainLayer) {
+      return {
+        actors,
+        terrain: buildTerrainCell(terrainLayer.type, terrainLayer, {
+          layers,
+          raised: terrainLayer.type === "player_lift" ? terrainLayer.raised === true : undefined
+        })
+      };
+    }
+
+    if (actors.length > 0) {
+      return {
+        actors,
+        terrain: buildTerrainCell("floor", floorDefinition, {
+          layers: [buildTerrainLayer(floorDefinition || { type: "floor", name: "floor" }, 0)]
+        })
+      };
+    }
+
+    return {
+      actors,
+      terrain: buildTerrainCell("empty", null, { layers: [] })
+    };
+  }
+
   function buildCellState(cellDefinitions, floorDefinition, exitDefinition) {
-    const terrainDefinitions = cellDefinitions.filter((definition) => isTerrainDefinition(definition));
-    const wallDefinition = terrainDefinitions.find((definition) => definitionType(definition) === "wall") || null;
-    const exitCellDefinition = terrainDefinitions.find((definition) => definitionType(definition) === "exit") || null;
-    const terrainDefinition =
-      wallDefinition ||
-      exitCellDefinition ||
-      terrainDefinitions[0] ||
-      null;
-
-    if (wallDefinition) {
-      const underlayDefinition =
-        terrainDefinitions.find((definition) => definitionType(definition) !== "wall") || floorDefinition || null;
-
-      return buildTerrainCell("wall", wallDefinition, {
-        underlay: buildTerrainCell(
-          definitionType(underlayDefinition) || "floor",
-          underlayDefinition
-        )
-      });
-    }
-
-    if (definitionType(terrainDefinition) === "exit") {
-      return buildTerrainCell("exit", exitDefinition || terrainDefinition);
-    }
-
-    if (terrainDefinition) {
-      const terrainType = definitionType(terrainDefinition);
-
-      return buildTerrainCell(terrainType, terrainDefinition, {
-        raised: terrainType === "player_lift" ? terrainDefinition.initialRaised === true : undefined
-      });
-    }
-
-    if (cellDefinitions.some((definition) => isActorDefinition(definition))) {
-      return buildTerrainCell("floor", floorDefinition);
-    }
-
-    return buildTerrainCell("empty");
+    return buildCellStack(cellDefinitions, floorDefinition, exitDefinition).terrain;
   }
 
   function getLevelState(game, level) {
@@ -300,23 +398,22 @@ function createMazeLevelService({
         const cellDefinitions = parseCellStack(game.parser, cell)
           .map((token) => definitions.byToken.get(token))
           .filter(Boolean);
+        const cellStack = hasSourceCell
+          ? buildCellStack(cellDefinitions, floorDefinition, exitDefinition)
+          : {
+              actors: [],
+              terrain: buildTerrainCell("floor", floorDefinition)
+            };
 
-        terrainRow.push(
-          hasSourceCell
-            ? buildCellState(cellDefinitions, floorDefinition, exitDefinition)
-            : buildTerrainCell("floor", floorDefinition)
-        );
+        terrainRow.push(cellStack.terrain);
 
-        cellDefinitions.forEach((definition) => {
-          if (!isActorDefinition(definition)) {
-            return;
-          }
-
+        cellStack.actors.forEach(({ definition, elevation }) => {
           actors.push({
             type: definitionType(definition),
             groupId: definitionType(definition) === "weightless_box" ? definition.token : null,
             label: definition.label,
             imageUrl: definition.imageUrl,
+            elevation,
             x: index,
             y
           });

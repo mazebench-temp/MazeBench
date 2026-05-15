@@ -40,33 +40,39 @@
         return;
       }
 
-      const drawOffsetX = Math.round(offsetX);
-      const drawOffsetY = Math.round(offsetY);
+      const useSubpixelViewport = Boolean(app.threeRenderer);
+      const drawOffsetX = useSubpixelViewport ? offsetX : Math.round(offsetX);
+      const drawOffsetY = useSubpixelViewport ? offsetY : Math.round(offsetY);
+      const previousImageSmoothing = context.imageSmoothingEnabled;
+
+      context.imageSmoothingEnabled = useSubpixelViewport;
 
       if (
         sourceViewportRect.width === sourceBoardRect.width &&
         sourceViewportRect.height === sourceBoardRect.height
       ) {
         context.drawImage(sourceCanvas, drawOffsetX, drawOffsetY);
+        context.imageSmoothingEnabled = previousImageSmoothing;
         return;
       }
 
-      const roundedCameraX = Math.round(cameraX);
-      const roundedCameraY = Math.round(cameraY);
-      const sourceX = Math.max(0, roundedCameraX);
-      const sourceY = Math.max(0, roundedCameraY);
-      const destX = drawOffsetX + Math.max(0, -roundedCameraX);
-      const destY = drawOffsetY + Math.max(0, -roundedCameraY);
+      const viewportCameraX = useSubpixelViewport ? cameraX : Math.round(cameraX);
+      const viewportCameraY = useSubpixelViewport ? cameraY : Math.round(cameraY);
+      const sourceX = Math.max(0, viewportCameraX);
+      const sourceY = Math.max(0, viewportCameraY);
+      const destX = drawOffsetX + Math.max(0, -viewportCameraX);
+      const destY = drawOffsetY + Math.max(0, -viewportCameraY);
       const drawWidth = Math.max(
         0,
-        Math.min(sourceBoardRect.width - sourceX, sourceViewportRect.width - Math.max(0, -roundedCameraX))
+        Math.min(sourceBoardRect.width - sourceX, sourceViewportRect.width - Math.max(0, -viewportCameraX))
       );
       const drawHeight = Math.max(
         0,
-        Math.min(sourceBoardRect.height - sourceY, sourceViewportRect.height - Math.max(0, -roundedCameraY))
+        Math.min(sourceBoardRect.height - sourceY, sourceViewportRect.height - Math.max(0, -viewportCameraY))
       );
 
       if (drawWidth <= 0 || drawHeight <= 0) {
+        context.imageSmoothingEnabled = previousImageSmoothing;
         return;
       }
 
@@ -81,6 +87,7 @@
         drawWidth,
         drawHeight
       );
+      context.imageSmoothingEnabled = previousImageSmoothing;
     }
 
     function composeViewportSource() {
@@ -103,6 +110,10 @@
     }
 
     function drawScene(now = performance.now()) {
+      if (app.threeRenderer && app.threeRenderer.renderScene(now)) {
+        return;
+      }
+
       sceneCtx.clearRect(0, 0, boardRect.width, boardRect.height);
       paintGround(now);
       paintDepthSortedScene(now);
@@ -311,9 +322,9 @@
         return;
       }
 
-      function step() {
+      function step(now) {
         app.levelTransitionFrameId = null;
-        app.render();
+        app.render(now);
       }
 
       app.levelTransitionFrameId = window.requestAnimationFrame(step);
@@ -338,12 +349,16 @@
         dy,
         player,
         startMs: performance.now(),
-        durationMs: app.LEVEL_TRANSITION_DURATION_MS,
+        durationMs: options.durationMs || app.LEVEL_TRANSITION_DURATION_MS,
+        transitionData: options.transitionData || null,
         onComplete: typeof options.onComplete === "function" ? options.onComplete : null
       };
       app.isTransitioningLevel = true;
       startLevelTransitionLoop();
-      app.render();
+
+      if (options.renderImmediately !== false) {
+        app.render();
+      }
     }
 
     function composeLevelTransitionSource(now = performance.now()) {
@@ -354,6 +369,22 @@
       }
 
       const progress = clamp((now - transition.startMs) / transition.durationMs, 0, 1);
+
+      if (transition.transitionData?.kind === "adjacent-scene") {
+        if (app.threeRenderer && app.threeRenderer.renderScene(now)) {
+          return {
+            sourceCanvas: composeViewportSource(),
+            active: progress < 1
+          };
+        }
+
+        drawScene(now);
+        return {
+          sourceCanvas: composeViewportSource(),
+          active: false
+        };
+      }
+
       const eased = easeInOutQuad(progress);
       const worldShiftX = -transition.dx;
       const worldShiftY = -transition.dy;
