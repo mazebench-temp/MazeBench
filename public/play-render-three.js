@@ -249,6 +249,37 @@
       setCameraMode(cameraIsPerspective() ? "isometric" : "perspective");
     }
 
+    function useLevelPreviewCamera() {
+      if (!THREE) {
+        return;
+      }
+
+      if (debugCameraAnimationFrameId) {
+        window.cancelAnimationFrame(debugCameraAnimationFrameId);
+        debugCameraAnimationFrameId = 0;
+      }
+
+      debugCameraAnimation = null;
+      debugCameraTiltHoldKeys.clear();
+      stopDebugCameraTiltHold();
+      debugCameraActive = true;
+      debugCameraYaw = 0;
+      debugCameraTargetYaw = 0;
+      debugCameraTilt = debugCameraTopTilt;
+      debugCameraTargetTilt = debugCameraTopTilt;
+
+      if (cameraMode !== "isometric" || !camera?.isOrthographicCamera) {
+        cameraMode = "isometric";
+        createCameraForMode();
+      } else {
+        syncRendererSize();
+      }
+
+      lastSceneSignature = "";
+      updateCameraModeToggle();
+      updateCameraDirectionMapper();
+    }
+
     function debugCameraSignature() {
       if (!debugCameraActive) {
         return `camera:${cameraMode}:default`;
@@ -3346,6 +3377,7 @@
       });
 
     app.threeRenderer = {
+      useLevelPreviewCamera,
       renderScene,
       threeCanvas
     };

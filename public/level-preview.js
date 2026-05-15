@@ -67,6 +67,10 @@
       await app.threeRendererReady;
     }
 
+    if (typeof app.threeRenderer?.useLevelPreviewCamera === "function") {
+      app.threeRenderer.useLevelPreviewCamera();
+    }
+
     app.render();
 
     if (app.gl && typeof app.gl.finish === "function") {
