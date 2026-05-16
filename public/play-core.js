@@ -434,6 +434,7 @@
     function registerActorImageUrls(actors) {
       actors.forEach((actor) => {
         registerImageUrl(actor?.imageUrl || null);
+        registerModelUrl(actor?.modelUrl || null);
       });
     }
 

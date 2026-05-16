@@ -43,7 +43,13 @@ const authorData = {
     { imageUrl: null, label: "Orange Wall", name: "orange_wall", token: "O", type: "orange_wall" },
     { imageUrl: null, label: "Orange Button", name: "orange_button", token: "o", type: "orange_button" },
     { imageUrl: null, label: "Player", name: "player", token: "P" },
-    { imageUrl: "/assets/maze/images/gem.png", label: "Gem", name: "gem", token: "G" },
+    {
+      imageUrl: "/assets/maze/images/gem.png",
+      label: "Gem",
+      modelUrl: "/assets/maze/assets_3d/gem.glb",
+      name: "gem",
+      token: "G"
+    },
     {
       imageUrl: "/assets/maze/images/crate.png",
       label: "Weightless Box",
@@ -81,6 +87,7 @@ assert.deepEqual(
     ["weightless_box", 2, 0, "B"]
   ]
 );
+assert.equal(playData.actors[1].modelUrl, "/assets/maze/assets_3d/gem.glb");
 
 const noGemPlayData = adapter.buildPlayData({
   cells: [["P+G"]],

@@ -45,6 +45,8 @@
     const treeReferenceHeightInModelUnits = 5.516;
     const treeModelWorldScale = (unit * 6) / treeReferenceHeightInModelUnits;
     const shrubModelScaleMultiplier = 0.5;
+    const gemModelWorldSize = unit * 0.87;
+    const gemSpinPeriodMs = 7200;
     const debugCameraTopTilt = 0;
     const debugCameraSideTilt = Math.PI / 2;
     const debugCameraTiltHoldDurationMs = 500;
@@ -2136,13 +2138,10 @@
       camera.getWorldDirection(cameraDirection);
 
       edgeScene.children.forEach((child) => {
-        if (child.isLineSegments) {
-          const basePosition = child.userData.edgeBasePosition;
+        const basePosition = child.userData.edgeBasePosition;
 
-          if (basePosition) {
-            child.position.copy(basePosition);
-          }
-
+        if (basePosition) {
+          child.position.copy(basePosition);
           child.position.addScaledVector(cameraDirection, -edgeDepthBias);
         }
       });
@@ -4765,27 +4764,28 @@
       return renderedActors;
     }
 
-    function addGem(actor, x, z, elevation, now) {
-      const sink = actor.renderSink ?? 0;
-      const scale = actorVisualScale(actor);
-      const visibility = transitionPieceProgressForCell(actor.x, actor.y);
-      const fade = actorFadeVisibility(actor);
-      const opacity = actorOpacity(actor) * visibility;
+    function gemModelPlacement(model, x, z, elevation, sink, scale, now, actor) {
+      const bounds = model.bounds;
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
 
-      if (visibility <= 0.015 || opacity <= 0.015) {
-        return;
-      }
+      bounds.getSize(size);
+      bounds.getCenter(center);
 
-      const gem = new THREE.Mesh(
-        new THREE.OctahedronGeometry(unit * 0.22 * scale, 0),
-        material(actorRenderColor(actor), opacity)
-      );
-      gem.position.set(
-        x,
-        elevation * elevationUnit - sink + actorVisualLift + unit * 0.32 + Math.max(0, app.floatingFloorHoverOffset(actor, now)),
-        z
-      );
-      gem.userData.editorPick = editorPickForRenderContext({
+      const maxModelSize = Math.max(size.x, size.y, size.z, 0.001);
+      const modelScale = (gemModelWorldSize / maxModelSize) * scale;
+      const hover = Math.max(0, app.floatingFloorHoverOffset(actor, now));
+
+      return {
+        bottomY: elevation * elevationUnit - sink + actorVisualLift + hover + unit * 0.14,
+        center,
+        scale: modelScale,
+        spin: ((now % gemSpinPeriodMs) / gemSpinPeriodMs) * Math.PI * 2 + (actor.hoverSeed || 0)
+      };
+    }
+
+    function gemEditorPick(actor, topY, bottomY) {
+      return editorPickForRenderContext({
         kind: "actor",
         cells: [
           {
@@ -4797,14 +4797,105 @@
             bottom: ((actor.renderY ?? actor.y) + 1) * unit + renderOffsetZ()
           }
         ],
-        topY: gem.position.y + unit * 0.22 * scale,
-        bottomY: gem.position.y - unit * 0.22 * scale
+        topY,
+        bottomY
       });
+    }
+
+    function addGemModel(actor, model, x, z, elevation, sink, scale, opacity, visibility, now) {
+      const placement = gemModelPlacement(model, x, z, elevation, sink, scale, now, actor);
+      const group = new THREE.Group();
+      const topY = placement.bottomY + (model.bounds.max.y - model.bounds.min.y) * placement.scale;
+      const editorPick = gemEditorPick(actor, topY, placement.bottomY);
+
+      group.position.set(x, placement.bottomY, z);
+      group.scale.setScalar(placement.scale);
+      group.rotation.y = placement.spin;
+
+      model.parts.forEach((part) => {
+        const mesh = new THREE.Mesh(part.geometry, material(part.color || actorRenderColor(actor), opacity));
+
+        mesh.position.set(-placement.center.x, -model.bounds.min.y, -placement.center.z);
+        mesh.castShadow = renderContextCastsShadows();
+        mesh.receiveShadow = false;
+        mesh.userData.editorPick = editorPick;
+        group.add(mesh);
+      });
+
+      scene.add(group);
+
+      if (!edgeOutlinesEnabled()) {
+        return;
+      }
+
+      const edgeOpacity = actorFadeVisibility(actor) * visibility * renderContextOpacity();
+
+      if (edgeOpacity <= 0.015) {
+        return;
+      }
+
+      const edgeGroup = new THREE.Group();
+
+      edgeGroup.position.copy(group.position);
+      edgeGroup.scale.copy(group.scale);
+      edgeGroup.rotation.copy(group.rotation);
+      edgeGroup.userData.edgeBasePosition = group.position.clone();
+
+      model.parts.forEach((part) => {
+        const edges = new THREE.LineSegments(
+          edgeGeometryFor(part.geometry, 28),
+          lineMaterial("#000000", edgeOpacity)
+        );
+
+        edges.position.set(-placement.center.x, -model.bounds.min.y, -placement.center.z);
+        edgeGroup.add(edges);
+      });
+
+      edgeScene.add(edgeGroup);
+    }
+
+    function addGemFallback(actor, x, z, elevation, sink, scale, fade, visibility, opacity, now) {
+      const gem = new THREE.Mesh(
+        new THREE.OctahedronGeometry(unit * 0.22 * scale, 0),
+        material(actorRenderColor(actor), opacity)
+      );
+
+      gem.position.set(
+        x,
+        elevation * elevationUnit - sink + actorVisualLift + unit * 0.32 + Math.max(0, app.floatingFloorHoverOffset(actor, now)),
+        z
+      );
+      gem.userData.editorPick = gemEditorPick(
+        actor,
+        gem.position.y + unit * 0.22 * scale,
+        gem.position.y - unit * 0.22 * scale
+      );
       gem.castShadow = renderContextCastsShadows();
       gem.receiveShadow = false;
       scene.add(gem);
 
       addEdgeLines(gem.geometry, gem.position, 1, fade * visibility);
+    }
+
+    function addGem(actor, x, z, elevation, now) {
+      const sink = actor.renderSink ?? 0;
+      const scale = actorVisualScale(actor);
+      const visibility = transitionPieceProgressForCell(actor.x, actor.y);
+      const fade = actorFadeVisibility(actor);
+      const opacity = actorOpacity(actor) * visibility;
+
+      if (visibility <= 0.015 || opacity <= 0.015) {
+        return;
+      }
+
+      const model = requestModelAsset(actor.modelUrl);
+
+      if (model) {
+        addGemModel(actor, model, x, z, elevation, sink, scale, opacity, visibility, now);
+        return;
+      }
+
+      addGemFallback(actor, x, z, elevation, sink, scale, fade, visibility, opacity, now);
     }
 
     function addFloatingFloor(actor, center, elevation, scale, sink, fade, opacity, visibility, now) {
@@ -5242,6 +5333,7 @@
       return [
         actor.type,
         actor.groupId || "",
+        actor.modelUrl || "",
         actor.removed ? 1 : 0,
         actor.x,
         actor.y,

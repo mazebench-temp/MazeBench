@@ -22,7 +22,8 @@
     },
     "gem": {
       "token": "G",
-      "image": "images/gem.png"
+      "image": "images/gem.png",
+      "model": "assets_3d/gem.glb"
     },
     "circle_player": {
       "token": "cp"
