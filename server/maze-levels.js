@@ -575,7 +575,11 @@ function createMazeLevelService({
               : definition?.label || titleCase(name)),
           initialRaised: definition.initialRaised || entry.initialRaised,
           name,
-          selectable: name !== "circle_player" && name !== "exit" && name !== "hole",
+          selectable:
+            config?.selectable !== false &&
+            name !== "circle_player" &&
+            name !== "exit" &&
+            name !== "hole",
           token: entry.token,
           type: definition.type
         });

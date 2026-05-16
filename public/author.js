@@ -592,7 +592,13 @@
 
   function selectablePaletteTools() {
     return [noopTool, eraserTool].concat(
-      authorData.palette.filter((tool) => tool.selectable !== false && tool.name !== "hole")
+      authorData.palette.filter(
+        (tool) =>
+          tool.selectable !== false &&
+          tool.name !== "hole" &&
+          tool.name !== "box" &&
+          tool.token !== "b"
+      )
     );
   }
 

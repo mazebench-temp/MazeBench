@@ -40,7 +40,8 @@
     },
     "box": {
       "token": "b",
-      "image": "images/crate.png"
+      "image": "images/crate.png",
+      "selectable": false
     },
     "floating_floor": {
       "token": "f"
