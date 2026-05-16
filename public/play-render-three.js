@@ -44,6 +44,7 @@
     const edgeDepthBias = Math.max(1.25, unit * 0.024);
     const treeReferenceHeightInModelUnits = 5.516;
     const treeModelWorldScale = (unit * 6) / treeReferenceHeightInModelUnits;
+    const shrubModelScaleMultiplier = 0.5;
     const debugCameraTopTilt = 0;
     const debugCameraSideTilt = Math.PI / 2;
     const debugCameraTiltHoldDurationMs = 500;
@@ -3980,8 +3981,14 @@
       });
     }
 
+    function terrainModelWorldScale(descriptor) {
+      return descriptor.type === "shrub"
+        ? treeModelWorldScale * shrubModelScaleMultiplier
+        : treeModelWorldScale;
+    }
+
     function treeModelPlacement(model, cell, descriptor) {
-      const scale = treeModelWorldScale;
+      const scale = terrainModelWorldScale(descriptor);
       const centerX = (cell.left + cell.right) / 2 + renderOffsetX();
       const centerZ = (cell.top + cell.bottom) / 2 + renderOffsetZ();
 
