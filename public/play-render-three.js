@@ -68,6 +68,12 @@
       return activeRenderContext?.state || app.state;
     }
 
+    function invalidateSceneCache() {
+      lastSceneSignature = "";
+      lastSceneContentSignature = "";
+      hasRenderedScene = false;
+    }
+
     function renderOffsetX() {
       return activeRenderContext?.offsetX || 0;
     }
@@ -1383,6 +1389,7 @@
 
           const model = parseModelAsset(url, data);
           modelAssetCache.set(url, model ? { status: "ready", model } : { status: "failed" });
+          invalidateSceneCache();
 
           if (typeof app.render === "function") {
             window.requestAnimationFrame(() => app.render());
@@ -1393,6 +1400,7 @@
             app.modelTextCache.set(url, null);
           }
           modelAssetCache.set(url, { status: "failed" });
+          invalidateSceneCache();
         });
 
       modelAssetCache.set(url, { status: "loading", promise });
@@ -6125,8 +6133,7 @@
         edgeScene = new THREE.Scene();
         createCameraForMode();
         updateCameraModeToggle();
-        lastSceneSignature = "";
-        hasRenderedScene = false;
+        invalidateSceneCache();
 
         if (typeof app.render === "function") {
           window.requestAnimationFrame(() => app.render());
@@ -6141,6 +6148,7 @@
       pickEditorFace,
       setEditorHoverTarget,
       useLevelPreviewCamera,
+      invalidateSceneCache,
       prewarmAdjacentLevelTransition,
       renderScene,
       threeCanvas

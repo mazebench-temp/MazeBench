@@ -888,9 +888,11 @@
         })
         .then((data) => {
           app.modelTextCache.set(url, data);
+          app.threeRenderer?.invalidateSceneCache?.();
         })
         .catch(() => {
           app.modelTextCache.set(url, null);
+          app.threeRenderer?.invalidateSceneCache?.();
         });
     }
 
