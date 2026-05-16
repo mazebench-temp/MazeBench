@@ -426,6 +426,7 @@ pre {
   line-height: 1;
 }
 
+.author-undo-button,
 .author-save-button {
   flex: 0 0 auto;
   margin: 0;

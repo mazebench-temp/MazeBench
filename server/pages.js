@@ -194,6 +194,7 @@ function createPageRenderer({
               <a class="back-link" id="author-play-link" href="/play/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Play</a>
               <a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">World Map</a>
             </nav>
+            <button id="undo-level" class="tool-button author-undo-button" type="button" disabled>Undo</button>
             <button id="save-level" class="tool-button tool-button--primary author-save-button" type="button">Save</button>
             <p id="author-status" class="author-status" role="status" aria-live="polite"></p>
             <div id="solver-progress" class="solver-progress" hidden>

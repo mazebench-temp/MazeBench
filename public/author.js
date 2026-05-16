@@ -45,7 +45,8 @@
     solverProgressText: document.getElementById("solver-progress-text"),
     solverProgressTrack: document.getElementById("solver-progress-track"),
     solverMaxStates: document.getElementById("solver-max-states"),
-    status: document.getElementById("author-status")
+    status: document.getElementById("author-status"),
+    undoLevel: document.getElementById("undo-level")
   };
 
   const optionalElementKeys = new Set([
@@ -103,6 +104,7 @@
   const defaultSolverMaxExpandedStates = 1000000;
   const solverProgressYieldStateInterval = 4096;
   const solverProgressRenderIntervalMs = 80;
+  const undoStackLimit = 80;
   const solutionDirections = {
     U: { label: "U", dx: 0, dy: -1 },
     D: { label: "D", dx: 0, dy: 1 },
@@ -156,13 +158,101 @@
     lastPaintTargetKey: null,
     paintDragPlane: null,
     paintPointerId: null,
+    savedBoardSignature: boardSignature(
+      authorData.initialLevel.width,
+      authorData.initialLevel.height,
+      authorData.initialLevel.cells
+    ),
     selectedCell: { x: 0, y: 0 },
     selectedToken:
       authorData.defaultWallToken || authorData.palette[0]?.token || authorData.defaultFloorToken,
     solverSolutionCellsKey: null,
     solverSolutionPath: null,
+    undoStack: [],
     width: authorData.initialLevel.width
   };
+
+  function editorSnapshot() {
+    return {
+      cells: cloneCells(state.cells),
+      height: state.height,
+      selectedCell: {
+        x: state.selectedCell.x,
+        y: state.selectedCell.y
+      },
+      width: state.width
+    };
+  }
+
+  function snapshotSignature(snapshot) {
+    return boardSignature(snapshot.width, snapshot.height, snapshot.cells);
+  }
+
+  function syncUndoButtonState() {
+    const isLocked = state.isLevelSwitching || state.isSolverBusy || state.isSolutionPlaying;
+
+    elements.undoLevel.disabled = state.undoStack.length === 0 || isLocked;
+    elements.undoLevel.title =
+      state.undoStack.length === 0
+        ? "Nothing to undo yet."
+        : isLocked
+          ? "Finish the current editor action before undoing."
+          : "Undo the last editor change.";
+  }
+
+  function pushUndoSnapshot() {
+    const snapshot = editorSnapshot();
+    const previous = state.undoStack[state.undoStack.length - 1];
+
+    if (previous && snapshotSignature(previous) === snapshotSignature(snapshot)) {
+      return;
+    }
+
+    state.undoStack.push(snapshot);
+
+    if (state.undoStack.length > undoStackLimit) {
+      state.undoStack.shift();
+    }
+
+    syncUndoButtonState();
+  }
+
+  function clearUndoHistory() {
+    state.undoStack = [];
+    syncUndoButtonState();
+  }
+
+  function restoreEditorSnapshot(snapshot) {
+    state.cells = cloneCells(snapshot.cells);
+    state.height = snapshot.height;
+    state.selectedCell = {
+      x: Math.max(0, Math.min(snapshot.width - 1, snapshot.selectedCell.x)),
+      y: Math.max(0, Math.min(snapshot.height - 1, snapshot.selectedCell.y))
+    };
+    state.width = snapshot.width;
+    state.isDirty =
+      boardSignature(state.width, state.height, state.cells) !== state.savedBoardSignature;
+    clearSolverSolution();
+    renderAll();
+  }
+
+  function undoLastEdit() {
+    if (state.isLevelSwitching || state.isSolverBusy || state.isSolutionPlaying) {
+      return false;
+    }
+
+    const snapshot = state.undoStack.pop();
+
+    if (!snapshot) {
+      setStatus("Nothing to undo.", "warning");
+      return false;
+    }
+
+    restoreEditorSnapshot(snapshot);
+    setStatus("Undid the last edit.", state.isDirty ? "warning" : "success");
+    syncUndoButtonState();
+    return true;
+  }
 
   function escapeHtml(value) {
     return String(value)
@@ -179,6 +269,14 @@
 
   function createBlankCells(width, height, fillToken) {
     return Array.from({ length: height }, () => Array.from({ length: width }, () => fillToken));
+  }
+
+  function boardSignature(width, height, cells) {
+    return [
+      width,
+      height,
+      cells.map((row) => row.join(authorData.separator)).join("\n")
+    ].join("\n");
   }
 
   function parseLevelCoordinates(levelId) {
@@ -528,6 +626,7 @@
     const dirtySuffix = state.isDirty ? " Unsaved changes." : "";
     elements.status.textContent = state.message + dirtySuffix;
     elements.status.className = "author-status is-" + state.messageTone;
+    syncUndoButtonState();
   }
 
   function syncSolverButtonState() {
@@ -541,6 +640,7 @@
       elements.placeGem.title = elements.solveLevel.title;
       elements.playSolution.disabled = true;
       elements.playSolution.title = elements.solveLevel.title;
+      syncUndoButtonState();
       return;
     }
 
@@ -556,6 +656,7 @@
     elements.playSolution.title = hasPlayableSolution()
       ? "Animate the last solver solution."
       : "Run the solver successfully before playing a solution.";
+    syncUndoButtonState();
   }
 
   function syncLevelSelectors() {
@@ -1041,6 +1142,7 @@
       return;
     }
 
+    pushUndoSnapshot();
     state.cells[y][x] = normalizedValue;
     state.selectedCell = {
       x: Math.max(0, Math.min(state.width - 1, x)),
@@ -1327,6 +1429,7 @@
       }
     }
 
+    pushUndoSnapshot();
     state.width = nextWidth;
     state.height = nextHeight;
     state.cells = nextCells;
@@ -1341,6 +1444,7 @@
   }
 
   function clearLevel() {
+    pushUndoSnapshot();
     state.cells = createBlankCells(state.width, state.height, authorData.defaultFloorToken);
     clearSolverSolution();
     state.selectedCell = { x: 0, y: 0 };
@@ -1368,6 +1472,7 @@
     const horizontalOpening = centeredEdgeOpeningRange(state.width);
     const verticalOpening = centeredEdgeOpeningRange(state.height);
 
+    pushUndoSnapshot();
     for (let y = 0; y < state.height; y += 1) {
       for (let x = 0; x < state.width; x += 1) {
         const isEdge = x === 0 || y === 0 || x === state.width - 1 || y === state.height - 1;
@@ -1454,6 +1559,7 @@
       return;
     }
 
+    pushUndoSnapshot();
     state.width = nextWidth;
     state.height = nextHeight;
     state.cells = nextCells;
@@ -1505,8 +1611,10 @@
       (payload.exists ? "Loaded existing level." : "Fresh level. Paint something good.");
     state.messageTone =
       options.messageTone || (payload.exists ? "success" : "warning");
+    state.savedBoardSignature = boardSignature(payload.width, payload.height, payload.cells);
     state.selectedCell = { x: 0, y: 0 };
     clearSolverSolution();
+    clearUndoHistory();
     state.width = payload.width;
   }
 
@@ -1568,6 +1676,7 @@
       state.isDirty = false;
       state.levelId = payload.levelId;
       state.width = payload.width;
+      state.savedBoardSignature = boardSignature(state.width, state.height, state.cells);
       if (state.solverSolutionCellsKey !== serializeCells()) {
         clearSolverSolution();
       }
@@ -1720,6 +1829,7 @@
         !app.renderCompositor?.startLevelTransition
       ) {
         state.isLevelSwitching = false;
+        syncUndoButtonState();
         await loadLevel(nextLevelId);
         return;
       }
@@ -1750,12 +1860,14 @@
         },
         onComplete: () => {
           state.isLevelSwitching = false;
+          syncUndoButtonState();
           renderEditorScene();
         }
       });
       app.render();
     } catch (error) {
       state.isLevelSwitching = false;
+      syncUndoButtonState();
       setStatus(
         error instanceof Error ? error.message : "Could not switch to that level.",
         "error"
@@ -1768,6 +1880,7 @@
   }
 
   function applyGemPlacement(candidate) {
+    pushUndoSnapshot();
     for (let y = 0; y < state.height; y += 1) {
       for (let x = 0; x < state.width; x += 1) {
         state.cells[y][x] = stripGemFromCellValue(state.cells[y][x]);
@@ -2035,6 +2148,43 @@
       state.isSolutionPlaying = false;
       syncSolverButtonState();
     }
+  }
+
+  function isTypingTarget(element) {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+
+    const tagName = element.tagName.toLowerCase();
+
+    return (
+      tagName === "input" ||
+      tagName === "textarea" ||
+      tagName === "select" ||
+      element.isContentEditable ||
+      Boolean(element.closest("[contenteditable='true']"))
+    );
+  }
+
+  function handleEditorKeydown(event) {
+    if (
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      isTypingTarget(event.target)
+    ) {
+      return;
+    }
+
+    const key = String(event.key || "").toLowerCase();
+
+    if (key !== "u" && key !== "z") {
+      return;
+    }
+
+    event.preventDefault();
+    undoLastEdit();
   }
 
   function handleGridPointerDown(event) {
@@ -2313,7 +2463,9 @@
     }
   });
   elements.solveLevel.addEventListener("click", solveLevel);
+  elements.undoLevel.addEventListener("click", undoLastEdit);
   elements.saveLevel.addEventListener("click", saveLevel);
+  document.addEventListener("keydown", handleEditorKeydown);
 
   elements.levelNeighbors.addEventListener("click", function (event) {
     const button = event.target.closest("[data-level-id]");
