@@ -916,6 +916,73 @@
       );
     }
 
+    function lacksLandingSupportAtOrBelowLocation(
+      state,
+      x,
+      y,
+      elevation,
+      gateState,
+      orangeButtonsPressed,
+      ignoredActors
+    ) {
+      const supportHeights = terrainSurfaceHeightsAt(
+        state,
+        x,
+        y,
+        gateState,
+        orangeButtonsPressed
+      ).concat(actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, true));
+
+      return !supportHeights.some((height) => height <= elevation);
+    }
+
+    function playerIceSlipLanding(
+      state,
+      player,
+      fromX,
+      fromY,
+      targetX,
+      targetY,
+      elevation,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      const ignoredActors = new Set([player]);
+
+      if (
+        !isInsideBoard(targetX, targetY) ||
+        !isIce(state, fromX, fromY, elevation, gateState, orangeButtonsPressed) ||
+        terrainBlocksElevation(state, targetX, targetY, elevation, gateState, orangeButtonsPressed) ||
+        blockingActorAtElevation(state, targetX, targetY, elevation, player) !== -1
+      ) {
+        return null;
+      }
+
+      const supportHeights = terrainSurfaceHeightsAt(
+        state,
+        targetX,
+        targetY,
+        gateState,
+        orangeButtonsPressed
+      )
+        .concat(actorSupportSurfaceHeightsAt(state, targetX, targetY, ignoredActors, true))
+        .filter((height) => height < elevation)
+        .sort((left, right) => right - left);
+      const landingElevation = supportHeights.find(
+        (height) =>
+          !terrainBlocksElevation(state, targetX, targetY, height, gateState, orangeButtonsPressed) &&
+          blockingActorAtElevation(state, targetX, targetY, height, player) === -1
+      );
+
+      if (landingElevation === undefined && supportHeights.length > 0) {
+        return null;
+      }
+
+      return {
+        toElevation: landingElevation ?? elevation
+      };
+    }
+
     function weightlessGroupSupportedElevation(state, members, gateState, orangeButtonsPressed) {
       const memberSet = new Set(members);
       let baseElevation = 0;
@@ -2262,15 +2329,15 @@
     ) {
       const x = state.actorX[actorIndex];
       const y = state.actorY[actorIndex];
-      const supportHeights = terrainSurfaceHeightsAt(
+      return lacksLandingSupportAtOrBelowLocation(
         state,
         x,
         y,
+        elevation,
         gateState,
-        orangeButtonsPressed
-      ).concat(actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, true));
-
-      return !supportHeights.some((height) => height <= elevation);
+        orangeButtonsPressed,
+        ignoredActors
+      );
     }
 
     function applyHoleFalls(state, moves) {
@@ -2315,7 +2382,7 @@
           toElevation
         );
         const actorIsOverOpenPit =
-          move.punchSlide === true &&
+          (move.punchSlide === true || move.iceSlipOff === true) &&
           !actorIsOnHole &&
           lacksLandingSupportAtOrBelow(
             state,
@@ -2604,6 +2671,7 @@
 
         let nextX = fromX;
         let nextY = fromY;
+        let iceSlipLanding = null;
 
         while (true) {
           const targetX = nextX + dx;
@@ -2619,21 +2687,38 @@
             orangeButtonsPressed,
             new Set([player])
           );
+          const slipLanding =
+            !canEnterHole && !canStandAtTarget
+              ? playerIceSlipLanding(
+                  state,
+                  player,
+                  nextX,
+                  nextY,
+                  targetX,
+                  targetY,
+                  fromElevation,
+                  raisedPlayerGates,
+                  orangeButtonsPressed
+                )
+              : null;
+          const canSlipOffIce = slipLanding !== null;
 
           if (
             !isInsideBoard(targetX, targetY) ||
-            (!canEnterHole && !canStandAtTarget)
+            (!canEnterHole && !canStandAtTarget && !canSlipOffIce)
           ) {
             break;
           }
 
-          const blockingActor = blockingActorAtElevation(
-            state,
-            targetX,
-            targetY,
-            fromElevation,
-            player
-          );
+          const blockingActor = canSlipOffIce
+            ? -1
+            : blockingActorAtElevation(
+                state,
+                targetX,
+                targetY,
+                fromElevation,
+                player
+              );
 
           if (blockingActor !== -1) {
             let didMoveBlockingActor = false;
@@ -2686,6 +2771,11 @@
           nextX = targetX;
           nextY = targetY;
 
+          if (canSlipOffIce) {
+            iceSlipLanding = slipLanding;
+            break;
+          }
+
           if (!isIce(state, nextX, nextY, fromElevation, raisedPlayerGates, orangeButtonsPressed)) {
             break;
           }
@@ -2713,6 +2803,8 @@
               raised: toRaised
             });
             toElevation = playerLiftLayer.elevation + (toRaised ? 1 : 0);
+          } else if (iceSlipLanding) {
+            toElevation = iceSlipLanding.toElevation;
           } else {
             toElevation =
               playerSurfaceHeightAt(
@@ -2738,7 +2830,11 @@
           };
 
           if (!searchMode) {
-            moveRecord.iceSlide = travelDistance > 1;
+            moveRecord.iceSlide = travelDistance > 1 || iceSlipLanding !== null;
+
+            if (iceSlipLanding) {
+              moveRecord.iceSlipOff = true;
+            }
           }
 
           moves.push(moveRecord);

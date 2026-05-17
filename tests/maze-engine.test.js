@@ -186,6 +186,70 @@ function createState(playData) {
 }
 
 {
+  const iceBlock = {
+    type: "ice_block",
+    layers: [{ type: "ice_block", elevation: 0 }]
+  };
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain: [[iceBlock, iceBlock, { type: "empty" }]],
+    actors: [{ type: "player", x: 0, y: 0, elevation: 1, removed: false }]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [2, 0]);
+  assert.equal(state.actorElevation[0], 1);
+  assert.equal(state.actorRemoved[0], 1);
+  assert.equal(result.moves[0].iceSlipOff, true);
+  assert.equal(result.moves[0].toRemoved, true);
+}
+
+{
+  const iceBlock = {
+    type: "ice_block",
+    layers: [{ type: "ice_block", elevation: 0 }]
+  };
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain: [[iceBlock, iceBlock, { type: "floor" }]],
+    actors: [{ type: "player", x: 0, y: 0, elevation: 1, removed: false }]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [2, 0]);
+  assert.equal(state.actorElevation[0], 0);
+  assert.equal(state.actorRemoved[0], 0);
+  assert.equal(result.moves[0].iceSlipOff, true);
+  assert.equal(result.moves[0].toElevation, 0);
+  assert.equal(result.moves[0].toRemoved, false);
+}
+
+{
+  const oneHighWall = {
+    type: "wall",
+    layers: [{ type: "wall", elevation: 0 }]
+  };
+  const { engine, state } = createState({
+    width: 2,
+    height: 1,
+    terrain: [[oneHighWall, { type: "empty" }]],
+    actors: [{ type: "player", x: 0, y: 0, elevation: 1, removed: false }]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, false);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [0, 0]);
+  assert.equal(state.actorRemoved[0], 0);
+}
+
+{
   const { engine, state } = createState({
     width: 3,
     height: 2,
