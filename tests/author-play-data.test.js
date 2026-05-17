@@ -13,6 +13,7 @@ const authorData = {
     { imageUrl: null, label: "Floor", name: "floor", token: "." },
     { imageUrl: null, label: "Ice", name: "ice", token: "i", type: "ice" },
     { imageUrl: null, label: "Ice Block", name: "ice_block", token: "I", type: "ice_block" },
+    { direction: "right", imageUrl: null, label: "Ice Slope Right", name: "ice_slope", token: "Sr", type: "ice_slope" },
     { imageUrl: null, label: "Wall", name: "wall", token: "W" },
     {
       imageUrl: null,
@@ -283,6 +284,27 @@ assert.deepEqual(
 );
 assert.deepEqual(
   iceBlockPlayData.actors.map((actor) => [actor.type, actor.elevation]),
+  [["player", 1]]
+);
+
+const iceSlopePlayData = adapter.buildPlayData({
+  cells: [["Sr+P", "Sr+Sr"]],
+  height: 1,
+  width: 2
+});
+
+assert.equal(iceSlopePlayData.terrain[0][0].type, "ice_slope");
+assert.equal(iceSlopePlayData.terrain[0][0].direction, "right");
+assert.equal(iceSlopePlayData.terrain[0][0].underlay.type, "floor");
+assert.deepEqual(
+  iceSlopePlayData.terrain[0][1].layers.map((layer) => [layer.type, layer.elevation, layer.direction]),
+  [
+    ["ice_slope", 0, "right"],
+    ["ice_slope", 1, "right"]
+  ]
+);
+assert.deepEqual(
+  iceSlopePlayData.actors.map((actor) => [actor.type, actor.elevation]),
   [["player", 1]]
 );
 

@@ -17,6 +17,31 @@
       "token": "I",
       "label": "Ice Block"
     },
+    "ice_slope": {
+      "tokens": [
+        {
+          "token": "Sr",
+          "label": "Ice Slope Right",
+          "direction": "right"
+        },
+        {
+          "token": "Sl",
+          "label": "Ice Slope Left",
+          "direction": "left"
+        },
+        {
+          "token": "Su",
+          "label": "Ice Slope Up",
+          "direction": "up"
+        },
+        {
+          "token": "Sd",
+          "label": "Ice Slope Down",
+          "direction": "down"
+        }
+      ],
+      "label": "Ice Slope"
+    },
     "player": {
       "token": "p"
     },

@@ -266,6 +266,7 @@ function createMazeLevelService({
     return (
       type === "wall" ||
       type === "ice_block" ||
+      type === "ice_slope" ||
       type === "tree" ||
       type === "shrub" ||
       type === "block_asset" ||
@@ -340,10 +341,12 @@ function createMazeLevelService({
 
     const wallLayer = terrainLayers.find((layer) => layer.type === "wall") || null;
     const iceBlockLayer = terrainLayers.find((layer) => layer.type === "ice_block") || null;
+    const iceSlopeLayer = terrainLayers.find((layer) => layer.type === "ice_slope") || null;
     const treeLayer = terrainLayers.find((layer) => layer.type === "tree") || null;
     const shrubLayer = terrainLayers.find((layer) => layer.type === "shrub") || null;
     const blockAssetLayer = terrainLayers.find((layer) => layer.type === "block_asset") || null;
-    const raisedBlockLayer = wallLayer || iceBlockLayer || treeLayer || shrubLayer || blockAssetLayer;
+    const raisedBlockLayer =
+      wallLayer || iceBlockLayer || iceSlopeLayer || treeLayer || shrubLayer || blockAssetLayer;
     const exitLayer = terrainLayers.find((layer) => layer.type === "exit") || null;
     const topLayer =
       terrainLayers.length > 0

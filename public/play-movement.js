@@ -126,13 +126,40 @@
     function iceSlideMoveMetadata(moves) {
       return moves
         .filter(({ iceSlide = false }) => iceSlide)
-        .map(({ actor, fromX, fromY, toX, toY }) => ({
-          actorIndex: state.actors.indexOf(actor),
+        .map(({
+          actor,
+          fromElevation = 0,
           fromX,
           fromY,
+          path,
+          pathControlsElevation = false,
+          toElevation = fromElevation,
           toX,
           toY
-        }))
+        }) => {
+          const metadata = {
+            actorIndex: state.actors.indexOf(actor),
+            fromElevation,
+            fromX,
+            fromY,
+            toElevation,
+            toX,
+            toY
+          };
+
+          if (Array.isArray(path) && path.length > 1) {
+            metadata.path = path.map((point) => ({
+              elevation: Number(point?.elevation),
+              x: Number(point?.x),
+              y: Number(point?.y)
+            }));
+            metadata.pathControlsElevation =
+              pathControlsElevation ||
+              metadata.path.some((point) => point.elevation !== fromElevation);
+          }
+
+          return metadata;
+        })
         .filter(({ actorIndex }) => actorIndex !== -1);
     }
 
@@ -155,8 +182,10 @@
         const isReverseMove =
           move.fromX === originalMove.toX &&
           move.fromY === originalMove.toY &&
+          (originalMove.toElevation === undefined || move.fromElevation === originalMove.toElevation) &&
           move.toX === originalMove.fromX &&
-          move.toY === originalMove.fromY;
+          move.toY === originalMove.fromY &&
+          (originalMove.fromElevation === undefined || move.toElevation === originalMove.fromElevation);
 
         if (!isReverseMove) {
           return;
@@ -164,6 +193,17 @@
 
         move.iceSlide = true;
         move.reverseIceSlide = true;
+
+        if (Array.isArray(originalMove.path) && originalMove.path.length > 1) {
+          move.path = originalMove.path
+            .slice()
+            .reverse()
+            .map((point) => ({ ...point }));
+          move.pathControlsElevation =
+            originalMove.pathControlsElevation ||
+            move.path.some((point) => point.elevation !== move.fromElevation);
+          move.pathEndElevation = move.path[move.path.length - 1]?.elevation ?? move.toElevation;
+        }
       });
     }
 
@@ -257,9 +297,10 @@
         raisedOrangeWalls,
         finalRaisedOrangeWalls
       );
+      const hasLogicalMoves = moves.some((move) => move.visualOnly !== true);
 
       if (moves.length > 0) {
-        if (recordHistory) {
+        if (recordHistory && hasLogicalMoves) {
           previousState.iceSlideMoves = iceSlideMoveMetadata(moves);
           moveHistory.push(previousState);
         }

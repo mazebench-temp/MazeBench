@@ -66,6 +66,101 @@
       return Math.abs(toX - fromX) + Math.abs(toY - fromY);
     }
 
+    function normalizedMovePath(move) {
+      if (!Array.isArray(move.path) || move.path.length < 2) {
+        return [
+          {
+            x: move.fromX,
+            y: move.fromY,
+            elevation: move.fromElevation ?? move.actor?.elevation ?? 0
+          },
+          {
+            x: move.toX,
+            y: move.toY,
+            elevation: move.toElevation ?? move.fromElevation ?? move.actor?.elevation ?? 0
+          }
+        ];
+      }
+
+      return move.path
+        .map((point) => ({
+          x: Number(point?.x),
+          y: Number(point?.y),
+          elevation: Number(point?.elevation)
+        }))
+        .filter(
+          (point) =>
+            Number.isFinite(point.x) &&
+            Number.isFinite(point.y) &&
+            Number.isFinite(point.elevation)
+        );
+    }
+
+    function pathSegmentDistance(from, to) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const dz = to.elevation - from.elevation;
+
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    function pathDistanceFor(move) {
+      const path = normalizedMovePath(move);
+      let distance = 0;
+
+      for (let index = 1; index < path.length; index += 1) {
+        distance += pathSegmentDistance(path[index - 1], path[index]);
+      }
+
+      return distance;
+    }
+
+    function pointAlongPath(move, progress) {
+      const path = normalizedMovePath(move);
+
+      if (path.length === 0) {
+        return {
+          x: move.toX,
+          y: move.toY,
+          elevation: move.toElevation ?? move.fromElevation ?? move.actor?.elevation ?? 0
+        };
+      }
+
+      if (path.length === 1) {
+        return path[0];
+      }
+
+      const totalDistance = pathDistanceFor(move);
+
+      if (totalDistance <= 0) {
+        return path[path.length - 1];
+      }
+
+      let remainingDistance = totalDistance * Math.max(0, Math.min(1, progress));
+
+      for (let index = 1; index < path.length; index += 1) {
+        const from = path[index - 1];
+        const to = path[index];
+        const segmentDistanceValue = pathSegmentDistance(from, to);
+
+        if (remainingDistance > segmentDistanceValue && index < path.length - 1) {
+          remainingDistance -= segmentDistanceValue;
+          continue;
+        }
+
+        const segmentProgress =
+          segmentDistanceValue <= 0 ? 1 : Math.max(0, Math.min(1, remainingDistance / segmentDistanceValue));
+
+        return {
+          x: from.x + (to.x - from.x) * segmentProgress,
+          y: from.y + (to.y - from.y) * segmentProgress,
+          elevation: from.elevation + (to.elevation - from.elevation) * segmentProgress
+        };
+      }
+
+      return path[path.length - 1];
+    }
+
     function iceSlideDuration(distance) {
       if (distance <= 0 || MOVE_DURATION_MS <= 0) {
         return 0;
@@ -174,7 +269,7 @@
     }
 
     function moveDurationFor(move) {
-      const distance = moveDistance(move);
+      const distance = Array.isArray(move.path) ? pathDistanceFor(move) : moveDistance(move);
 
       if (move.iceSlide) {
         return iceSlideDuration(distance);
@@ -297,6 +392,47 @@
       return fromElevation + (toElevation - fromElevation) * cappedProgress;
     }
 
+    function liftPhaseStartElevationForMove(move) {
+      const fromElevation = move.fromElevation ?? move.actor?.elevation ?? 0;
+
+      if (move.pathControlsElevation === true && Array.isArray(move.path) && move.path.length > 0) {
+        const pathEndElevation = pathRenderEndElevationForMove(move);
+
+        if (Number.isFinite(pathEndElevation)) {
+          return pathEndElevation;
+        }
+      }
+
+      return fromElevation;
+    }
+
+    function pathRenderEndElevationForMove(move) {
+      if (!Array.isArray(move.path) || move.path.length === 0) {
+        return null;
+      }
+
+      const pathEndElevation = Number(move.path[move.path.length - 1]?.elevation);
+
+      return Number.isFinite(pathEndElevation) ? pathEndElevation : null;
+    }
+
+    function shouldDeferPathDropToHoleFall(move) {
+      return (
+        move.fromRemoved !== true &&
+        move.toRemoved === true &&
+        move.pathControlsElevation === true &&
+        pathRenderEndElevationForMove(move) !== null
+      );
+    }
+
+    function fallPhaseStartElevationForMove(move) {
+      if (shouldDeferPathDropToHoleFall(move)) {
+        return pathRenderEndElevationForMove(move);
+      }
+
+      return move.toElevation ?? move.actor?.elevation ?? 0;
+    }
+
     function finishAnimation(moves, options = {}) {
       const onFinish = typeof options.onFinish === "function" ? options.onFinish : null;
       movement.applyMoveFinalState(moves);
@@ -333,7 +469,14 @@
         }) => !skipHoleFall && !snapHoleRestore && fromRemoved !== toRemoved
       );
       const liftStateMoves = moves.filter(
-        ({ fromElevation = 0, toElevation = fromElevation }) => fromElevation !== toElevation
+        (move) => {
+          if (shouldDeferPathDropToHoleFall(move)) {
+            return false;
+          }
+
+          const liftFromElevation = liftPhaseStartElevationForMove(move);
+          return liftFromElevation !== (move.toElevation ?? liftFromElevation);
+        }
       );
       const preTerrainLiftMoveSet =
         options.preTerrainLiftMoves instanceof Set ? options.preTerrainLiftMoves : new Set();
@@ -395,44 +538,45 @@
               fadeOut = false,
               toRemoved = false
             } = move;
+            const liftFromElevation = liftPhaseStartElevationForMove(move);
 
-              actor.renderPunchEffect =
-                retractPunchDuringFall && isPunchVisualMove(move) ? true : false;
-              actor.renderX = liftPhaseFirst ? fromX : toX;
-              actor.renderY = liftPhaseFirst ? fromY : toY;
-              actor.renderInHole = false;
+            actor.renderPunchEffect =
+              retractPunchDuringFall && isPunchVisualMove(move) ? true : false;
+            actor.renderX = liftPhaseFirst ? fromX : toX;
+            actor.renderY = liftPhaseFirst ? fromY : toY;
+            actor.renderInHole = false;
 
-              if (fromRemoved && !visibleDuringMove) {
-                actor.renderScale = 0;
-                actor.renderSink = HOLE_SINK_DISTANCE;
-              } else {
-                actor.renderScale = 1;
-                actor.renderSink = 0;
-              }
+            if (fromRemoved && !visibleDuringMove) {
+              actor.renderScale = 0;
+              actor.renderSink = HOLE_SINK_DISTANCE;
+            } else {
+              actor.renderScale = 1;
+              actor.renderSink = 0;
+            }
 
-              if (fromElevation === toElevation) {
-                actor.renderElevation = toElevation;
-                actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
-                return;
-              }
-
-              if (!activeLiftMoveSet.has(move)) {
-                actor.renderElevation = completedLiftMoves.has(move) ? toElevation : fromElevation;
-                actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
-                return;
-              }
-
-              const duration =
-                toElevation > fromElevation
-                  ? PLAYER_LIFT_RISE_DURATION_MS
-                  : PLAYER_LIFT_FALL_DURATION_MS;
-              const progress = Math.min(1, (now - liftStartTime) / duration);
-              actor.renderElevation = liftRenderElevation(fromElevation, toElevation, progress);
+            if (liftFromElevation === toElevation) {
+              actor.renderElevation = toElevation;
               actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
+              return;
+            }
 
-              if (progress < 1) {
-                hasActiveLift = true;
-              }
+            if (!activeLiftMoveSet.has(move)) {
+              actor.renderElevation = completedLiftMoves.has(move) ? toElevation : liftFromElevation;
+              actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
+              return;
+            }
+
+            const duration =
+              toElevation > liftFromElevation
+                ? PLAYER_LIFT_RISE_DURATION_MS
+                : PLAYER_LIFT_FALL_DURATION_MS;
+            const progress = Math.min(1, (now - liftStartTime) / duration);
+            actor.renderElevation = liftRenderElevation(liftFromElevation, toElevation, progress);
+            actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
+
+            if (progress < 1) {
+              hasActiveLift = true;
+            }
           });
 
           app.render(now);
@@ -508,8 +652,14 @@
               let renderFromY = fromY;
               let renderToX = toX;
               let renderToY = toY;
+              const usesPath = Array.isArray(move.path) && move.path.length > 1;
+              const pathDistance = usesPath ? pathDistanceFor(move) : 0;
               let positionProgress = useIceSlideTiming && iceSlide
-                ? iceSlideProgress(elapsedMs, moveDistance({ fromX, fromY, toX, toY }), reverseIceSlide)
+                ? iceSlideProgress(
+                    elapsedMs,
+                    usesPath ? pathDistance : moveDistance({ fromX, fromY, toX, toY }),
+                    reverseIceSlide
+                  )
                 : eased;
               let renderPunchEffect = punchEffect === true;
 
@@ -591,9 +741,17 @@
                 }
               }
 
-              actor.renderX = renderFromX + (renderToX - renderFromX) * positionProgress;
-              actor.renderY = renderFromY + (renderToY - renderFromY) * positionProgress;
-              actor.renderElevation = useToElevation ? toElevation : fromElevation;
+              if (usesPath && !hasPunchStart(move) && !isPunchVisualMove(move)) {
+                const pathPoint = pointAlongPath(move, positionProgress);
+
+                actor.renderX = pathPoint.x;
+                actor.renderY = pathPoint.y;
+                actor.renderElevation = pathPoint.elevation;
+              } else {
+                actor.renderX = renderFromX + (renderToX - renderFromX) * positionProgress;
+                actor.renderY = renderFromY + (renderToY - renderFromY) * positionProgress;
+                actor.renderElevation = useToElevation ? toElevation : fromElevation;
+              }
               actor.renderInHole = false;
               actor.renderPunchEffect = renderPunchEffect;
               actor.renderAlpha =
@@ -670,6 +828,7 @@
                 toElevation = actor.elevation ?? 0,
                 fadeOut = false
               } = move;
+              const fallStartElevation = fallPhaseStartElevationForMove(move);
 
               if (retractPunchDuringFall && isPunchVisualMove(move)) {
                 const finalX = typeof move.finalX === "number" ? move.finalX : move.fromX;
@@ -677,7 +836,7 @@
 
                 actor.renderX = toX + (finalX - toX) * eased;
                 actor.renderY = toY + (finalY - toY) * eased;
-                actor.renderElevation = toElevation;
+                actor.renderElevation = fallStartElevation;
                 actor.renderInHole = false;
                 actor.renderPunchEffect = true;
                 actor.renderAlpha = 1;
@@ -688,7 +847,7 @@
 
               actor.renderX = toX;
               actor.renderY = toY;
-              actor.renderElevation = toElevation;
+              actor.renderElevation = fallStartElevation;
               actor.renderInHole = !skipHoleFall && fromRemoved !== toRemoved;
               actor.renderPunchEffect = false;
               actor.renderAlpha = fadeOut && toRemoved ? 0 : 1;
@@ -881,7 +1040,10 @@
       const moves = buildMovesToPositions(previousState.actors);
       movement.applyUndoIceSlideMetadata(moves, previousState);
       const hasLiftReversal = moves.some(
-        ({ fromElevation = 0, toElevation = fromElevation }) => fromElevation !== toElevation
+        (move) => {
+          const liftFromElevation = liftPhaseStartElevationForMove(move);
+          return liftFromElevation !== (move.toElevation ?? liftFromElevation);
+        }
       );
 
       if (moves.length > 0) {

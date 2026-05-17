@@ -117,7 +117,12 @@
         return null;
       }
 
-      if (layer?.type === "wall" || layer?.type === "ice_block" || layer?.type === "shrub") {
+      if (
+        layer?.type === "wall" ||
+        layer?.type === "ice_block" ||
+        layer?.type === "ice_slope" ||
+        layer?.type === "shrub"
+      ) {
         return elevation + 1;
       }
 
@@ -149,6 +154,10 @@
 
       if (layer?.type === "wall" || layer?.type === "ice_block") {
         return layerElevation === elevation;
+      }
+
+      if (layer?.type === "ice_slope") {
+        return elevation === layerElevation || elevation === layerElevation + 1;
       }
 
       if (layer?.type === "tree") {

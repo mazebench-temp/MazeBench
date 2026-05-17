@@ -30,6 +30,20 @@ function createTerrain(width, height, type = "floor") {
   );
 }
 
+function iceBlockCell(elevation = 0) {
+  return {
+    type: "ice_block",
+    layers: [{ type: "ice_block", elevation }]
+  };
+}
+
+function iceSlopeCell(direction = "right", elevation = 0) {
+  return {
+    type: "ice_slope",
+    layers: [{ type: "ice_slope", direction, elevation }]
+  };
+}
+
 function stackedWall(height) {
   return {
     type: "wall",
@@ -305,6 +319,38 @@ function createUShapeActors(extraActors = []) {
 }
 
 {
+  const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
+  const terrain = createTerrain(4, 1);
+  terrain[0][1] = iceSlopeCell("right", 0);
+  terrain[0][2] = stackedWall(1);
+  const app = createGameplayApp([player], { height: 1, terrain, width: 4 });
+
+  app.movePlayers(1, 0);
+
+  assert.deepEqual([player.x, player.y], [2, 0]);
+  assert.equal(player.elevation, 1);
+  const previousState = app.moveHistory.at(-1);
+  assert.deepEqual(previousState.iceSlideMoves[0].path, [
+    { x: 0, y: 0, elevation: 0 },
+    { x: 1, y: 0, elevation: 1 },
+    { x: 2, y: 0, elevation: 1 }
+  ]);
+
+  const undoMoves = app.buildMovesToPositions(previousState.actors);
+  app.movement.applyUndoIceSlideMetadata(undoMoves, previousState);
+  const playerUndoMove = undoMoves.find((move) => move.actor === player);
+
+  assert.equal(playerUndoMove.iceSlide, true);
+  assert.equal(playerUndoMove.reverseIceSlide, true);
+  assert.equal(playerUndoMove.pathControlsElevation, true);
+  assert.deepEqual(playerUndoMove.path, [
+    { x: 2, y: 0, elevation: 1 },
+    { x: 1, y: 0, elevation: 1 },
+    { x: 0, y: 0, elevation: 0 }
+  ]);
+}
+
+{
   const gem = { type: "gem", x: 1, y: 0, removed: false };
   const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
   const terrain = createTerrain(8, 8);
@@ -318,6 +364,41 @@ function createUShapeActors(extraActors = []) {
   assert.deepEqual([player.x, player.y], [1, 0]);
   assert.equal(player.removed, true);
   assert.equal(gem.removed, false);
+}
+
+{
+  const box = { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 0, removed: false };
+  const app = createGameplayApp([box], { height: 1, width: 4 });
+  const renderElevations = [];
+
+  app.render = () => {
+    renderElevations.push(box.renderElevation);
+  };
+
+  app.animateMoves([
+    {
+      actor: box,
+      actorIndex: 0,
+      actorType: "weightless_box",
+      fromElevation: 0,
+      fromRemoved: false,
+      fromX: 1,
+      fromY: 0,
+      iceSlide: true,
+      path: [
+        { x: 1, y: 0, elevation: 0 },
+        { x: 2, y: 0, elevation: 1 },
+        { x: 3, y: 0, elevation: 1 }
+      ],
+      pathControlsElevation: true,
+      toElevation: 0,
+      toRemoved: true,
+      toX: 3,
+      toY: 0
+    }
+  ]);
+
+  assert.deepEqual(renderElevations, [1, 1, 0]);
 }
 
 {

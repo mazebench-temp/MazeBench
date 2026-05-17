@@ -13,7 +13,8 @@
     tree: 10,
     ice_block: 11,
     shrub: 12,
-    block_asset: 13
+    block_asset: 13,
+    ice_slope: 14
   };
   const fallbackTerrainCell = {
     type: "empty",
@@ -122,6 +123,7 @@
         return {
           type: normalizedTerrainType(layer?.type),
           elevation: Math.max(0, elevation),
+          direction: typeof layer?.direction === "string" ? layer.direction : null,
           raised: layer?.raised === true
         };
       })
@@ -516,6 +518,7 @@
       if (
         layer.type === terrainTypes.wall ||
         layer.type === terrainTypes.ice_block ||
+        layer.type === terrainTypes.ice_slope ||
         layer.type === terrainTypes.shrub ||
         layer.type === terrainTypes.block_asset
       ) {
@@ -659,6 +662,148 @@
       );
     }
 
+    function iceSlopeLayersAt(state, x, y) {
+      if (!isInsideBoard(x, y)) {
+        return [];
+      }
+
+      return terrainLayersForCell(state, cellIndex(x, y)).filter(
+        (layer) => layer.type === terrainTypes.ice_slope
+      );
+    }
+
+    function vectorMatches(left, right) {
+      return left.dx === right.dx && left.dy === right.dy;
+    }
+
+    function iceSlopeTraversalForEntry(
+      state,
+      slopeX,
+      slopeY,
+      dx,
+      dy,
+      elevation
+    ) {
+      const moveVector = { dx, dy };
+
+      for (const layer of iceSlopeLayersAt(state, slopeX, slopeY)) {
+        const layerElevation = layer.elevation ?? 0;
+        const uphill = puncherDirectionVector(layer.direction);
+        const downhill = { dx: -uphill.dx, dy: -uphill.dy };
+
+        if (vectorMatches(moveVector, uphill) && elevation === layerElevation) {
+          return {
+            entryElevation: elevation,
+            exitElevation: layerElevation + 1,
+            exitX: slopeX + uphill.dx,
+            exitY: slopeY + uphill.dy,
+            slopeX,
+            slopeY,
+            slopeLayer: layer
+          };
+        }
+
+        if (vectorMatches(moveVector, downhill) && elevation === layerElevation + 1) {
+          return {
+            entryElevation: elevation,
+            exitElevation: layerElevation,
+            exitX: slopeX + downhill.dx,
+            exitY: slopeY + downhill.dy,
+            slopeX,
+            slopeY,
+            slopeLayer: layer
+          };
+        }
+      }
+
+      return null;
+    }
+
+    function iceSlopeTraversalPathPoints(traversal) {
+      const isUphill = traversal.exitElevation > traversal.entryElevation;
+
+      return [
+        {
+          x: traversal.slopeX,
+          y: traversal.slopeY,
+          elevation: isUphill ? traversal.exitElevation : traversal.entryElevation
+        }
+      ];
+    }
+
+    function iceSlopeExitCenterPoint(traversal) {
+      return {
+        x: traversal.exitX,
+        y: traversal.exitY,
+        elevation: traversal.exitElevation
+      };
+    }
+
+    function samePathPoint(left, right) {
+      return (
+        left &&
+        right &&
+        left.x === right.x &&
+        left.y === right.y &&
+        left.elevation === right.elevation
+      );
+    }
+
+    function appendPathPoints(path, points) {
+      points.forEach((point) => {
+        if (!samePathPoint(path[path.length - 1], point)) {
+          path.push(point);
+        }
+      });
+    }
+
+    function pathOffsetsForTraversal(traversal, fromX, fromY, fromElevation) {
+      return traversal.path.map((point) => ({
+        dx: point.x - fromX,
+        dy: point.y - fromY,
+        elevation: point.elevation - fromElevation
+      }));
+    }
+
+    function samePathOffset(left, right) {
+      return (
+        left &&
+        right &&
+        left.dx === right.dx &&
+        left.dy === right.dy &&
+        left.elevation === right.elevation
+      );
+    }
+
+    function samePathOffsets(left, right) {
+      return (
+        Array.isArray(left) &&
+        Array.isArray(right) &&
+        left.length === right.length &&
+        left.every((point, index) => samePathOffset(point, right[index]))
+      );
+    }
+
+    function canTravelThroughSpace(
+      state,
+      x,
+      y,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      elevation
+    ) {
+      if (!isInsideBoard(x, y)) {
+        return false;
+      }
+
+      if (terrainBlocksElevation(state, x, y, elevation, gateState, orangeButtonsPressed)) {
+        return false;
+      }
+
+      return !isOccupiedAtElevation(occupied, x, y, elevation);
+    }
+
     function isHole(state, x, y, elevation = 0) {
       return Boolean(
         terrainLayerOfTypeAtElevation(
@@ -784,6 +929,7 @@
         (layer) =>
           layer.type === terrainTypes.wall ||
           layer.type === terrainTypes.ice_block ||
+          layer.type === terrainTypes.ice_slope ||
           layer.type === terrainTypes.tree ||
           layer.type === terrainTypes.shrub ||
           layer.type === terrainTypes.block_asset
@@ -812,6 +958,10 @@
         layer.type === terrainTypes.block_asset
       ) {
         return layerElevation === elevation;
+      }
+
+      if (layer.type === terrainTypes.ice_slope) {
+        return elevation === layerElevation || elevation === layerElevation + 1;
       }
 
       if (layer.type === terrainTypes.shrub) {
@@ -916,6 +1066,56 @@
       );
     }
 
+    function landingElevationAtLocation(
+      state,
+      x,
+      y,
+      elevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      ignoredActors = null
+    ) {
+      if (
+        canMoveIntoAtElevation(
+          state,
+          x,
+          y,
+          occupied,
+          gateState,
+          orangeButtonsPressed,
+          elevation
+        )
+      ) {
+        return elevation;
+      }
+
+      if (
+        !isInsideBoard(x, y) ||
+        terrainBlocksElevation(state, x, y, elevation, gateState, orangeButtonsPressed) ||
+        isOccupiedAtElevation(occupied, x, y, elevation)
+      ) {
+        return null;
+      }
+
+      const supportHeights = terrainSurfaceHeightsAt(
+        state,
+        x,
+        y,
+        gateState,
+        orangeButtonsPressed
+      )
+        .concat(actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, true))
+        .filter((height) => height < elevation)
+        .sort((left, right) => right - left);
+
+      return supportHeights.find(
+        (height) =>
+          !terrainBlocksElevation(state, x, y, height, gateState, orangeButtonsPressed) &&
+          !isOccupiedAtElevation(occupied, x, y, height)
+      ) ?? null;
+    }
+
     function lacksLandingSupportAtOrBelowLocation(
       state,
       x,
@@ -944,6 +1144,7 @@
       targetX,
       targetY,
       elevation,
+      occupied,
       gateState,
       orangeButtonsPressed
     ) {
@@ -956,6 +1157,26 @@
         blockingActorAtElevation(state, targetX, targetY, elevation, player) !== -1
       ) {
         return null;
+      }
+
+      const slopeFall = iceSlopeFallTraversal(
+        state,
+        targetX,
+        targetY,
+        elevation,
+        occupied,
+        gateState,
+        orangeButtonsPressed
+      );
+
+      if (slopeFall) {
+        return {
+          path: slopeFall.path,
+          slopeSlide: true,
+          toElevation: slopeFall.exitElevation,
+          toX: slopeFall.exitX,
+          toY: slopeFall.exitY
+        };
       }
 
       const supportHeights = terrainSurfaceHeightsAt(
@@ -1223,27 +1444,383 @@
       return !isOccupiedAtElevation(occupied, x, y, elevation);
     }
 
-    function findSlideDestination(state, startX, startY, dx, dy, occupied, gateState, orangeButtonsPressed, elevation = 0) {
+    function canMoveIntoAtElevation(
+      state,
+      x,
+      y,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      elevation
+    ) {
+      return canMoveInto(state, x, y, occupied, gateState, orangeButtonsPressed, elevation);
+    }
+
+    function resolveIceSlopeTraversal(
+      state,
+      slopeX,
+      slopeY,
+      dx,
+      dy,
+      elevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      let traversal = iceSlopeTraversalForEntry(state, slopeX, slopeY, dx, dy, elevation);
+      const path = traversal ? iceSlopeTraversalPathPoints(traversal) : [];
+      let guard = width * height + 1;
+
+      while (traversal && guard > 0) {
+        guard -= 1;
+
+        if (
+          canTravelThroughSpace(
+            state,
+            traversal.exitX,
+            traversal.exitY,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            traversal.exitElevation
+          )
+        ) {
+          return {
+            ...traversal,
+            path: path.concat(iceSlopeExitCenterPoint(traversal)).map((point) => ({ ...point }))
+          };
+        }
+
+        const nextTraversal = iceSlopeTraversalForEntry(
+          state,
+          traversal.exitX,
+          traversal.exitY,
+          dx,
+          dy,
+          traversal.exitElevation
+        );
+
+        if (
+          !nextTraversal ||
+          isOccupiedAtElevation(occupied, traversal.exitX, traversal.exitY, traversal.exitElevation)
+        ) {
+          return null;
+        }
+
+        traversal = nextTraversal;
+        appendPathPoints(path, iceSlopeTraversalPathPoints(traversal));
+      }
+
+      return null;
+    }
+
+    function blockedIceSlopeBouncePathForEntry(
+      state,
+      slopeX,
+      slopeY,
+      dx,
+      dy,
+      elevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      let traversal = iceSlopeTraversalForEntry(state, slopeX, slopeY, dx, dy, elevation);
+      const path = traversal ? iceSlopeTraversalPathPoints(traversal) : [];
+      let guard = width * height + 1;
+
+      while (traversal && guard > 0) {
+        guard -= 1;
+
+        if (
+          canTravelThroughSpace(
+            state,
+            traversal.exitX,
+            traversal.exitY,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            traversal.exitElevation
+          )
+        ) {
+          return null;
+        }
+
+        const nextTraversal = iceSlopeTraversalForEntry(
+          state,
+          traversal.exitX,
+          traversal.exitY,
+          dx,
+          dy,
+          traversal.exitElevation
+        );
+
+        if (
+          !nextTraversal ||
+          isOccupiedAtElevation(occupied, traversal.exitX, traversal.exitY, traversal.exitElevation)
+        ) {
+          return path.map((point) => ({ ...point }));
+        }
+
+        traversal = nextTraversal;
+        appendPathPoints(path, iceSlopeTraversalPathPoints(traversal));
+      }
+
+      return null;
+    }
+
+    function pushableBlockingActorAtElevation(state, x, y, elevation, ignoredActors = new Set()) {
+      return actorAt(
+        state,
+        x,
+        y,
+        (actor) =>
+          !ignoredActors.has(actor) &&
+          !isNonBlockingActor(actor) &&
+          actorElevation(state, actor) === elevation &&
+          isPushableActor(actor)
+      );
+    }
+
+    function blockedIceSlopePushForEntry(
+      state,
+      slopeX,
+      slopeY,
+      dx,
+      dy,
+      elevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      ignoredActors = new Set()
+    ) {
+      let traversal = iceSlopeTraversalForEntry(state, slopeX, slopeY, dx, dy, elevation);
+      const path = traversal ? iceSlopeTraversalPathPoints(traversal) : [];
+      let guard = width * height + 1;
+
+      while (traversal && guard > 0) {
+        guard -= 1;
+
+        if (
+          canTravelThroughSpace(
+            state,
+            traversal.exitX,
+            traversal.exitY,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            traversal.exitElevation
+          )
+        ) {
+          return null;
+        }
+
+        const nextTraversal = iceSlopeTraversalForEntry(
+          state,
+          traversal.exitX,
+          traversal.exitY,
+          dx,
+          dy,
+          traversal.exitElevation
+        );
+
+        if (!nextTraversal) {
+          const blocker = !terrainBlocksElevation(
+            state,
+            traversal.exitX,
+            traversal.exitY,
+            traversal.exitElevation,
+            gateState,
+            orangeButtonsPressed
+          )
+            ? pushableBlockingActorAtElevation(
+                state,
+                traversal.exitX,
+                traversal.exitY,
+                traversal.exitElevation,
+                ignoredActors
+              )
+            : -1;
+
+          return blocker === -1
+            ? null
+            : {
+                blocker,
+                traversal: {
+                  ...traversal,
+                  path: path.concat(iceSlopeExitCenterPoint(traversal)).map((point) => ({ ...point }))
+                }
+              };
+        }
+
+        if (isOccupiedAtElevation(occupied, traversal.exitX, traversal.exitY, traversal.exitElevation)) {
+          return null;
+        }
+
+        traversal = nextTraversal;
+        appendPathPoints(path, iceSlopeTraversalPathPoints(traversal));
+      }
+
+      return null;
+    }
+
+    function iceSlopeFallTraversal(
+      state,
+      slopeX,
+      slopeY,
+      fromElevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      return iceSlopeLayersAt(state, slopeX, slopeY)
+        .filter((layer) => layer.elevation + 1 < fromElevation)
+        .sort((left, right) => right.elevation - left.elevation)
+        .map((layer) => {
+          const uphill = puncherDirectionVector(layer.direction);
+
+          return resolveIceSlopeTraversal(
+            state,
+            slopeX,
+            slopeY,
+            -uphill.dx,
+            -uphill.dy,
+            layer.elevation + 1,
+            occupied,
+            gateState,
+            orangeButtonsPressed
+          );
+        })
+        .find(Boolean) || null;
+    }
+
+    function findSlideDestination(
+      state,
+      startX,
+      startY,
+      dx,
+      dy,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      elevation = 0,
+      options = {}
+    ) {
       let nextX = startX;
       let nextY = startY;
+      let nextElevation = elevation;
+      const path = [{ x: startX, y: startY, elevation }];
 
-      while (canMoveInto(state, nextX + dx, nextY + dy, occupied, gateState, orangeButtonsPressed, elevation)) {
+      while (true) {
+        let slopeTraversal = resolveIceSlopeTraversal(
+          state,
+          nextX + dx,
+          nextY + dy,
+          dx,
+          dy,
+          nextElevation,
+          occupied,
+          gateState,
+          orangeButtonsPressed
+        );
+
+        if (!slopeTraversal && typeof options.pushSlopeBlocker === "function") {
+          const blockedSlope = blockedIceSlopePushForEntry(
+            state,
+            nextX + dx,
+            nextY + dy,
+            dx,
+            dy,
+            nextElevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            options.ignoredActors || new Set()
+          );
+
+          if (blockedSlope && options.pushSlopeBlocker(blockedSlope.blocker)) {
+            slopeTraversal = resolveIceSlopeTraversal(
+              state,
+              nextX + dx,
+              nextY + dy,
+              dx,
+              dy,
+              nextElevation,
+              occupied,
+              gateState,
+              orangeButtonsPressed
+            );
+          }
+        }
+
+        if (slopeTraversal) {
+          nextX = slopeTraversal.exitX;
+          nextY = slopeTraversal.exitY;
+          nextElevation = slopeTraversal.exitElevation;
+          path.push(...slopeTraversal.path);
+
+          if (!isIce(state, nextX, nextY, nextElevation, gateState, orangeButtonsPressed)) {
+            break;
+          }
+
+          continue;
+        }
+
+        if (!canMoveInto(state, nextX + dx, nextY + dy, occupied, gateState, orangeButtonsPressed, nextElevation)) {
+          break;
+        }
+
         nextX += dx;
         nextY += dy;
+        path.push({ x: nextX, y: nextY, elevation: nextElevation });
 
-        if (!isIce(state, nextX, nextY, elevation, gateState, orangeButtonsPressed)) {
+        if (!isIce(state, nextX, nextY, nextElevation, gateState, orangeButtonsPressed)) {
           break;
         }
       }
 
-      return { x: nextX, y: nextY };
+      const landingElevation = landingElevationAtLocation(
+        state,
+        nextX,
+        nextY,
+        nextElevation,
+        occupied,
+        gateState,
+        orangeButtonsPressed
+      );
+      const finalPath =
+        landingElevation !== null && landingElevation !== nextElevation
+          ? path.concat({ x: nextX, y: nextY, elevation: landingElevation })
+          : path;
+
+      return {
+        elevation: landingElevation ?? nextElevation,
+        hasLandingSupport: landingElevation !== null,
+        path: finalPath,
+        pathEndElevation: nextElevation,
+        x: nextX,
+        y: nextY
+      };
     }
 
-    function moveBox(state, actorIndex, dx, dy, occupied, moves, gateState, orangeButtonsPressed, searchMode) {
+    function moveBox(
+      state,
+      actorIndex,
+      dx,
+      dy,
+      occupied,
+      moves,
+      gateState,
+      orangeButtonsPressed,
+      searchMode,
+      pushContext = null
+    ) {
       const fromX = state.actorX[actorIndex];
       const fromY = state.actorY[actorIndex];
       const elevation = actorElevation(state, actorIndex);
       removeOccupiedAtElevation(occupied, fromX, fromY, elevation);
+      const ignoredActors = new Set(pushContext?.ignoredActors || []);
+      ignoredActors.add(actorIndex);
 
       const target = findSlideDestination(
         state,
@@ -1254,32 +1831,76 @@
         occupied,
         gateState,
         orangeButtonsPressed,
-        elevation
+        elevation,
+        pushContext
+          ? {
+              ignoredActors,
+              pushSlopeBlocker: (blocker) => {
+                if (blocker === actorIndex) {
+                  return false;
+                }
+
+                const result = attemptPushActor(
+                  state,
+                  blocker,
+                  dx,
+                  dy,
+                  occupied,
+                  moves,
+                  1,
+                  pushContext.handled || new Set(),
+                  gateState,
+                  orangeButtonsPressed,
+                  ignoredActors,
+                  searchMode
+                );
+
+                return result !== null;
+              }
+            }
+          : {}
       );
 
-      if (target.x === fromX && target.y === fromY) {
+      if (target.x === fromX && target.y === fromY && target.elevation === elevation) {
         addOccupiedAtElevation(occupied, fromX, fromY, elevation);
         return false;
       }
 
       state.actorX[actorIndex] = target.x;
       state.actorY[actorIndex] = target.y;
+      state.actorElevation[actorIndex] = target.elevation;
 
       const moveRecord = {
         actorIndex,
         actorType: actorTypes[actorIndex],
+        fromElevation: elevation,
         fromX,
         fromY,
+        toElevation: target.elevation,
         toX: target.x,
         toY: target.y
       };
+      const pathControlsElevation = target.path.some((point) => point.elevation !== elevation);
+
+      if (target.path.length > 2 || pathControlsElevation) {
+        moveRecord.path = target.path;
+        moveRecord.pathControlsElevation = pathControlsElevation;
+        moveRecord.pathEndElevation = target.pathEndElevation;
+      }
 
       if (!searchMode) {
-        moveRecord.iceSlide = Math.abs(target.x - fromX) + Math.abs(target.y - fromY) > 1;
+        moveRecord.iceSlide =
+          target.path.length > 2 ||
+          Math.abs(target.x - fromX) + Math.abs(target.y - fromY) > 1 ||
+          target.pathEndElevation !== elevation;
+
+        if (target.elevation !== target.pathEndElevation || !target.hasLandingSupport) {
+          moveRecord.iceSlipOff = true;
+        }
       }
 
       moves.push(moveRecord);
-      addOccupiedAtElevation(occupied, target.x, target.y, elevation);
+      addOccupiedAtElevation(occupied, target.x, target.y, target.elevation);
       return true;
     }
 
@@ -1395,6 +2016,7 @@
       member,
       targetX,
       targetY,
+      targetElevation,
       gateState,
       orangeButtonsPressed
     ) {
@@ -1406,28 +2028,156 @@
         state,
         targetX,
         targetY,
-        actorElevation(state, member),
+        targetElevation,
         gateState,
         orangeButtonsPressed
       );
     }
 
-    function canMoveWeightlessGroup(state, members, dx, dy, occupied, gateState, orangeButtonsPressed) {
-      return members.every((member) => {
-        const targetX = state.actorX[member] + dx;
-        const targetY = state.actorY[member] + dy;
-
-        if (!canWeightlessMemberEnter(state, member, targetX, targetY, gateState, orangeButtonsPressed)) {
-          return false;
-        }
-
-        return !isOccupiedAtElevation(
-          occupied,
+    function weightlessMemberCanOccupy(
+      state,
+      member,
+      targetX,
+      targetY,
+      targetElevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      if (
+        !canWeightlessMemberEnter(
+          state,
+          member,
           targetX,
           targetY,
-          actorElevation(state, member)
+          targetElevation,
+          gateState,
+          orangeButtonsPressed
+        )
+      ) {
+        return false;
+      }
+
+      return !isOccupiedAtElevation(occupied, targetX, targetY, targetElevation);
+    }
+
+    function weightlessClusterStep(
+      state,
+      members,
+      dx,
+      dy,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      options = {}
+    ) {
+      let slopeDelta = null;
+      let slopePathOffsets = null;
+
+      for (const member of members) {
+        const elevation = actorElevation(state, member);
+        const targetX = state.actorX[member] + dx;
+        const targetY = state.actorY[member] + dy;
+        let traversal = resolveIceSlopeTraversal(
+          state,
+          targetX,
+          targetY,
+          dx,
+          dy,
+          elevation,
+          occupied,
+          gateState,
+          orangeButtonsPressed
         );
-      });
+
+        if (!traversal && typeof options.pushSlopeBlocker === "function") {
+          const blockedSlope = blockedIceSlopePushForEntry(
+            state,
+            targetX,
+            targetY,
+            dx,
+            dy,
+            elevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            options.ignoredActors || new Set()
+          );
+
+          if (blockedSlope && options.pushSlopeBlocker(blockedSlope.blocker)) {
+            traversal = resolveIceSlopeTraversal(
+              state,
+              targetX,
+              targetY,
+              dx,
+              dy,
+              elevation,
+              occupied,
+              gateState,
+              orangeButtonsPressed
+            );
+          }
+        }
+
+        if (!traversal) {
+          continue;
+        }
+
+        const delta = {
+          dx: traversal.exitX - state.actorX[member],
+          dy: traversal.exitY - state.actorY[member],
+          elevation: traversal.exitElevation - elevation
+        };
+        const pathOffsets = pathOffsetsForTraversal(
+          traversal,
+          state.actorX[member],
+          state.actorY[member],
+          elevation
+        );
+
+        if (
+          slopeDelta &&
+          (slopeDelta.dx !== delta.dx ||
+            slopeDelta.dy !== delta.dy ||
+            slopeDelta.elevation !== delta.elevation)
+        ) {
+          return null;
+        }
+
+        if (slopePathOffsets && !samePathOffsets(slopePathOffsets, pathOffsets)) {
+          return null;
+        }
+
+        slopeDelta = delta;
+        slopePathOffsets = pathOffsets;
+      }
+
+      const step = slopeDelta
+        ? { ...slopeDelta, pathOffsets: slopePathOffsets || [] }
+        : { dx, dy, elevation: 0, pathOffsets: [] };
+
+      if (
+        members.every((member) => {
+          const targetX = state.actorX[member] + step.dx;
+          const targetY = state.actorY[member] + step.dy;
+          const targetElevation = actorElevation(state, member) + step.elevation;
+
+          return weightlessMemberCanOccupy(
+            state,
+            member,
+            targetX,
+            targetY,
+            targetElevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed
+          );
+        })
+      ) {
+        return step;
+      }
+
+      return null;
     }
 
     function collectWeightlessPushCluster(
@@ -1435,6 +2185,7 @@
       groupId,
       dx,
       dy,
+      occupied,
       gateState,
       orangeButtonsPressed,
       ignoredActors
@@ -1446,17 +2197,62 @@
 
       while (expanded) {
         expanded = false;
+        const clusterMembers = new Set(weightlessClusterMembers(state, clusterGroupIds));
 
         Array.from(clusterGroupIds).forEach((currentGroupId) => {
           const members = weightlessGroupMembers(state, currentGroupId);
 
           for (const member of members) {
+            const memberElevation = actorElevation(state, member);
             const targetX = state.actorX[member] + dx;
             const targetY = state.actorY[member] + dy;
+            const slopeTraversal = resolveIceSlopeTraversal(
+              state,
+              targetX,
+              targetY,
+              dx,
+              dy,
+              memberElevation,
+              occupied,
+              gateState,
+              orangeButtonsPressed
+            );
+            const slopeIgnoredActors = new Set(ignoredActors);
+            clusterMembers.forEach((clusterMember) => slopeIgnoredActors.add(clusterMember));
+            const blockedSlope = slopeTraversal
+              ? null
+              : blockedIceSlopePushForEntry(
+                  state,
+                  targetX,
+                  targetY,
+                  dx,
+                  dy,
+                  memberElevation,
+                  occupied,
+                  gateState,
+                  orangeButtonsPressed,
+                  slopeIgnoredActors
+                );
 
-            if (!canWeightlessMemberEnter(state, member, targetX, targetY, gateState, orangeButtonsPressed)) {
+            if (
+              !slopeTraversal &&
+              !blockedSlope &&
+              !canWeightlessMemberEnter(
+                state,
+                member,
+                targetX,
+                targetY,
+                memberElevation,
+                gateState,
+                orangeButtonsPressed
+              )
+            ) {
               blockers.push(null);
               return;
+            }
+
+            if (slopeTraversal || blockedSlope) {
+              continue;
             }
 
             const blocker = actorAt(
@@ -1518,7 +2314,8 @@
       moves,
       gateState,
       orangeButtonsPressed,
-      searchMode
+      searchMode,
+      pushContext = null
     ) {
       const members = weightlessClusterMembers(state, groupIds);
 
@@ -1530,10 +2327,18 @@
         actorIndex,
         fromElevation: actorElevation(state, actorIndex),
         fromX: state.actorX[actorIndex],
-        fromY: state.actorY[actorIndex]
+        fromY: state.actorY[actorIndex],
+        path: [
+          {
+            x: state.actorX[actorIndex],
+            y: state.actorY[actorIndex],
+            elevation: actorElevation(state, actorIndex)
+          }
+        ]
       }));
-      const groupElevation = Math.min(...members.map((member) => actorElevation(state, member)));
-
+      const startPositionByActor = new Map(
+        startPositions.map((position) => [position.actorIndex, position])
+      );
       members.forEach((member) => {
         removeOccupiedAtElevation(
           occupied,
@@ -1542,13 +2347,103 @@
           actorElevation(state, member)
         );
       });
+      const ignoredActors = new Set(pushContext?.ignoredActors || []);
+      members.forEach((member) => ignoredActors.add(member));
 
       let moved = false;
 
-      while (canMoveWeightlessGroup(state, members, dx, dy, occupied, gateState, orangeButtonsPressed)) {
+      while (true) {
+        const attemptSnapshot = pushContext ? cloneState(state) : null;
+        const occupiedSnapshot = pushContext ? new Set(occupied) : null;
+        const moveCount = moves.length;
+        const step = weightlessClusterStep(
+          state,
+          members,
+          dx,
+          dy,
+          occupied,
+          gateState,
+          orangeButtonsPressed,
+          pushContext
+            ? {
+                ignoredActors,
+                pushSlopeBlocker: (blocker) => {
+                  if (ignoredActors.has(blocker)) {
+                    return false;
+                  }
+
+                  const result = attemptPushActor(
+                    state,
+                    blocker,
+                    dx,
+                    dy,
+                    occupied,
+                    moves,
+                    1,
+                    pushContext.handled || new Set(),
+                    gateState,
+                    orangeButtonsPressed,
+                    ignoredActors,
+                    searchMode
+                  );
+
+                  return result !== null;
+                }
+              }
+            : {}
+        );
+
+        if (!step) {
+          if (attemptSnapshot && occupiedSnapshot) {
+            copyStateInto(state, attemptSnapshot);
+            occupied.clear();
+            occupiedSnapshot.forEach((key) => occupied.add(key));
+            moves.length = moveCount;
+          }
+          break;
+        }
+
         members.forEach((member) => {
-          state.actorX[member] += dx;
-          state.actorY[member] += dy;
+          const start = startPositionByActor.get(member);
+          const fromElevation = actorElevation(state, member);
+          const fromX = state.actorX[member];
+          const fromY = state.actorY[member];
+          const pathOffsets = Array.isArray(step.pathOffsets) ? step.pathOffsets : [];
+
+          if (start) {
+            if (pathOffsets.length > 0) {
+              appendPathPoints(
+                start.path,
+                pathOffsets.map((point) => ({
+                  x: fromX + point.dx,
+                  y: fromY + point.dy,
+                  elevation: fromElevation + point.elevation
+                }))
+              );
+            } else if (Math.abs(step.dx) > 1 || Math.abs(step.dy) > 1 || step.elevation !== 0) {
+              appendPathPoints(start.path, [
+                {
+                  x: fromX + step.dx / 2,
+                  y: fromY + step.dy / 2,
+                  elevation: fromElevation + step.elevation / 2
+                }
+              ]);
+            }
+          }
+
+          state.actorX[member] += step.dx;
+          state.actorY[member] += step.dy;
+          state.actorElevation[member] += step.elevation;
+
+          if (start) {
+            appendPathPoints(start.path, [
+              {
+                x: state.actorX[member],
+                y: state.actorY[member],
+                elevation: actorElevation(state, member)
+              }
+            ]);
+          }
         });
 
         moved = true;
@@ -1562,7 +2457,6 @@
         }
 
         if (
-          groupElevation !== 0 ||
           !members.every((member) =>
             isIceOrHole(
               state,
@@ -1585,23 +2479,31 @@
         return false;
       }
 
-      startPositions.forEach(({ actorIndex, fromElevation, fromX, fromY }) => {
+      startPositions.forEach(({ actorIndex, fromElevation, fromX, fromY, path }) => {
         const moveRecord = {
           actorIndex,
           actorType: actorTypes[actorIndex],
           fromElevation,
           fromX,
           fromY,
-          toElevation: fromElevation,
+          toElevation: actorElevation(state, actorIndex),
           toX: state.actorX[actorIndex],
           toY: state.actorY[actorIndex]
         };
+        const pathControlsElevation = path.some((point) => point.elevation !== fromElevation);
+
+        if (path.length > 2 || pathControlsElevation) {
+          moveRecord.path = path;
+          moveRecord.pathControlsElevation = pathControlsElevation;
+          moveRecord.pathEndElevation = path[path.length - 1]?.elevation ?? actorElevation(state, actorIndex);
+        }
 
         if (!searchMode) {
           moveRecord.iceSlide =
             Math.abs(state.actorX[actorIndex] - fromX) +
               Math.abs(state.actorY[actorIndex] - fromY) >
-            1;
+              1 ||
+            actorElevation(state, actorIndex) !== fromElevation;
         }
 
         moves.push(moveRecord);
@@ -1654,6 +2556,7 @@
               actorGroupIds[actorIndex],
               dx,
               dy,
+              occupied,
               gateState,
               orangeButtonsPressed,
               ignoredActors
@@ -1674,13 +2577,54 @@
         for (const member of members) {
           const targetX = state.actorX[member] + dx;
           const targetY = state.actorY[member] + dy;
-
           const memberElevation = actorElevation(state, member);
           const canEnterHole = memberElevation === 0 && isHole(state, targetX, targetY, 0);
+          let slopeTraversal = resolveIceSlopeTraversal(
+            state,
+            targetX,
+            targetY,
+            dx,
+            dy,
+            memberElevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed
+          );
+          const blockedSlope = slopeTraversal
+            ? null
+            : blockedIceSlopePushForEntry(
+                state,
+                targetX,
+                targetY,
+                dx,
+                dy,
+                memberElevation,
+                occupied,
+                gateState,
+                orangeButtonsPressed,
+                new Set([...ignoredActors, ...memberSet])
+              );
+          const blockerX = slopeTraversal
+            ? slopeTraversal.exitX
+            : blockedSlope
+              ? blockedSlope.traversal.exitX
+              : targetX;
+          const blockerY = slopeTraversal
+            ? slopeTraversal.exitY
+            : blockedSlope
+              ? blockedSlope.traversal.exitY
+              : targetY;
+          const blockerElevation = slopeTraversal
+            ? slopeTraversal.exitElevation
+            : blockedSlope
+              ? blockedSlope.traversal.exitElevation
+              : memberElevation;
 
           if (
             !isInsideBoard(targetX, targetY) ||
-            (!canEnterHole &&
+            (!slopeTraversal &&
+              !blockedSlope &&
+              !canEnterHole &&
               !terrainSupportsElevation(
                 state,
                 targetX,
@@ -1693,15 +2637,19 @@
             return null;
           }
 
+          if (blockedSlope) {
+            continue;
+          }
+
           const blocker = actorAt(
             state,
-            targetX,
-            targetY,
+            blockerX,
+            blockerY,
             (candidate) =>
               !ignoredActors.has(candidate) &&
               !memberSet.has(candidate) &&
               !isNonBlockingActor(candidate) &&
-              actorElevation(state, candidate) === actorElevation(state, member)
+              actorElevation(state, candidate) === blockerElevation
           );
 
           if (blocker === -1) {
@@ -1755,7 +2703,11 @@
               moves,
               gateState,
               orangeButtonsPressed,
-              searchMode
+              searchMode,
+              {
+                handled,
+                ignoredActors
+              }
             )
           : moveBox(
               state,
@@ -1766,7 +2718,11 @@
               moves,
               gateState,
               orangeButtonsPressed,
-              searchMode
+              searchMode,
+              {
+                handled,
+                ignoredActors
+              }
             );
 
       if (!moved) {
@@ -2671,18 +3627,103 @@
 
         let nextX = fromX;
         let nextY = fromY;
+        let travelElevation = fromElevation;
+        const travelPath = [{ x: fromX, y: fromY, elevation: fromElevation }];
         let iceSlipLanding = null;
 
         while (true) {
           const targetX = nextX + dx;
           const targetY = nextY + dy;
           const isInitialStep = nextX === fromX && nextY === fromY;
-          const canEnterHole = fromElevation === 0 && isHole(state, targetX, targetY, 0);
-          const canStandAtTarget = canPlayerStandAtElevation(
+          let slopeTraversal = resolveIceSlopeTraversal(
             state,
             targetX,
             targetY,
-            fromElevation,
+            dx,
+            dy,
+            travelElevation,
+            occupied,
+            raisedPlayerGates,
+            orangeButtonsPressed
+          );
+
+          if (!slopeTraversal) {
+            const blockedSlope = blockedIceSlopePushForEntry(
+              state,
+              targetX,
+              targetY,
+              dx,
+              dy,
+              travelElevation,
+              occupied,
+              raisedPlayerGates,
+              orangeButtonsPressed,
+              new Set([player])
+            );
+
+            if (blockedSlope) {
+              const attemptSnapshot = attemptSnapshotBuffer || cloneState(state);
+              const occupiedSnapshot = occupiedSnapshotBuffer || new Set(occupied);
+              const moveCount = moves.length;
+
+              if (attemptSnapshotBuffer) {
+                copyStateInto(attemptSnapshotBuffer, state);
+              }
+
+              if (occupiedSnapshotBuffer) {
+                occupiedSnapshotBuffer.clear();
+                occupied.forEach((key) => occupiedSnapshotBuffer.add(key));
+              }
+
+              const result = attemptPushActor(
+                state,
+                blockedSlope.blocker,
+                dx,
+                dy,
+                occupied,
+                moves,
+                1,
+                new Set(),
+                raisedPlayerGates,
+                orangeButtonsPressed,
+                new Set([player]),
+                searchMode
+              );
+
+              if (result !== null) {
+                slopeTraversal = resolveIceSlopeTraversal(
+                  state,
+                  targetX,
+                  targetY,
+                  dx,
+                  dy,
+                  travelElevation,
+                  occupied,
+                  raisedPlayerGates,
+                  orangeButtonsPressed
+                );
+              }
+
+              if (!slopeTraversal) {
+                copyStateInto(state, attemptSnapshot);
+                occupied.clear();
+                occupiedSnapshot.forEach((key) => occupied.add(key));
+                moves.length = moveCount;
+              }
+            }
+          }
+
+          const canTraverseSlope =
+            slopeTraversal !== null;
+          const moveTargetX = canTraverseSlope ? slopeTraversal.exitX : targetX;
+          const moveTargetY = canTraverseSlope ? slopeTraversal.exitY : targetY;
+          const moveTargetElevation = canTraverseSlope ? slopeTraversal.exitElevation : travelElevation;
+          const canEnterHole = moveTargetElevation === 0 && isHole(state, moveTargetX, moveTargetY, 0);
+          const canStandAtTarget = canPlayerStandAtElevation(
+            state,
+            moveTargetX,
+            moveTargetY,
+            moveTargetElevation,
             raisedPlayerGates,
             orangeButtonsPressed,
             new Set([player])
@@ -2694,9 +3735,10 @@
                   player,
                   nextX,
                   nextY,
-                  targetX,
-                  targetY,
-                  fromElevation,
+                  moveTargetX,
+                  moveTargetY,
+                  moveTargetElevation,
+                  occupied,
                   raisedPlayerGates,
                   orangeButtonsPressed
                 )
@@ -2705,18 +3747,63 @@
 
           if (
             !isInsideBoard(targetX, targetY) ||
-            (!canEnterHole && !canStandAtTarget && !canSlipOffIce)
+            (!canTraverseSlope && !canEnterHole && !canStandAtTarget && !canSlipOffIce)
           ) {
-            break;
-          }
-
-          const blockingActor = canSlipOffIce
-            ? -1
-            : blockingActorAtElevation(
+            if (!searchMode && isInsideBoard(targetX, targetY)) {
+              const bouncePath = blockedIceSlopeBouncePathForEntry(
                 state,
                 targetX,
                 targetY,
-                fromElevation,
+                dx,
+                dy,
+                travelElevation,
+                occupied,
+                raisedPlayerGates,
+                orangeButtonsPressed
+              );
+
+              if (bouncePath && bouncePath.length > 0) {
+                const path = [
+                  { x: nextX, y: nextY, elevation: travelElevation },
+                  ...bouncePath,
+                  ...bouncePath
+                    .slice(0, -1)
+                    .reverse()
+                    .map((point) => ({ ...point })),
+                  { x: nextX, y: nextY, elevation: travelElevation }
+                ];
+
+                moves.push({
+                  actorIndex: player,
+                  actorType: actorTypes[player],
+                  fromX: nextX,
+                  fromY: nextY,
+                  toX: nextX,
+                  toY: nextY,
+                  finalX: nextX,
+                  finalY: nextY,
+                  fromElevation: travelElevation,
+                  toElevation: travelElevation,
+                  finalElevation: travelElevation,
+                  path,
+                  pathControlsElevation: true,
+                  pathEndElevation: travelElevation,
+                  iceSlide: true,
+                  visualOnly: true
+                });
+              }
+            }
+
+            break;
+          }
+
+          const blockingActor = canSlipOffIce || canTraverseSlope
+            ? -1
+            : blockingActorAtElevation(
+                state,
+                moveTargetX,
+                moveTargetY,
+                moveTargetElevation,
                 player
               );
 
@@ -2768,20 +3855,41 @@
             }
           }
 
-          nextX = targetX;
-          nextY = targetY;
+          nextX = moveTargetX;
+          nextY = moveTargetY;
+          travelElevation = moveTargetElevation;
+
+          if (canTraverseSlope) {
+            travelPath.push(...slopeTraversal.path);
+          } else {
+            travelPath.push({
+              x: nextX,
+              y: nextY,
+              elevation: travelElevation
+            });
+          }
 
           if (canSlipOffIce) {
             iceSlipLanding = slipLanding;
+            if (Array.isArray(slipLanding.path)) {
+              travelPath.push(...slipLanding.path);
+            }
+            if (Number.isInteger(slipLanding.toX) && Number.isInteger(slipLanding.toY)) {
+              nextX = slipLanding.toX;
+              nextY = slipLanding.toY;
+            }
+            travelElevation = slipLanding.toElevation;
             break;
           }
 
-          if (!isIce(state, nextX, nextY, fromElevation, raisedPlayerGates, orangeButtonsPressed)) {
+          if (!isIce(state, nextX, nextY, travelElevation, raisedPlayerGates, orangeButtonsPressed)) {
             break;
           }
         }
 
-        if (nextX !== fromX || nextY !== fromY) {
+        let occupiedElevation = fromElevation;
+
+        if (nextX !== fromX || nextY !== fromY || travelElevation !== fromElevation) {
           state.actorX[player] = nextX;
           state.actorY[player] = nextY;
           let toElevation = fromElevation;
@@ -2790,7 +3898,7 @@
             state,
             nextX,
             nextY,
-            fromElevation,
+            travelElevation,
             raisedPlayerGates,
             orangeButtonsPressed
           );
@@ -2813,9 +3921,22 @@
                 nextY,
                 raisedPlayerGates,
                 orangeButtonsPressed,
-                fromElevation
-              ) ?? fromElevation;
+                travelElevation
+              ) ?? travelElevation;
           }
+
+          const pathEndElevation = travelPath[travelPath.length - 1]?.elevation ?? travelElevation;
+
+          if (!playerLiftLayer && toElevation !== pathEndElevation) {
+            travelPath.push({
+              x: nextX,
+              y: nextY,
+              elevation: toElevation
+            });
+          }
+
+          state.actorElevation[player] = toElevation;
+          occupiedElevation = toElevation;
 
           const travelDistance = Math.abs(nextX - fromX) + Math.abs(nextY - fromY);
           const moveRecord = {
@@ -2828,11 +3949,30 @@
             fromElevation,
             toElevation
           };
+          const pathControlsElevation = travelPath.some((point) => point.elevation !== fromElevation);
+
+          if (travelPath.length > 2 || pathControlsElevation) {
+            moveRecord.path = travelPath;
+            moveRecord.pathControlsElevation = pathControlsElevation;
+            moveRecord.pathEndElevation = pathEndElevation;
+          }
 
           if (!searchMode) {
             moveRecord.iceSlide = travelDistance > 1 || iceSlipLanding !== null;
 
-            if (iceSlipLanding) {
+            if (
+              iceSlipLanding ||
+              (!playerLiftLayer &&
+                (toElevation !== (moveRecord.pathEndElevation ?? toElevation) ||
+                  !canPlayerStandAtElevation(
+                    state,
+                    nextX,
+                    nextY,
+                    toElevation,
+                    raisedPlayerGates,
+                    orangeButtonsPressed
+                  )))
+            ) {
               moveRecord.iceSlipOff = true;
             }
           }
@@ -2860,7 +4000,7 @@
           occupied,
           state.actorX[player],
           state.actorY[player],
-          actorElevation(state, player)
+          occupiedElevation
         );
       });
 

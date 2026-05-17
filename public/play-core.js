@@ -1293,6 +1293,7 @@
         (
           cell?.type === "wall" ||
           cell?.type === "ice_block" ||
+          cell?.type === "ice_slope" ||
           cell?.type === "tree" ||
           cell?.type === "shrub" ||
           cell?.type === "block_asset"
@@ -1343,6 +1344,7 @@
       if (
         layer.type === "wall" ||
         layer.type === "ice_block" ||
+        layer.type === "ice_slope" ||
         layer.type === "shrub" ||
         layer.type === "block_asset"
       ) {
@@ -1664,6 +1666,7 @@
     function isTerrainWall(x, y) {
       return terrainLayersOfType(x, y, "wall").length > 0 ||
         terrainLayersOfType(x, y, "ice_block").length > 0 ||
+        terrainLayersOfType(x, y, "ice_slope").length > 0 ||
         terrainLayersOfType(x, y, "tree").length > 0 ||
         terrainLayersOfType(x, y, "shrub").length > 0 ||
         terrainLayersOfType(x, y, "block_asset").length > 0;
@@ -1705,6 +1708,7 @@
       return (
         cell?.type === "wall" ||
         cell?.type === "ice_block" ||
+        cell?.type === "ice_slope" ||
         cell?.type === "tree" ||
         cell?.type === "shrub" ||
         cell?.type === "block_asset"
@@ -1874,6 +1878,7 @@
       return (
         groundCell.type !== "wall" &&
         groundCell.type !== "ice_block" &&
+        groundCell.type !== "ice_slope" &&
         groundCell.type !== "shrub" &&
         groundCell.type !== "block_asset" &&
         groundCell.type !== "hole" &&

@@ -1626,6 +1626,76 @@
       return geometry;
     }
 
+    function normalizeCardinalDirection(direction) {
+      const value = String(direction || "").toLowerCase();
+
+      if (value === "left" || value === "l") {
+        return "left";
+      }
+
+      if (value === "up" || value === "u") {
+        return "up";
+      }
+
+      if (value === "down" || value === "d") {
+        return "down";
+      }
+
+      return "right";
+    }
+
+    function iceSlopeGeometry(direction) {
+      const normalized = normalizeCardinalDirection(direction);
+      const key = `ice-slope:${normalized}:${Math.round(unit * 100)}:${Math.round(elevationUnit * 100)}`;
+
+      if (geometryCache.has(key)) {
+        return geometryCache.get(key);
+      }
+
+      const x0 = -unit / 2;
+      const x1 = unit / 2;
+      const z0 = -unit / 2;
+      const z1 = unit / 2;
+      const y0 = 0;
+      const y1 = elevationUnit;
+      const positions = [];
+      const pushTri = (a, b, c) => positions.push(...a, ...b, ...c);
+      const pushQuad = (a, b, c, d) => {
+        pushTri(a, b, c);
+        pushTri(a, c, d);
+      };
+
+      if (normalized === "right") {
+        pushQuad([x0, y0, z0], [x1, y1, z0], [x1, y1, z1], [x0, y0, z1]);
+        pushQuad([x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]);
+        pushTri([x0, y0, z0], [x1, y0, z0], [x1, y1, z0]);
+        pushTri([x0, y0, z1], [x1, y1, z1], [x1, y0, z1]);
+      } else if (normalized === "left") {
+        pushQuad([x1, y0, z0], [x0, y1, z0], [x0, y1, z1], [x1, y0, z1]);
+        pushQuad([x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1]);
+        pushTri([x1, y0, z0], [x0, y1, z0], [x0, y0, z0]);
+        pushTri([x1, y0, z1], [x0, y0, z1], [x0, y1, z1]);
+      } else if (normalized === "down") {
+        pushQuad([x0, y0, z0], [x0, y1, z1], [x1, y1, z1], [x1, y0, z0]);
+        pushQuad([x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1]);
+        pushTri([x0, y0, z0], [x0, y0, z1], [x0, y1, z1]);
+        pushTri([x1, y0, z0], [x1, y1, z1], [x1, y0, z1]);
+      } else {
+        pushQuad([x0, y0, z1], [x0, y1, z0], [x1, y1, z0], [x1, y0, z1]);
+        pushQuad([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]);
+        pushTri([x0, y0, z1], [x0, y1, z0], [x0, y0, z0]);
+        pushTri([x1, y0, z1], [x1, y0, z0], [x1, y1, z0]);
+      }
+
+      pushQuad([x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]);
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geometry.computeVertexNormals();
+      geometryCache.set(key, geometry);
+      return geometry;
+    }
+
     function pointKey(point) {
       return `${Math.round(point.x * 1000)},${Math.round(point.z * 1000)}`;
     }
@@ -2136,7 +2206,14 @@
 
     function addOutlinedMesh(geometry, color, position, options = {}) {
       const opacity = options.opacity ?? 1;
-      const mesh = new THREE.Mesh(geometry, material(color, opacity));
+      const meshMaterial = options.doubleSide === true ? material(color, opacity).clone() : material(color, opacity);
+
+      if (options.doubleSide === true) {
+        meshMaterial.side = THREE.DoubleSide;
+        meshMaterial.needsUpdate = true;
+      }
+
+      const mesh = new THREE.Mesh(geometry, meshMaterial);
       mesh.position.set(position.x, position.y, position.z);
       mesh.castShadow = options.castShadow !== false;
       mesh.receiveShadow = options.receiveShadow !== false;
@@ -2976,7 +3053,7 @@
         return "#5b2f14";
       }
 
-      if (type === "ice" || type === "ice_block") {
+      if (type === "ice" || type === "ice_block" || type === "ice_slope") {
         return "#a9d6f4";
       }
 
@@ -3520,6 +3597,7 @@
       if (
         layer.type === "wall" ||
         layer.type === "ice_block" ||
+        layer.type === "ice_slope" ||
         layer.type === "shrub" ||
         layer.type === "block_asset"
       ) {
@@ -3800,6 +3878,7 @@
           terrainHeight === null ? "null" : terrainHeight,
           Math.round(blockHeight * 100) / 100,
           Math.round(topY * 100) / 100,
+          layer.direction || "",
           layer.modelUrl || "",
           type === "player_lift" ? `${x},${y}` : ""
         ].join(":"),
@@ -3819,6 +3898,7 @@
         Math.round(descriptor.blockHeight * 100) / 100,
         Math.round(descriptor.topY * 100) / 100,
         Math.round(descriptor.bottomY * 100) / 100,
+        descriptor.layer?.direction || "",
         descriptor.layer?.modelUrl || "",
         descriptor.type === "player_lift" ? `${x},${y}` : ""
       ].join(":");
@@ -4203,6 +4283,45 @@
       });
     }
 
+    function addIceSlopeCell(cell, descriptor, visibility) {
+      const centerX = (cell.left + cell.right) / 2 + renderOffsetX();
+      const centerZ = (cell.top + cell.bottom) / 2 + renderOffsetZ();
+      const bottomY = descriptor.bottomY ?? descriptor.topY - descriptor.blockHeight;
+
+      addOutlinedMesh(
+        iceSlopeGeometry(descriptor.layer?.direction),
+        terrainColor(descriptor.type),
+        {
+          x: centerX,
+          y: bottomY,
+          z: centerZ
+        },
+        {
+          edgeThreshold: 18,
+          opacity: visibility,
+          doubleSide: true,
+          castShadow: renderContextCastsShadows(),
+          receiveShadow: true,
+          editorPick: {
+            kind: "terrain",
+            cells: [
+              {
+                gridX: cell.gridX,
+                gridY: cell.gridY,
+                left: cell.left + renderOffsetX(),
+                right: cell.right + renderOffsetX(),
+                top: cell.top + renderOffsetZ(),
+                bottom: cell.bottom + renderOffsetZ()
+              }
+            ],
+            topY: descriptor.topY,
+            bottomY,
+            sourceLayer: descriptor.elevation ?? 0
+          }
+        }
+      );
+    }
+
     function addTerrainComponent(cells, descriptor, now) {
       if (descriptor.isVoid) {
         return;
@@ -4216,6 +4335,11 @@
       const visibility = transitionPieceProgressForCells(cells);
 
       if (visibility <= 0.015) {
+        return;
+      }
+
+      if (descriptor.type === "ice_slope") {
+        cells.forEach((cell) => addIceSlopeCell(cell, descriptor, visibility));
         return;
       }
 
