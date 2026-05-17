@@ -1294,7 +1294,8 @@
           cell?.type === "wall" ||
           cell?.type === "ice_block" ||
           cell?.type === "tree" ||
-          cell?.type === "shrub"
+          cell?.type === "shrub" ||
+          cell?.type === "block_asset"
         ) &&
         cell.underlay
       ) {
@@ -1339,7 +1340,12 @@
         return null;
       }
 
-      if (layer.type === "wall" || layer.type === "ice_block" || layer.type === "shrub") {
+      if (
+        layer.type === "wall" ||
+        layer.type === "ice_block" ||
+        layer.type === "shrub" ||
+        layer.type === "block_asset"
+      ) {
         return elevation + 1;
       }
 
@@ -1659,7 +1665,8 @@
       return terrainLayersOfType(x, y, "wall").length > 0 ||
         terrainLayersOfType(x, y, "ice_block").length > 0 ||
         terrainLayersOfType(x, y, "tree").length > 0 ||
-        terrainLayersOfType(x, y, "shrub").length > 0;
+        terrainLayersOfType(x, y, "shrub").length > 0 ||
+        terrainLayersOfType(x, y, "block_asset").length > 0;
     }
 
     function terrainCellAcrossHorizontalWorldEdge(x, y) {
@@ -1699,7 +1706,8 @@
         cell?.type === "wall" ||
         cell?.type === "ice_block" ||
         cell?.type === "tree" ||
-        cell?.type === "shrub"
+        cell?.type === "shrub" ||
+        cell?.type === "block_asset"
       );
     }
 
@@ -1867,6 +1875,7 @@
         groundCell.type !== "wall" &&
         groundCell.type !== "ice_block" &&
         groundCell.type !== "shrub" &&
+        groundCell.type !== "block_asset" &&
         groundCell.type !== "hole" &&
         groundCell.type !== "empty"
       );

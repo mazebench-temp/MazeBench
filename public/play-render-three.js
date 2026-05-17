@@ -46,6 +46,7 @@
     const treeReferenceHeightInModelUnits = 5.516;
     const treeModelWorldScale = (unit * 6) / treeReferenceHeightInModelUnits;
     const shrubModelScaleMultiplier = 0.5;
+    const blockAssetModelWorldScale = unit / 2;
     const gemModelWorldSize = unit * 0.87;
     const gemSpinPeriodMs = 7200;
     const puncherRadius = unit * 0.34;
@@ -1948,10 +1949,14 @@
       return shareTop || shareBottom;
     }
 
+    function suppressibleSharedBoundaryType(type) {
+      return type === "wall" || type === "block_asset";
+    }
+
     function sameRoomBoundaryDescriptor(leftDescriptor, rightDescriptor, a = null, b = null) {
       if (
-        leftDescriptor?.type !== "wall" ||
-        rightDescriptor?.type !== "wall"
+        !suppressibleSharedBoundaryType(leftDescriptor?.type) ||
+        leftDescriptor?.type !== rightDescriptor?.type
       ) {
         return false;
       }
@@ -2031,7 +2036,10 @@
     }
 
     function sharedRoomBoundaryEdgeSegment(a, b, options) {
-      if (!options?.suppressSharedRoomEdges || options.descriptor?.type !== "wall") {
+      if (
+        !options?.suppressSharedRoomEdges ||
+        !suppressibleSharedBoundaryType(options.descriptor?.type)
+      ) {
         return false;
       }
 
@@ -2964,6 +2972,10 @@
         return "#476b35";
       }
 
+      if (type === "block_asset") {
+        return "#5b2f14";
+      }
+
       if (type === "ice" || type === "ice_block") {
         return "#a9d6f4";
       }
@@ -3505,7 +3517,12 @@
         return null;
       }
 
-      if (layer.type === "wall" || layer.type === "ice_block" || layer.type === "shrub") {
+      if (
+        layer.type === "wall" ||
+        layer.type === "ice_block" ||
+        layer.type === "shrub" ||
+        layer.type === "block_asset"
+      ) {
         return elevation + 1;
       }
 
@@ -3857,6 +3874,7 @@
         lower.type === upper.type &&
         lower.type !== "tree" &&
         lower.type !== "shrub" &&
+        lower.type !== "block_asset" &&
         !lower.isSunkenFloor &&
         !upper.isSunkenFloor &&
         Math.abs(lower.topY - upper.bottomY) <= 0.001
@@ -4022,9 +4040,15 @@
     }
 
     function terrainModelWorldScale(descriptor) {
-      return descriptor.type === "shrub"
-        ? treeModelWorldScale * shrubModelScaleMultiplier
-        : treeModelWorldScale;
+      if (descriptor.type === "block_asset") {
+        return blockAssetModelWorldScale;
+      }
+
+      if (descriptor.type === "shrub") {
+        return treeModelWorldScale * shrubModelScaleMultiplier;
+      }
+
+      return treeModelWorldScale;
     }
 
     function seededTerrainModelRotation(cell, descriptor) {
@@ -4050,11 +4074,15 @@
       const centerZ = (cell.top + cell.bottom) / 2 + renderOffsetZ();
 
       return {
-        rotationY: seededTerrainModelRotation(cell, descriptor),
+        rotationY: descriptor.type === "tree" || descriptor.type === "shrub"
+          ? seededTerrainModelRotation(cell, descriptor)
+          : 0,
         scale,
         position: new THREE.Vector3(
           centerX,
-          descriptor.bottomY - model.bounds.min.y * scale,
+          descriptor.type === "block_asset"
+            ? descriptor.topY - model.bounds.max.y * scale
+            : descriptor.bottomY - model.bounds.min.y * scale,
           centerZ
         )
       };
@@ -4154,7 +4182,7 @@
     }
 
     function isModelTerrainType(type) {
-      return type === "tree" || type === "shrub";
+      return type === "tree" || type === "shrub" || type === "block_asset";
     }
 
     function addTreeComponent(cells, descriptor, now) {

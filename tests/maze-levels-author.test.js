@@ -23,6 +23,12 @@ const game = {
       floor: { token: "." },
       wall: { token: "#" },
       ice: { token: "i" },
+      block_asset_1: {
+        token: "b1",
+        label: "Block 1",
+        type: "block_asset",
+        model: "assets_3d/b1.glb"
+      },
       puncher: {
         label: "Puncher",
         type: "puncher",
@@ -112,6 +118,20 @@ assert.deepEqual(
   [
     ["puncher", 0, 0, 1, "down"],
     ["puncher", 1, 0, 0, "right"]
+  ]
+);
+
+fs.writeFileSync(path.join(levelDir, "test-empty.txt"), ".+b1\n", "utf8");
+
+const blockAssetPlayState = service.getLevelState(game, game.worldMap.byPosition.get("level_AxA"));
+const blockAssetCell = blockAssetPlayState.terrain[0][0];
+
+assert.equal(blockAssetCell.type, "block_asset");
+assert.deepEqual(
+  blockAssetCell.layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["block_asset", 0]
   ]
 );
 

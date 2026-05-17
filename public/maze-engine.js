@@ -12,7 +12,8 @@
     orange_button: 9,
     tree: 10,
     ice_block: 11,
-    shrub: 12
+    shrub: 12,
+    block_asset: 13
   };
   const fallbackTerrainCell = {
     type: "empty",
@@ -515,7 +516,8 @@
       if (
         layer.type === terrainTypes.wall ||
         layer.type === terrainTypes.ice_block ||
-        layer.type === terrainTypes.shrub
+        layer.type === terrainTypes.shrub ||
+        layer.type === terrainTypes.block_asset
       ) {
         return layer.elevation + 1;
       }
@@ -783,7 +785,8 @@
           layer.type === terrainTypes.wall ||
           layer.type === terrainTypes.ice_block ||
           layer.type === terrainTypes.tree ||
-          layer.type === terrainTypes.shrub
+          layer.type === terrainTypes.shrub ||
+          layer.type === terrainTypes.block_asset
       );
     }
 
@@ -803,7 +806,11 @@
     ) {
       const layerElevation = layer.elevation ?? 0;
 
-      if (layer.type === terrainTypes.wall || layer.type === terrainTypes.ice_block) {
+      if (
+        layer.type === terrainTypes.wall ||
+        layer.type === terrainTypes.ice_block ||
+        layer.type === terrainTypes.block_asset
+      ) {
         return layerElevation === elevation;
       }
 

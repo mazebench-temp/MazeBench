@@ -38,6 +38,14 @@ const authorData = {
       token: "sh",
       type: "shrub"
     },
+    {
+      imageUrl: null,
+      label: "Block 1",
+      modelUrl: "/assets/maze/assets_3d/b1.glb",
+      name: "block_asset_1",
+      token: "b1",
+      type: "block_asset"
+    },
     { imageUrl: null, initialRaised: false, label: "Player Lift l", name: "player_lift", token: "l", type: "player_lift" },
     { imageUrl: null, initialRaised: true, label: "Raised Player Lift", name: "player_lift", token: "L", type: "player_lift" },
     { imageUrl: null, label: "Orange Wall", name: "orange_wall", token: "O", type: "orange_wall" },
@@ -301,6 +309,26 @@ assert.equal(shrubPlayData.terrain[0][2].type, "tree");
 assert.equal(shrubPlayData.terrain[0][2].modelUrl, "/assets/maze/assets_3d/st1.glb");
 assert.deepEqual(
   shrubPlayData.actors.map((actor) => [actor.type, actor.elevation]),
+  [["player", 1]]
+);
+
+const blockAssetPlayData = adapter.buildPlayData({
+  cells: [["b1+P", "b1+b1"]],
+  height: 1,
+  width: 2
+});
+
+assert.equal(blockAssetPlayData.terrain[0][0].type, "block_asset");
+assert.equal(blockAssetPlayData.terrain[0][0].modelUrl, "/assets/maze/assets_3d/b1.glb");
+assert.deepEqual(
+  blockAssetPlayData.terrain[0][1].layers.map((layer) => [layer.type, layer.elevation, layer.modelUrl]),
+  [
+    ["block_asset", 0, "/assets/maze/assets_3d/b1.glb"],
+    ["block_asset", 1, "/assets/maze/assets_3d/b1.glb"]
+  ]
+);
+assert.deepEqual(
+  blockAssetPlayData.actors.map((actor) => [actor.type, actor.elevation]),
   [["player", 1]]
 );
 

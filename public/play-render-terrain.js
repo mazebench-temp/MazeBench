@@ -586,8 +586,10 @@
       const right = left + TILE_SIZE;
       const bottom = top + TILE_SIZE;
       const image = cell.imageUrl ? imageCache.get(cell.imageUrl) : null;
-      const topColor = cell.type === "ice_block" ? "#a9d6f4" : "#23262c";
-      const faceColor = cell.type === "ice_block" ? "#7fb6db" : "#4f5560";
+      const topColor =
+        cell.type === "ice_block" ? "#a9d6f4" : cell.type === "block_asset" ? "#5b2f14" : "#23262c";
+      const faceColor =
+        cell.type === "ice_block" ? "#7fb6db" : cell.type === "block_asset" ? "#3c1f0d" : "#4f5560";
       const openTop = !isTerrainWall(x, y - 1);
       const openRight = !isTerrainWallAcrossHorizontalWorldEdge(x + 1, y);
       const openBottom = !isTerrainWall(x, y + 1);
@@ -1030,7 +1032,7 @@
           const playerLift = cell.type === "player_lift" ? playerLiftAt(x, y, now) : 0;
           const orangeWallLift = cell.type === "orange_wall" ? orangeWallLiftAt(x, y, now) : 0;
 
-          if (cell.type === "wall" || cell.type === "ice_block") {
+          if (cell.type === "wall" || cell.type === "ice_block" || cell.type === "block_asset") {
             continue;
           }
 
@@ -1074,7 +1076,7 @@
       for (let y = 0; y < state.height; y += 1) {
         for (let x = 0; x < state.width; x += 1) {
           const cell = terrainAt(x, y);
-          if (cell.type === "wall" || cell.type === "ice_block") {
+          if (cell.type === "wall" || cell.type === "ice_block" || cell.type === "block_asset") {
             paintWallTile(x, y, cell);
           }
         }

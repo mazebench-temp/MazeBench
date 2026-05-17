@@ -16,7 +16,14 @@
     "floating_floor",
     "weightless_box"
   ]);
-  const raisedTerrainNames = new Set(["wall", "ice_block", "tree", "shrub", "orange_wall"]);
+  const raisedTerrainNames = new Set([
+    "wall",
+    "ice_block",
+    "tree",
+    "shrub",
+    "block_asset",
+    "orange_wall"
+  ]);
   const baseSurfaceNames = new Set(["floor", "ice"]);
 
   function titleCaseName(name) {
@@ -371,7 +378,8 @@
       const iceBlockLayer = terrainLayers.find((layer) => layer.type === "ice_block") || null;
       const treeLayer = terrainLayers.find((layer) => layer.type === "tree") || null;
       const shrubLayer = terrainLayers.find((layer) => layer.type === "shrub") || null;
-      const raisedBlockLayer = wallLayer || iceBlockLayer || treeLayer || shrubLayer;
+      const blockAssetLayer = terrainLayers.find((layer) => layer.type === "block_asset") || null;
+      const raisedBlockLayer = wallLayer || iceBlockLayer || treeLayer || shrubLayer || blockAssetLayer;
       const exitLayer = terrainLayers.find((layer) => layer.type === "exit") || null;
       const topLayer =
         terrainLayers.length > 0

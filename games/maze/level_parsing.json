@@ -136,6 +136,30 @@
       "type": "shrub",
       "model": "assets_3d/sh.glb"
     },
+    "block_asset_1": {
+      "token": "b1",
+      "label": "Block 1",
+      "type": "block_asset",
+      "model": "assets_3d/b1.glb"
+    },
+    "block_asset_2": {
+      "token": "b2",
+      "label": "Block 2",
+      "type": "block_asset",
+      "model": "assets_3d/b2.glb"
+    },
+    "block_asset_3": {
+      "token": "b3",
+      "label": "Block 3",
+      "type": "block_asset",
+      "model": "assets_3d/b3.glb"
+    },
+    "block_asset_4": {
+      "token": "b4",
+      "label": "Block 4",
+      "type": "block_asset",
+      "model": "assets_3d/b4.glb"
+    },
     "exit": {
       "token": "e"
     },
