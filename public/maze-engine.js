@@ -1226,6 +1226,10 @@
         return null;
       }
 
+      if (!isIce(state, fromX, fromY, elevation, gateState, orangeButtonsPressed)) {
+        return null;
+      }
+
       const slopeFall = iceSlopeFallTraversal(
         state,
         targetX,
@@ -1244,10 +1248,6 @@
           toX: slopeFall.exitX,
           toY: slopeFall.exitY
         };
-      }
-
-      if (!isIce(state, fromX, fromY, elevation, gateState, orangeButtonsPressed)) {
-        return null;
       }
 
       const supportHeights = terrainSurfaceHeightsAt(
@@ -1556,9 +1556,28 @@
             traversal.exitElevation
           )
         ) {
+          const resultPath = path.concat(iceSlopeExitCenterPoint(traversal)).map((point) => ({ ...point }));
+          const fallTraversal = resolveIceSlopeFallTraversalForLanding(
+            state,
+            traversal.exitX,
+            traversal.exitY,
+            traversal.exitElevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed
+          );
+
+          if (fallTraversal) {
+            appendPathPoints(resultPath, fallTraversal.path.map((point) => ({ ...point })));
+            return {
+              ...fallTraversal,
+              path: resultPath
+            };
+          }
+
           return {
             ...traversal,
-            path: path.concat(iceSlopeExitCenterPoint(traversal)).map((point) => ({ ...point }))
+            path: resultPath
           };
         }
 
