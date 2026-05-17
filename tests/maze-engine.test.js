@@ -643,6 +643,101 @@ function createState(playData) {
 }
 
 {
+  const tower = {
+    type: "wall",
+    layers: [
+      { type: "wall", elevation: 0 },
+      { type: "wall", elevation: 1 }
+    ]
+  };
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain: [[tower, iceSlopeLayer("left", 0), { type: "floor" }]],
+    actors: [{ type: "player", x: 0, y: 0, elevation: 2, removed: false }]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [2, 0]);
+  assert.equal(state.actorElevation[0], 0);
+  assert.equal(result.moves[0].iceSlipOff, true);
+  assert.deepEqual(result.moves[0].path, [
+    { x: 0, y: 0, elevation: 2 },
+    { x: 1, y: 0, elevation: 2 },
+    { x: 1, y: 0, elevation: 1 },
+    { x: 2, y: 0, elevation: 0 }
+  ]);
+}
+
+{
+  const lowWall = {
+    type: "wall",
+    layers: [{ type: "wall", elevation: 0 }]
+  };
+  const terrain = floorTerrain(3, 3);
+  terrain[0][1] = lowWall;
+  terrain[1][1] = lowWall;
+  terrain[2][1] = iceSlopeLayer("right", 0);
+  const { engine, state } = createState({
+    width: 3,
+    height: 3,
+    terrain,
+    actors: [
+      { type: "player", x: 1, y: 0, elevation: 1, removed: false },
+      { type: "box", x: 1, y: 1, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 0, 1);
+  const boxMove = result.moves.find((move) => move.actorIndex === 1);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [0, 2]);
+  assert.equal(state.actorElevation[1], 0);
+  assert.equal(boxMove.iceSlide, true);
+  assert.deepEqual(boxMove.path, [
+    { x: 1, y: 1, elevation: 1 },
+    { x: 1, y: 2, elevation: 1 },
+    { x: 0, y: 2, elevation: 0 }
+  ]);
+}
+
+{
+  const tower = {
+    type: "wall",
+    layers: [
+      { type: "wall", elevation: 0 },
+      { type: "wall", elevation: 1 }
+    ]
+  };
+  const { engine, state } = createState({
+    width: 4,
+    height: 1,
+    terrain: [[tower, tower, iceSlopeLayer("left", 0), { type: "floor" }]],
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 2, removed: false },
+      { type: "box", x: 1, y: 0, elevation: 2, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const boxMove = result.moves.find((move) => move.actorIndex === 1);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [3, 0]);
+  assert.equal(state.actorElevation[1], 0);
+  assert.equal(boxMove.iceSlide, true);
+  assert.deepEqual(boxMove.path, [
+    { x: 1, y: 0, elevation: 2 },
+    { x: 2, y: 0, elevation: 2 },
+    { x: 2, y: 0, elevation: 1 },
+    { x: 3, y: 0, elevation: 0 }
+  ]);
+}
+
+{
   const { engine, state } = createState({
     width: 3,
     height: 2,

@@ -739,6 +739,74 @@
       };
     }
 
+    function iceSlopeTopSlideLayersAt(state, x, y, elevation) {
+      return iceSlopeLayersAt(state, x, y)
+        .filter((layer) => (layer.elevation ?? 0) + 1 === elevation)
+        .sort((left, right) => right.elevation - left.elevation);
+    }
+
+    function resolveIceSlopeTopSlideTraversal(
+      state,
+      slopeX,
+      slopeY,
+      elevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed,
+      options = {}
+    ) {
+      for (const layer of iceSlopeTopSlideLayersAt(state, slopeX, slopeY, elevation)) {
+        const uphill = puncherDirectionVector(layer.direction);
+        const downhill = { dx: -uphill.dx, dy: -uphill.dy };
+        let traversal = resolveIceSlopeTraversal(
+          state,
+          slopeX,
+          slopeY,
+          downhill.dx,
+          downhill.dy,
+          elevation,
+          occupied,
+          gateState,
+          orangeButtonsPressed
+        );
+
+        if (!traversal && typeof options.pushSlopeBlocker === "function") {
+          const blockedSlope = blockedIceSlopePushForEntry(
+            state,
+            slopeX,
+            slopeY,
+            downhill.dx,
+            downhill.dy,
+            elevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            options.ignoredActors || new Set()
+          );
+
+          if (blockedSlope && options.pushSlopeBlocker(blockedSlope.blocker, downhill.dx, downhill.dy)) {
+            traversal = resolveIceSlopeTraversal(
+              state,
+              slopeX,
+              slopeY,
+              downhill.dx,
+              downhill.dy,
+              elevation,
+              occupied,
+              gateState,
+              orangeButtonsPressed
+            );
+          }
+        }
+
+        if (traversal) {
+          return traversal;
+        }
+      }
+
+      return null;
+    }
+
     function samePathPoint(left, right) {
       return (
         left &&
@@ -1152,7 +1220,6 @@
 
       if (
         !isInsideBoard(targetX, targetY) ||
-        !isIce(state, fromX, fromY, elevation, gateState, orangeButtonsPressed) ||
         terrainBlocksElevation(state, targetX, targetY, elevation, gateState, orangeButtonsPressed) ||
         blockingActorAtElevation(state, targetX, targetY, elevation, player) !== -1
       ) {
@@ -1177,6 +1244,10 @@
           toX: slopeFall.exitX,
           toY: slopeFall.exitY
         };
+      }
+
+      if (!isIce(state, fromX, fromY, elevation, gateState, orangeButtonsPressed)) {
+        return null;
       }
 
       const supportHeights = terrainSurfaceHeightsAt(
@@ -1694,6 +1765,38 @@
         .find(Boolean) || null;
     }
 
+    function resolveIceSlopeFallTraversalForLanding(
+      state,
+      slopeX,
+      slopeY,
+      elevation,
+      occupied,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      const traversal = iceSlopeFallTraversal(
+        state,
+        slopeX,
+        slopeY,
+        elevation,
+        occupied,
+        gateState,
+        orangeButtonsPressed
+      );
+
+      if (!traversal) {
+        return null;
+      }
+
+      return {
+        ...traversal,
+        path: [
+          { x: slopeX, y: slopeY, elevation },
+          ...traversal.path.map((point) => ({ ...point }))
+        ]
+      };
+    }
+
     function findSlideDestination(
       state,
       startX,
@@ -1751,6 +1854,31 @@
               orangeButtonsPressed
             );
           }
+        }
+
+        if (!slopeTraversal) {
+          slopeTraversal = resolveIceSlopeFallTraversalForLanding(
+            state,
+            nextX + dx,
+            nextY + dy,
+            nextElevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed
+          );
+        }
+
+        if (!slopeTraversal) {
+          slopeTraversal = resolveIceSlopeTopSlideTraversal(
+            state,
+            nextX + dx,
+            nextY + dy,
+            nextElevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            options
+          );
         }
 
         if (slopeTraversal) {
@@ -1835,7 +1963,7 @@
         pushContext
           ? {
               ignoredActors,
-              pushSlopeBlocker: (blocker) => {
+              pushSlopeBlocker: (blocker, pushDx = dx, pushDy = dy) => {
                 if (blocker === actorIndex) {
                   return false;
                 }
@@ -1843,8 +1971,8 @@
                 const result = attemptPushActor(
                   state,
                   blocker,
-                  dx,
-                  dy,
+                  pushDx,
+                  pushDy,
                   occupied,
                   moves,
                   1,
@@ -2120,6 +2248,31 @@
         }
 
         if (!traversal) {
+          traversal = resolveIceSlopeFallTraversalForLanding(
+            state,
+            targetX,
+            targetY,
+            elevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed
+          );
+        }
+
+        if (!traversal) {
+          traversal = resolveIceSlopeTopSlideTraversal(
+            state,
+            targetX,
+            targetY,
+            elevation,
+            occupied,
+            gateState,
+            orangeButtonsPressed,
+            options
+          );
+        }
+
+        if (!traversal) {
           continue;
         }
 
@@ -2233,10 +2386,36 @@
                   orangeButtonsPressed,
                   slopeIgnoredActors
                 );
+            const fallSlopeTraversal =
+              slopeTraversal || blockedSlope
+                ? null
+                : resolveIceSlopeFallTraversalForLanding(
+                    state,
+                    targetX,
+                    targetY,
+                    memberElevation,
+                    occupied,
+                    gateState,
+                    orangeButtonsPressed
+                  );
+            const topSlopeTraversal =
+              slopeTraversal || blockedSlope || fallSlopeTraversal
+                ? null
+                : resolveIceSlopeTopSlideTraversal(
+                    state,
+                    targetX,
+                    targetY,
+                    memberElevation,
+                    occupied,
+                    gateState,
+                    orangeButtonsPressed
+                  );
 
             if (
               !slopeTraversal &&
               !blockedSlope &&
+              !fallSlopeTraversal &&
+              !topSlopeTraversal &&
               !canWeightlessMemberEnter(
                 state,
                 member,
@@ -2251,7 +2430,7 @@
               return;
             }
 
-            if (slopeTraversal || blockedSlope) {
+            if (slopeTraversal || blockedSlope || fallSlopeTraversal || topSlopeTraversal) {
               continue;
             }
 
@@ -2367,7 +2546,7 @@
           pushContext
             ? {
                 ignoredActors,
-                pushSlopeBlocker: (blocker) => {
+                pushSlopeBlocker: (blocker, pushDx = dx, pushDy = dy) => {
                   if (ignoredActors.has(blocker)) {
                     return false;
                   }
@@ -2375,8 +2554,8 @@
                   const result = attemptPushActor(
                     state,
                     blocker,
-                    dx,
-                    dy,
+                    pushDx,
+                    pushDy,
                     occupied,
                     moves,
                     1,
@@ -2604,25 +2783,50 @@
                 orangeButtonsPressed,
                 new Set([...ignoredActors, ...memberSet])
               );
-          const blockerX = slopeTraversal
-            ? slopeTraversal.exitX
+          const fallSlopeTraversal =
+            slopeTraversal || blockedSlope
+              ? null
+              : resolveIceSlopeFallTraversalForLanding(
+                  state,
+                  targetX,
+                  targetY,
+                  memberElevation,
+                  occupied,
+                  gateState,
+                  orangeButtonsPressed
+                );
+          const topSlopeTraversal =
+            slopeTraversal || blockedSlope || fallSlopeTraversal
+              ? null
+              : resolveIceSlopeTopSlideTraversal(
+                  state,
+                  targetX,
+                  targetY,
+                  memberElevation,
+                  occupied,
+                  gateState,
+                  orangeButtonsPressed
+                );
+          const slideTraversal = slopeTraversal || fallSlopeTraversal || topSlopeTraversal;
+          const blockerX = slideTraversal
+            ? slideTraversal.exitX
             : blockedSlope
               ? blockedSlope.traversal.exitX
               : targetX;
-          const blockerY = slopeTraversal
-            ? slopeTraversal.exitY
+          const blockerY = slideTraversal
+            ? slideTraversal.exitY
             : blockedSlope
               ? blockedSlope.traversal.exitY
               : targetY;
-          const blockerElevation = slopeTraversal
-            ? slopeTraversal.exitElevation
+          const blockerElevation = slideTraversal
+            ? slideTraversal.exitElevation
             : blockedSlope
               ? blockedSlope.traversal.exitElevation
               : memberElevation;
 
           if (
             !isInsideBoard(targetX, targetY) ||
-            (!slopeTraversal &&
+            (!slideTraversal &&
               !blockedSlope &&
               !canEnterHole &&
               !terrainSupportsElevation(
