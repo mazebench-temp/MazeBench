@@ -2942,12 +2942,17 @@
       ));
     }
 
-    function iceSlopeContactSignatureForVoxels(voxels, now) {
+    function iceSlopeContactSignatureForVoxels(voxels, now, options = {}) {
+      const includeSideContacts = options.includeSideContacts !== false;
+      const includeTopContacts = options.includeTopContacts === true;
+
       return voxels
         .flatMap((voxel) => {
-          const contacts = iceSlopeHighSideContactsForVoxel(voxel, now);
+          const contacts = includeSideContacts
+            ? iceSlopeHighSideContactsForVoxel(voxel, now)
+            : [];
 
-          if (iceSlopeBottomContactsForVoxel(voxel, now)) {
+          if (includeTopContacts && iceSlopeBottomContactsForVoxel(voxel, now)) {
             contacts.push("top");
           }
 
@@ -2957,14 +2962,22 @@
         .join("|");
     }
 
-    function addIceSlopeContactSuppressedEdges(suppressedEdges, voxels, now) {
-      voxels.forEach((voxel) => {
-        iceSlopeHighSideContactsForVoxel(voxel, now).forEach((face) => {
-          addPolycubeFaceContactEdges(suppressedEdges, voxel, face);
-        });
+    function iceSlopeCoveredTopFaceCellsForVoxels(voxels, now) {
+      return new Set(
+        voxels
+          .filter((voxel) => iceSlopeBottomContactsForVoxel(voxel, now))
+          .map((voxel) => `${voxel.z + 1}:${voxel.x},${voxel.y}`)
+      );
+    }
 
-        if (iceSlopeBottomContactsForVoxel(voxel, now)) {
-          addPolycubeFaceContactEdges(suppressedEdges, voxel, "top");
+    function addIceSlopeContactSuppressedEdges(suppressedEdges, voxels, now, options = {}) {
+      const includeSideContacts = options.includeSideContacts !== false;
+
+      voxels.forEach((voxel) => {
+        if (includeSideContacts) {
+          iceSlopeHighSideContactsForVoxel(voxel, now).forEach((face) => {
+            addPolycubeFaceContactEdges(suppressedEdges, voxel, face);
+          });
         }
       });
     }
@@ -3059,8 +3072,38 @@
       suppressedEdges,
       options = {}
     ) {
+      const visibleCells =
+        faceGroup.kind === "top" && options?.iceSlopeCoveredTopFaceCells
+          ? new Set(
+              Array.from(faceGroup.cells).filter(
+                (cellKey) => !options.iceSlopeCoveredTopFaceCells.has(`${faceGroup.plane}:${cellKey}`)
+              )
+            )
+          : faceGroup.cells;
+
       faceGroup.cells.forEach((cellKey) => {
+        if (!visibleCells.has(cellKey)) {
+          return;
+        }
+
         const [a, b] = cellKey.split(",").map(Number);
+        const coveredTopCellKeyForSideFace = () => {
+          if (
+            !options?.iceSlopeCoveredTopFaceCells ||
+            !["xplus", "xminus", "zplus", "zminus"].includes(faceGroup.kind)
+          ) {
+            return null;
+          }
+
+          if (faceGroup.kind === "xplus" || faceGroup.kind === "xminus") {
+            const x = faceGroup.kind === "xplus" ? faceGroup.plane - 1 : faceGroup.plane;
+            return `${b + 1}:${x},${a}`;
+          }
+
+          const y = faceGroup.kind === "zplus" ? faceGroup.plane - 1 : faceGroup.plane;
+          return `${b + 1}:${a},${y}`;
+        };
+        const sideFaceCoveredTopCellKey = coveredTopCellKeyForSideFace();
         const neighbors = [
           { key: `${a - 1},${b}`, from: [a, b], to: [a, b + 1] },
           { key: `${a + 1},${b}`, from: [a + 1, b], to: [a + 1, b + 1] },
@@ -3069,7 +3112,16 @@
         ];
 
         neighbors.forEach((edge) => {
-          if (faceGroup.cells.has(edge.key)) {
+          if (visibleCells.has(edge.key)) {
+            return;
+          }
+
+          if (
+            sideFaceCoveredTopCellKey &&
+            edge.from[1] === b + 1 &&
+            edge.to[1] === b + 1 &&
+            options.iceSlopeCoveredTopFaceCells.has(sideFaceCoveredTopCellKey)
+          ) {
             return;
           }
 
@@ -3102,8 +3154,13 @@
     }
 
     function polycubeEdgeGeometry(voxels, options = {}) {
-      const iceSlopeContactSignature = options?.suppressIceSlopeContacts
-        ? iceSlopeContactSignatureForVoxels(voxels, options.now)
+      const suppressIceSlopeSideContacts = options?.suppressIceSlopeContacts === true;
+      const suppressIceSlopeTopContacts = options?.suppressIceSlopeTopContacts === true;
+      const iceSlopeContactSignature = suppressIceSlopeSideContacts || suppressIceSlopeTopContacts
+        ? iceSlopeContactSignatureForVoxels(voxels, options.now, {
+            includeSideContacts: suppressIceSlopeSideContacts,
+            includeTopContacts: suppressIceSlopeTopContacts
+          })
         : "";
       const cacheKey = [
         "polycube-edges",
@@ -3123,13 +3180,22 @@
       const positions = [];
       const seenSegments = new Set();
       const suppressedEdges = polycubeContactEdgeKeys(voxels);
+      const iceSlopeCoveredTopFaceCells = suppressIceSlopeTopContacts
+        ? iceSlopeCoveredTopFaceCellsForVoxels(voxels, options.now)
+        : null;
 
-      if (options?.suppressIceSlopeContacts) {
-        addIceSlopeContactSuppressedEdges(suppressedEdges, voxels, options.now);
+      if (suppressIceSlopeSideContacts || suppressIceSlopeTopContacts) {
+        addIceSlopeContactSuppressedEdges(suppressedEdges, voxels, options.now, {
+          includeSideContacts: suppressIceSlopeSideContacts,
+          includeTopContacts: suppressIceSlopeTopContacts
+        });
       }
 
       collectPolycubeFaceCells(voxels).forEach((faceGroup) => {
-        addPolycubeFaceBoundaryEdges(positions, seenSegments, faceGroup, suppressedEdges, options);
+        addPolycubeFaceBoundaryEdges(positions, seenSegments, faceGroup, suppressedEdges, {
+          ...options,
+          iceSlopeCoveredTopFaceCells
+        });
       });
 
       const geometry = new THREE.BufferGeometry();
@@ -4295,6 +4361,7 @@
             descriptor,
             now,
             suppressIceSlopeContacts: descriptor.type === "ice_block",
+            suppressIceSlopeTopContacts: true,
             suppressSharedRoomEdges: descriptor.type === "wall"
           }),
           edgeThreshold: 18,
