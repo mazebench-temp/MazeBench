@@ -4716,11 +4716,45 @@
       return contacts;
     }
 
+    function addIceSlopeEditorPickVolume(centerX, centerZ, bottomY, descriptor, editorPick) {
+      if (!isEditorRenderMode() || !editorPick) {
+        return;
+      }
+
+      const height = Math.max(1, (descriptor.topY ?? bottomY + elevationUnit) - bottomY);
+      const pickMesh = new THREE.Mesh(
+        boxGeometry(unit * 0.96, height, unit * 0.96),
+        invisibleEditorPickMaterial()
+      );
+
+      pickMesh.position.set(centerX, bottomY + height / 2, centerZ);
+      pickMesh.castShadow = false;
+      pickMesh.receiveShadow = false;
+      pickMesh.userData.editorPick = editorPickForRenderContext(editorPick);
+      scene.add(pickMesh);
+    }
+
     function addIceSlopeCell(cell, descriptor, visibility, now) {
       const centerX = (cell.left + cell.right) / 2 + renderOffsetX();
       const centerZ = (cell.top + cell.bottom) / 2 + renderOffsetZ();
       const bottomY = descriptor.bottomY ?? descriptor.topY - descriptor.blockHeight;
       const suppressContacts = iceSlopeSuppressedEdgeContacts(cell, descriptor, now);
+      const editorPick = {
+        kind: "terrain",
+        cells: [
+          {
+            gridX: cell.gridX,
+            gridY: cell.gridY,
+            left: cell.left + renderOffsetX(),
+            right: cell.right + renderOffsetX(),
+            top: cell.top + renderOffsetZ(),
+            bottom: cell.bottom + renderOffsetZ()
+          }
+        ],
+        topY: descriptor.topY,
+        bottomY,
+        sourceLayer: descriptor.elevation ?? 0
+      };
 
       addOutlinedMesh(
         iceSlopeGeometry(descriptor.layer?.direction),
@@ -4739,24 +4773,11 @@
           doubleSide: true,
           castShadow: renderContextCastsShadows(),
           receiveShadow: true,
-          editorPick: {
-            kind: "terrain",
-            cells: [
-              {
-                gridX: cell.gridX,
-                gridY: cell.gridY,
-                left: cell.left + renderOffsetX(),
-                right: cell.right + renderOffsetX(),
-                top: cell.top + renderOffsetZ(),
-                bottom: cell.bottom + renderOffsetZ()
-              }
-            ],
-            topY: descriptor.topY,
-            bottomY,
-            sourceLayer: descriptor.elevation ?? 0
-          }
+          editorPick
         }
       );
+
+      addIceSlopeEditorPickVolume(centerX, centerZ, bottomY, descriptor, editorPick);
     }
 
     function addTerrainComponent(cells, descriptor, now) {
