@@ -3904,12 +3904,16 @@
         const travelPath = [{ x: fromX, y: fromY, elevation: fromElevation }];
         let iceSlipLanding = null;
         const ignoredPlayerSet = new Set([player]);
+        let stepDx = dx;
+        let stepDy = dy;
+        let reversedAfterSlopeBounce = false;
 
         while (true) {
-          const targetX = nextX + dx;
-          const targetY = nextY + dy;
-          const isInitialStep = nextX === fromX && nextY === fromY;
-          const pushSlopeBlocker = (blocker, pushDx = dx, pushDy = dy) => {
+          const targetX = nextX + stepDx;
+          const targetY = nextY + stepDy;
+          const isInitialStep =
+            travelPath.length === 1 && nextX === fromX && nextY === fromY;
+          const pushSlopeBlocker = (blocker, pushDx = stepDx, pushDy = stepDy) => {
             const attemptSnapshot = attemptSnapshotBuffer || cloneState(state);
             const occupiedSnapshot = occupiedSnapshotBuffer || new Set(occupied);
             const moveCount = moves.length;
@@ -3953,8 +3957,8 @@
             state,
             targetX,
             targetY,
-            dx,
-            dy,
+            stepDx,
+            stepDy,
             travelElevation,
             occupied,
             raisedPlayerGates,
@@ -3970,8 +3974,8 @@
               state,
               targetX,
               targetY,
-              dx,
-              dy,
+              stepDx,
+              stepDy,
               travelElevation,
               occupied,
               raisedPlayerGates,
@@ -3985,8 +3989,8 @@
                   state,
                   targetX,
                   targetY,
-                  dx,
-                  dy,
+                  stepDx,
+                  stepDy,
                   travelElevation,
                   occupied,
                   raisedPlayerGates,
@@ -4036,13 +4040,13 @@
             !isInsideBoard(targetX, targetY) ||
             (!canTraverseSlope && !canEnterHole && !canStandAtTarget && !canSlipOffIce)
           ) {
-            if (!searchMode && isInsideBoard(targetX, targetY)) {
+            if (isInsideBoard(targetX, targetY)) {
               const bouncePath = blockedIceSlopeBouncePathForEntry(
                 state,
                 targetX,
                 targetY,
-                dx,
-                dy,
+                stepDx,
+                stepDy,
                 travelElevation,
                 occupied,
                 raisedPlayerGates,
@@ -4050,34 +4054,54 @@
               );
 
               if (bouncePath && bouncePath.length > 0) {
-                const path = [
-                  { x: nextX, y: nextY, elevation: travelElevation },
-                  ...bouncePath,
-                  ...bouncePath
-                    .slice(0, -1)
-                    .reverse()
-                    .map((point) => ({ ...point })),
-                  { x: nextX, y: nextY, elevation: travelElevation }
-                ];
+                const returnPath = bouncePath
+                  .slice(0, -1)
+                  .reverse()
+                  .map((point) => ({ ...point }));
+                const pathHome = { x: nextX, y: nextY, elevation: travelElevation };
 
-                moves.push({
-                  actorIndex: player,
-                  actorType: actorTypes[player],
-                  fromX: nextX,
-                  fromY: nextY,
-                  toX: nextX,
-                  toY: nextY,
-                  finalX: nextX,
-                  finalY: nextY,
-                  fromElevation: travelElevation,
-                  toElevation: travelElevation,
-                  finalElevation: travelElevation,
-                  path,
-                  pathControlsElevation: true,
-                  pathEndElevation: travelElevation,
-                  iceSlide: true,
-                  visualOnly: true
-                });
+                if (
+                  !reversedAfterSlopeBounce &&
+                  isIce(state, nextX, nextY, travelElevation, raisedPlayerGates, orangeButtonsPressed)
+                ) {
+                  appendPathPoints(travelPath, bouncePath.map((point) => ({ ...point })));
+                  appendPathPoints(travelPath, returnPath);
+                  appendPathPoints(travelPath, [pathHome]);
+                  stepDx = -stepDx;
+                  stepDy = -stepDy;
+                  reversedAfterSlopeBounce = true;
+                  continue;
+                }
+
+                if (travelPath.length > 1) {
+                  appendPathPoints(travelPath, bouncePath.map((point) => ({ ...point })));
+                  appendPathPoints(travelPath, returnPath);
+                  appendPathPoints(travelPath, [pathHome]);
+                } else if (!searchMode) {
+                  moves.push({
+                    actorIndex: player,
+                    actorType: actorTypes[player],
+                    fromX: nextX,
+                    fromY: nextY,
+                    toX: nextX,
+                    toY: nextY,
+                    finalX: nextX,
+                    finalY: nextY,
+                    fromElevation: travelElevation,
+                    toElevation: travelElevation,
+                    finalElevation: travelElevation,
+                    path: [
+                      pathHome,
+                      ...bouncePath,
+                      ...returnPath,
+                      { ...pathHome }
+                    ],
+                    pathControlsElevation: true,
+                    pathEndElevation: travelElevation,
+                    iceSlide: true,
+                    visualOnly: true
+                  });
+                }
               }
             }
 
@@ -4101,7 +4125,7 @@
               const attemptSnapshot = attemptSnapshotBuffer || cloneState(state);
               const occupiedSnapshot = occupiedSnapshotBuffer || new Set(occupied);
               const moveCount = moves.length;
-              const pushBudget = countSupportingPlayers(state, player, dx, dy);
+              const pushBudget = countSupportingPlayers(state, player, stepDx, stepDy);
 
               if (attemptSnapshotBuffer) {
                 copyStateInto(attemptSnapshotBuffer, state);
@@ -4115,8 +4139,8 @@
               const result = attemptPushActor(
                 state,
                 blockingActor,
-                dx,
-                dy,
+                stepDx,
+                stepDy,
                 occupied,
                 moves,
                 pushBudget,
@@ -4245,7 +4269,11 @@
           }
 
           if (!searchMode) {
-            moveRecord.iceSlide = travelDistance > 1 || iceSlipLanding !== null;
+            moveRecord.iceSlide =
+              travelDistance > 1 ||
+              iceSlipLanding !== null ||
+              travelPath.length > 2 ||
+              pathControlsElevation;
 
             if (
               iceSlipLanding ||
@@ -4281,6 +4309,27 @@
               searchMode
             );
           }
+        } else if (!searchMode && travelPath.length > 1) {
+          const pathEndElevation = travelPath[travelPath.length - 1]?.elevation ?? fromElevation;
+
+          moves.push({
+            actorIndex: player,
+            actorType: actorTypes[player],
+            fromX,
+            fromY,
+            toX: fromX,
+            toY: fromY,
+            finalX: fromX,
+            finalY: fromY,
+            fromElevation,
+            toElevation: fromElevation,
+            finalElevation: fromElevation,
+            path: travelPath,
+            pathControlsElevation: travelPath.some((point) => point.elevation !== fromElevation),
+            pathEndElevation,
+            iceSlide: true,
+            visualOnly: true
+          });
         }
 
         addOccupiedAtElevation(

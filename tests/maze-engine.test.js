@@ -429,6 +429,38 @@ function createState(playData) {
 }
 
 {
+  const threeHighWall = {
+    type: "wall",
+    layers: [
+      { type: "wall", elevation: 0 },
+      { type: "wall", elevation: 1 },
+      { type: "wall", elevation: 2 }
+    ]
+  };
+  const { engine, state } = createState({
+    width: 4,
+    height: 1,
+    terrain: [[iceBlockLayer(0), iceBlockLayer(0), iceSlopeLayer("right", 1), threeHighWall]],
+    actors: [{ type: "player", x: 1, y: 0, elevation: 1, removed: false }]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const playerMove = result.moves.find((move) => move.actorIndex === 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [0, 0]);
+  assert.equal(state.actorElevation[0], 1);
+  assert.equal(playerMove.visualOnly, undefined);
+  assert.equal(playerMove.iceSlide, true);
+  assert.deepEqual(playerMove.path, [
+    { x: 1, y: 0, elevation: 1 },
+    { x: 2, y: 0, elevation: 2 },
+    { x: 1, y: 0, elevation: 1 },
+    { x: 0, y: 0, elevation: 1 }
+  ]);
+}
+
+{
   const { engine, state } = createState({
     width: 4,
     height: 1,
@@ -512,7 +544,7 @@ function createState(playData) {
   const result = engine.move(state, -1, 0);
 
   assert.equal(result.moved, true);
-  assert.deepEqual([state.actorX[0], state.actorY[0]], [2, 0]);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [3, 0]);
   assert.equal(state.actorElevation[0], 1);
   assert.deepEqual([state.actorX[1], state.actorY[1]], [0, 0]);
   assert.equal(state.actorElevation[1], 0);
@@ -520,6 +552,13 @@ function createState(playData) {
     { x: 2, y: 0, elevation: 1 },
     { x: 1, y: 0, elevation: 1 },
     { x: 0, y: 0, elevation: 0 }
+  ]);
+  assert.deepEqual(result.moves.find((move) => move.actorIndex === 0).path, [
+    { x: 3, y: 0, elevation: 1 },
+    { x: 2, y: 0, elevation: 1 },
+    { x: 1, y: 0, elevation: 1 },
+    { x: 2, y: 0, elevation: 1 },
+    { x: 3, y: 0, elevation: 1 }
   ]);
 }
 
