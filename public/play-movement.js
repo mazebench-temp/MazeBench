@@ -74,7 +74,13 @@
     }
 
     function isOrangeButtonAt(x, y) {
-      return state.terrain[y]?.[x]?.type === "orange_button";
+      const cell = state.terrain[y]?.[x];
+
+      return (
+        cell?.type === "orange_button" ||
+        (Array.isArray(cell?.layers) && cell.layers.some((layer) => layer.type === "orange_button")) ||
+        state.actors.some((actor) => !actor.removed && actor.type === "orange_button" && actor.x === x && actor.y === y)
+      );
     }
 
     function preTerrainOrangeButtonLiftMoves(moves, fromRaisedOrangeWalls, toRaisedOrangeWalls) {

@@ -239,6 +239,7 @@ function createMazeLevelService({
       type === "box" ||
       type === "gem" ||
       type === "floating_floor" ||
+      type === "orange_button" ||
       type === "puncher" ||
       type === "weightless_box"
     );
@@ -277,6 +278,10 @@ function createMazeLevelService({
 
   function terrainDefinitionStackHeight(definition) {
     return definitionType(definition) === "tree" ? 3 : isRaisedTerrainDefinition(definition) ? 1 : 0;
+  }
+
+  function isSurfaceAttachmentDefinition(definition) {
+    return definitionType(definition) === "orange_button";
   }
 
   function buildTerrainLayer(definition, elevation) {
@@ -393,7 +398,7 @@ function createMazeLevelService({
       };
     }
 
-    if (actors.length > 0) {
+    if (actors.some(({ definition }) => !isSurfaceAttachmentDefinition(definition))) {
       return {
         actors,
         terrain: buildTerrainCell("floor", floorDefinition, {

@@ -40,7 +40,7 @@
   }
 
   function isNonBlockingType(type) {
-    return isCollectibleType(type) || type === "puncher";
+    return isCollectibleType(type) || type === "orange_button" || type === "puncher";
   }
 
   function isPushableType(type) {
@@ -154,6 +154,7 @@
       normalizePuncherDirection(actor?.direction || actor?.facing)
     );
     const actorCount = actorSource.length;
+    const orangeButtonActors = [];
     const actorInitialElevations = [];
     const weightlessRelativeElevations = [];
     const searchSeenActors = new Uint32Array(actorCount);
@@ -162,6 +163,10 @@
     for (let index = 0; index < actorCount; index += 1) {
       actorInitialElevations[index] = initialActorElevation(actorSource[index], index);
       weightlessRelativeElevations[index] = 0;
+
+      if (actorTypes[index] === "orange_button") {
+        orangeButtonActors.push(index);
+      }
     }
 
     for (let y = 0; y < height; y += 1) {
@@ -468,6 +473,10 @@
       return actorTypes[actorIndex] === "puncher";
     }
 
+    function isOrangeButtonActor(actorIndex) {
+      return actorTypes[actorIndex] === "orange_button";
+    }
+
     function isPushableActor(actorIndex) {
       return isPushableType(actorTypes[actorIndex]);
     }
@@ -511,7 +520,11 @@
     }
 
     function terrainLayerSurfaceHeight(state, cell, layer, gateState, orangeButtonsPressed) {
-      if (layer.type === terrainTypes.empty || layer.type === terrainTypes.hole) {
+      if (
+        layer.type === terrainTypes.empty ||
+        layer.type === terrainTypes.hole ||
+        layer.type === terrainTypes.orange_button
+      ) {
         return null;
       }
 
@@ -964,8 +977,34 @@
       return false;
     }
 
+    function isOrangeButtonActorPressed(state, buttonIndex) {
+      const x = state.actorX[buttonIndex];
+      const y = state.actorY[buttonIndex];
+      const elevation = actorElevation(state, buttonIndex);
+
+      for (let index = 0; index < actorCount; index += 1) {
+        if (
+          index === buttonIndex ||
+          state.actorRemoved[index] ||
+          isNonBlockingActor(index)
+        ) {
+          continue;
+        }
+
+        if (
+          state.actorX[index] === x &&
+          state.actorY[index] === y &&
+          actorElevation(state, index) === elevation
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function areOrangeButtonsPressed(state) {
-      if (orangeButtonCells.length === 0) {
+      if (orangeButtonCells.length === 0 && orangeButtonActors.length === 0) {
         return false;
       }
 
@@ -979,6 +1018,14 @@
           buttonLayers.length === 0 ||
           !buttonLayers.every((layer) => isOrangeButtonPressed(state, cell, layer))
         ) {
+          return false;
+        }
+      }
+
+      for (let index = 0; index < orangeButtonActors.length; index += 1) {
+        const button = orangeButtonActors[index];
+
+        if (state.actorRemoved[button] || !isOrangeButtonActorPressed(state, button)) {
           return false;
         }
       }
@@ -3240,6 +3287,10 @@
       return type === "box" || type === "floating_floor" || type === "weightless_box";
     }
 
+    function canActorCarrySurfaceAttachment(type) {
+      return type === "box" || type === "floating_floor" || type === "weightless_box";
+    }
+
     function mergeMoveRecord(
       state,
       moves,
@@ -3886,6 +3937,81 @@
                 iceSlide: !searchMode && move.iceSlide === true
               }
             );
+          }
+        });
+    }
+
+    function syncAttachedSurfaceAttachmentsForMoves(
+      state,
+      moves,
+      originalActorX,
+      originalActorY,
+      originalActorElevation,
+      searchMode
+    ) {
+      if (orangeButtonActors.length === 0) {
+        return;
+      }
+
+      moves
+        .filter(
+          (move) =>
+            !move.visualOnly &&
+            canActorCarrySurfaceAttachment(move.actorType) &&
+            (move.fromX !== move.toX ||
+              move.fromY !== move.toY ||
+              (move.fromElevation ?? 0) !== (move.toElevation ?? move.fromElevation ?? 0) ||
+              move.toRemoved === true)
+        )
+        .forEach((move) => {
+          for (let index = 0; index < orangeButtonActors.length; index += 1) {
+            const button = orangeButtonActors[index];
+            const carrierFromElevation = move.fromElevation ?? originalActorElevation[move.actorIndex] ?? 0;
+
+            if (
+              state.actorRemoved[button] ||
+              originalActorX[button] !== move.fromX ||
+              originalActorY[button] !== move.fromY ||
+              (originalActorElevation[button] || 0) !== carrierFromElevation + 1
+            ) {
+              continue;
+            }
+
+            state.actorX[button] = move.toX;
+            state.actorY[button] = move.toY;
+            state.actorElevation[button] = (move.toElevation ?? carrierFromElevation) + 1;
+            state.actorRemoved[button] = move.toRemoved === true ? 1 : 0;
+
+            const buttonMove = mergeMoveRecord(
+              state,
+              moves,
+              button,
+              originalActorX,
+              originalActorY,
+              originalActorElevation,
+              {
+                iceSlide: !searchMode && move.iceSlide === true,
+                punchSlide: move.punchSlide === true
+              }
+            );
+
+            if (Array.isArray(move.path) && move.path.length > 1) {
+              buttonMove.path = move.path.map((point) => ({
+                x: point.x,
+                y: point.y,
+                elevation: (point.elevation ?? carrierFromElevation) + 1
+              }));
+              buttonMove.pathControlsElevation = true;
+              buttonMove.pathEndElevation =
+                buttonMove.path[buttonMove.path.length - 1]?.elevation ?? buttonMove.toElevation;
+            }
+
+            if (move.toRemoved === true) {
+              buttonMove.toRemoved = true;
+              buttonMove.fadeOut = move.fadeOut;
+              buttonMove.fadeStartProgress = move.fadeStartProgress;
+              buttonMove.fadeEndProgress = move.fadeEndProgress;
+            }
           }
         });
     }
@@ -4715,6 +4841,14 @@
         });
         applyMoveFinalState(state, moves);
         syncDynamicActorElevationsAndFalls(state, moves);
+        syncAttachedSurfaceAttachmentsForMoves(
+          state,
+          moves,
+          originalActorX,
+          originalActorY,
+          originalActorElevation,
+          searchMode
+        );
       }
 
       return {
@@ -4739,6 +4873,7 @@
         if (
           moveRecord.visualOnly ||
           moveRecord.actorType === "puncher" ||
+          moveRecord.actorType === "orange_button" ||
           isPlayerType(moveRecord.actorType) ||
           isCollectibleType(moveRecord.actorType) ||
           (moveRecord.fromX === moveRecord.toX && moveRecord.fromY === moveRecord.toY)

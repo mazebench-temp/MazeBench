@@ -1186,7 +1186,7 @@
     }
 
     function isNonBlockingActor(actor) {
-      return isCollectibleActor(actor) || actor?.type === "puncher";
+      return isCollectibleActor(actor) || actor?.type === "orange_button" || actor?.type === "puncher";
     }
 
     function pushWeight(actor) {
@@ -1337,7 +1337,7 @@
     ) {
       const elevation = layer.elevation ?? 0;
 
-      if (layer.type === "empty" || layer.type === "hole") {
+      if (layer.type === "empty" || layer.type === "hole" || layer.type === "orange_button") {
         return null;
       }
 
@@ -1398,7 +1398,10 @@
     }
 
     function isOrangeButton(x, y) {
-      return terrainLayersOfType(x, y, "orange_button").length > 0;
+      return (
+        terrainLayersOfType(x, y, "orange_button").length > 0 ||
+        actorsAt(x, y, (actor) => actor.type === "orange_button").length > 0
+      );
     }
 
     function eachOrangeWall(callback) {
@@ -1424,6 +1427,10 @@
       );
     }
 
+    function isOrangeButtonActorPressed(button, actors = app.state.actors) {
+      return isOrangeButtonPressed(button.x, button.y, actors, actorElevation(button));
+    }
+
     function areOrangeButtonsPressed(actors = app.state.actors) {
       let hasOrangeButton = false;
 
@@ -1442,6 +1449,18 @@
           ) {
             return false;
           }
+        }
+      }
+
+      for (const button of actors) {
+        if (button.removed || button.type !== "orange_button") {
+          continue;
+        }
+
+        hasOrangeButton = true;
+
+        if (!isOrangeButtonActorPressed(button, actors)) {
+          return false;
         }
       }
 

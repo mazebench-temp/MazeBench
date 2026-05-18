@@ -6,6 +6,7 @@
     "box",
     "gem",
     "floating_floor",
+    "orange_button",
     "puncher",
     "weightless_box"
   ]);
@@ -26,6 +27,7 @@
     "orange_wall"
   ]);
   const baseSurfaceNames = new Set(["floor", "ice"]);
+  const surfaceAttachmentNames = new Set(["orange_button"]);
 
   function titleCaseName(name) {
     return String(name || "")
@@ -288,6 +290,10 @@
       return actorNames.has(toolType(tool));
     }
 
+    function isSurfaceAttachmentTool(tool) {
+      return surfaceAttachmentNames.has(toolType(tool));
+    }
+
     function isSupportActorTool(tool) {
       return supportActorNames.has(toolType(tool));
     }
@@ -307,6 +313,95 @@
 
     function isBaseSurfaceTool(tool) {
       return baseSurfaceNames.has(toolType(tool));
+    }
+
+    function isAttachableSurfaceTool(tool) {
+      if (!tool || isSurfaceAttachmentTool(tool)) {
+        return false;
+      }
+
+      if (toolType(tool) === "ice_slope") {
+        return false;
+      }
+
+      return isActorTool(tool) ? isSupportActorTool(tool) : true;
+    }
+
+    function setSurfaceAttachmentToken(currentValue, token, targetElevation) {
+      const normalizedToken = normalizeCellValue(token);
+      const attachmentTool = toolByToken.get(normalizedToken);
+
+      if (!isSurfaceAttachmentTool(attachmentTool)) {
+        return normalizeAuthoringCellValue(currentValue);
+      }
+
+      const elevation = Math.max(0, Math.floor(Number(targetElevation) || 0));
+      const tokens = enforceBottomSurfaceRows(getCellTokens(currentValue));
+      let surfaceHeight = null;
+      let previousSurfaceTerrain = false;
+      let insertionIndex = -1;
+
+      for (let index = 0; index < tokens.length; index += 1) {
+        const currentToken = String(tokens[index] || "").trim();
+
+        if (currentToken.length === 0) {
+          surfaceHeight = Math.max(0, surfaceHeight ?? 0) + 1;
+          previousSurfaceTerrain = false;
+          continue;
+        }
+
+        const tool = toolByToken.get(currentToken);
+
+        if (!tool) {
+          continue;
+        }
+
+        if (isActorTool(tool)) {
+          const actorElevation = Math.max(0, surfaceHeight ?? 0);
+
+          if (isSurfaceAttachmentTool(tool) && actorElevation === elevation) {
+            tokens[index] = normalizedToken;
+            return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
+          }
+
+          if (isSupportActorTool(tool)) {
+            const supportHeight = actorElevation + 1;
+
+            if (supportHeight === elevation && isAttachableSurfaceTool(tool)) {
+              insertionIndex = index + 1;
+            }
+
+            surfaceHeight = supportHeight;
+            previousSurfaceTerrain = false;
+          }
+
+          continue;
+        }
+
+        const isRaisedTerrain = isRaisedTerrainTool(tool);
+        const stackHeight = terrainToolStackHeight(tool);
+        let terrainElevation = Math.max(0, surfaceHeight ?? 0);
+
+        if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+          terrainElevation = surfaceHeight + 1;
+        }
+
+        const supportHeight = terrainElevation + stackHeight;
+
+        if (supportHeight === elevation && isAttachableSurfaceTool(tool)) {
+          insertionIndex = index + 1;
+        }
+
+        surfaceHeight = supportHeight;
+        previousSurfaceTerrain = !isRaisedTerrain;
+      }
+
+      if (insertionIndex === -1) {
+        return normalizeAuthoringCellValue(currentValue);
+      }
+
+      tokens.splice(insertionIndex, 0, normalizedToken);
+      return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
     }
 
     function buildTerrainCell(type, tool = null, options = {}) {
@@ -440,7 +535,7 @@
         };
       }
 
-      if (actors.length > 0) {
+      if (actors.some(({ tool }) => !isSurfaceAttachmentTool(tool))) {
         return {
           actors,
           terrain: buildTerrainCell("floor", floorTool, {
@@ -636,6 +731,7 @@
       normalizeAuthoringCellValue,
       normalizeCellValue,
       setCellElevationToken,
+      setSurfaceAttachmentToken,
       toolByName,
       toolByToken
     };

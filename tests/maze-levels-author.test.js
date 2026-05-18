@@ -23,6 +23,7 @@ const game = {
       floor: { token: "." },
       wall: { token: "#" },
       ice: { token: "i" },
+      orange_button: { token: "o", label: "Orange Button" },
       block_asset_1: {
         token: "b1",
         label: "Block 1",
@@ -132,6 +133,22 @@ assert.deepEqual(
   [
     ["floor", 0],
     ["block_asset", 0]
+  ]
+);
+
+fs.writeFileSync(path.join(levelDir, "test-empty.txt"), "i+o #+o o\n", "utf8");
+
+const orangeButtonPlayState = service.getLevelState(game, game.worldMap.byPosition.get("level_AxA"));
+
+assert.equal(orangeButtonPlayState.terrain[0][0].type, "ice");
+assert.equal(orangeButtonPlayState.terrain[0][1].type, "wall");
+assert.equal(orangeButtonPlayState.terrain[0][2].type, "empty");
+assert.deepEqual(
+  orangeButtonPlayState.actors.map((actor) => [actor.type, actor.x, actor.y, actor.elevation]),
+  [
+    ["orange_button", 0, 0, 0],
+    ["orange_button", 1, 0, 1],
+    ["orange_button", 2, 0, 0]
   ]
 );
 

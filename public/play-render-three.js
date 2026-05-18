@@ -3379,7 +3379,7 @@
     }
 
     function isSunkenFloorType(type) {
-      return type === "floor" || type === "ice" || type === "exit" || type === "orange_button";
+      return type === "floor" || type === "ice" || type === "exit";
     }
 
     function isStackableFloorType(type) {
@@ -3397,7 +3397,7 @@
     function isGridFloorDescriptor(descriptor) {
       return (
         descriptor.terrainHeight === 0 &&
-        (descriptor.type === "floor" || descriptor.type === "exit" || descriptor.type === "orange_button")
+        (descriptor.type === "floor" || descriptor.type === "exit")
       );
     }
 
@@ -3884,7 +3884,7 @@
       const isLiveState = renderState() === app.state;
       const key = `${x},${y}`;
 
-      if (layer.type === "empty" || layer.type === "hole") {
+      if (layer.type === "empty" || layer.type === "hole" || layer.type === "orange_button") {
         return null;
       }
 
@@ -4095,6 +4095,84 @@
       scene.add(triangle);
     }
 
+    function orangeButtonHeight() {
+      return Math.max(4, elevationUnit * 0.12);
+    }
+
+    function orangeButtonRadius() {
+      return unit * 0.21;
+    }
+
+    function addOrangeButtonMesh(center, baseY, opacity, edgeOpacity, editorPick = null) {
+      const buttonHeight = orangeButtonHeight();
+
+      addOutlinedMesh(
+        cylinderGeometry(orangeButtonRadius(), buttonHeight),
+        "#f59e0b",
+        {
+          x: center.x,
+          y: baseY + buttonHeight / 2,
+          z: center.z
+        },
+        {
+          castShadow: renderContextCastsShadows(),
+          edgeThreshold: 24,
+          edgeOpacity,
+          opacity,
+          receiveShadow: false,
+          editorPick
+        }
+      );
+    }
+
+    function orangeButtonTerrainEditorPick(x, y, elevation, baseY) {
+      return {
+        kind: "terrain",
+        cells: [
+          {
+            gridX: x,
+            gridY: y,
+            left: x * unit + renderOffsetX(),
+            right: (x + 1) * unit + renderOffsetX(),
+            top: y * unit + renderOffsetZ(),
+            bottom: (y + 1) * unit + renderOffsetZ()
+          }
+        ],
+        topY: baseY + orangeButtonHeight(),
+        bottomY: baseY,
+        sourceLayer: elevation
+      };
+    }
+
+    function addTerrainOrangeButtonOverlays(now = performance.now()) {
+      const state = renderState();
+
+      for (let y = 0; y < state.height; y += 1) {
+        for (let x = 0; x < state.width; x += 1) {
+          const visibility = transitionPieceProgressForCell(x, y);
+
+          if (visibility <= 0.05) {
+            continue;
+          }
+
+          renderTerrainLayersAt(x, y, state)
+            .filter((layer) => layer.type === "orange_button")
+            .forEach((layer) => {
+              const elevation = Math.max(0, layer.elevation ?? 0);
+              const baseY = elevation * elevationUnit + actorVisualLift;
+
+              addOrangeButtonMesh(
+                cellCenter(x, y),
+                baseY,
+                visibility,
+                visibility,
+                orangeButtonTerrainEditorPick(x, y, elevation, baseY)
+              );
+            });
+        }
+      }
+    }
+
     function addTileTopDetails(x, y, layer, topY, now = performance.now()) {
       const visibility = transitionPieceProgressForCell(x, y);
 
@@ -4103,25 +4181,6 @@
       }
 
       const center = cellCenter(x, y);
-
-      if (layer.type === "orange_button") {
-        const buttonHeight = Math.max(4, elevationUnit * 0.12);
-        const buttonRadius = unit * 0.21;
-
-        addOutlinedMesh(
-          cylinderGeometry(buttonRadius, buttonHeight),
-          "#f59e0b",
-          {
-            x: center.x,
-            y: topY + buttonHeight / 2,
-            z: center.z
-          },
-          {
-            edgeThreshold: 24,
-            opacity: visibility
-          }
-        );
-      }
 
       if (layer.type === "player_lift") {
         const lift = clamp01(renderTerrainLayerLiftValue(layer, x, y, now));
@@ -5029,6 +5088,8 @@
             addTileTopDetails(x, y, descriptor.layer, descriptor.topY, now);
           }
         }
+
+        addTerrainOrangeButtonOverlays(now);
       }
     }
 
@@ -5862,6 +5923,32 @@
 
       if (actor.type === "floating_floor") {
         addFloatingFloor(actor, center, elevation, scale, sink, fade, opacity, visibility, now);
+        return;
+      }
+
+      if (actor.type === "orange_button") {
+        const buttonHeight = orangeButtonHeight();
+        const baseY = elevation * elevationUnit - sink + actorVisualLift;
+        const renderX = actor.renderX ?? actor.x;
+        const renderY = actor.renderY ?? actor.y;
+        const editorPick = {
+          kind: "actor",
+          cells: [
+            {
+              gridX: actor.x,
+              gridY: actor.y,
+              left: renderX * unit + renderOffsetX(),
+              right: (renderX + 1) * unit + renderOffsetX(),
+              top: renderY * unit + renderOffsetZ(),
+              bottom: (renderY + 1) * unit + renderOffsetZ()
+            }
+          ],
+          topY: baseY + buttonHeight,
+          bottomY: baseY,
+          sourceLayer: elevation
+        };
+
+        addOrangeButtonMesh(center, baseY, opacity, fade * visibility, editorPick);
         return;
       }
 

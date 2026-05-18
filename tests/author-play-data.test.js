@@ -131,6 +131,12 @@ assert.equal(adapter.setCellElevationToken(".+.", ".", 1, { stackBaseSurface: tr
 assert.equal(adapter.setCellElevationToken("W", ".", 0), ".+W");
 assert.equal(adapter.setCellElevationToken("W", "i", 2), "i+W");
 assert.equal(adapter.setCellElevationToken(".", "t1", 0, { preserveBaseSurface: true }), ".+t1");
+assert.equal(adapter.setSurfaceAttachmentToken(".", "o", 0), ".+o");
+assert.equal(adapter.setSurfaceAttachmentToken("i", "o", 0), "i+o");
+assert.equal(adapter.setSurfaceAttachmentToken("W", "o", 1), "W+o");
+assert.equal(adapter.setSurfaceAttachmentToken("Sr", "o", 1), "Sr");
+assert.equal(adapter.setSurfaceAttachmentToken("B", "o", 1), "B+o");
+assert.equal(adapter.setSurfaceAttachmentToken("+", "o", 0), "+");
 assert.equal(adapter.appendCellToken("+", "W"), "W");
 assert.equal(adapter.appendCellToken(".", "W"), ".+W");
 assert.equal(adapter.appendCellToken("W", "B"), "W+B");
@@ -166,15 +172,22 @@ assert.equal(raisedLiftPlayData.terrain[0][0].type, "player_lift");
 assert.equal(raisedLiftPlayData.terrain[0][0].raised, true);
 
 const orangePlayData = adapter.buildPlayData({
-  cells: [["O", "o+B"]],
+  cells: [["O", ".+o+B", "i+o", "W+o"]],
   height: 1,
-  width: 2
+  width: 4
 });
 assert.equal(orangePlayData.terrain[0][0].type, "orange_wall");
-assert.equal(orangePlayData.terrain[0][1].type, "orange_button");
+assert.equal(orangePlayData.terrain[0][1].type, "floor");
+assert.equal(orangePlayData.terrain[0][2].type, "ice");
+assert.equal(orangePlayData.terrain[0][3].type, "wall");
 assert.deepEqual(
-  orangePlayData.actors.map((actor) => [actor.type, actor.x, actor.y]),
-  [["weightless_box", 1, 0]]
+  orangePlayData.actors.map((actor) => [actor.type, actor.x, actor.y, actor.elevation]),
+  [
+    ["orange_button", 1, 0, 0],
+    ["weightless_box", 1, 0, 0],
+    ["orange_button", 2, 0, 0],
+    ["orange_button", 3, 0, 1]
+  ]
 );
 
 const puncherPlayData = adapter.buildPlayData({

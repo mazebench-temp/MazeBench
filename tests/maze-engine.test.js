@@ -1179,6 +1179,74 @@ function createState(playData) {
 }
 
 {
+  const terrain = floorTerrain(3, 1);
+  terrain[0][1] = { type: "orange_wall" };
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "box", x: 2, y: 0, removed: false },
+      { type: "orange_button", x: 2, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [1, 0]);
+  assert.equal(state.actorElevation[0], 0);
+}
+
+{
+  const terrain = floorTerrain(4, 1);
+  terrain[0][1] = { type: "ice" };
+  terrain[0][2] = { type: "ice" };
+  const { engine, state } = createState({
+    width: 4,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "orange_button", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "gem", x: 3, y: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [3, 0]);
+  assert.equal(state.actorRemoved[2], 1);
+}
+
+{
+  const terrain = floorTerrain(3, 1);
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, removed: false },
+      { type: "orange_button", x: 1, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const buttonMove = result.moves.find((move) => move.actorIndex === 2);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [2, 0]);
+  assert.deepEqual([state.actorX[2], state.actorY[2]], [2, 0]);
+  assert.equal(state.actorElevation[2], 1);
+  assert.equal(buttonMove.actorType, "orange_button");
+  assert.equal(buttonMove.fromX, 1);
+  assert.equal(buttonMove.toX, 2);
+}
+
+{
   const terrain = floorTerrain(4, 1);
   terrain[0][1] = { type: "orange_wall" };
   terrain[0][2] = { type: "orange_button" };

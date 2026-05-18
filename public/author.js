@@ -86,6 +86,7 @@
     normalizeAuthoringCellValue,
     normalizeCellValue,
     setCellElevationToken,
+    setSurfaceAttachmentToken,
     toolByName,
     toolByToken
   } = playDataAdapter;
@@ -785,7 +786,10 @@
     const height = 1;
     const cells = createBlankCells(width, height, authorData.defaultFloorToken);
 
-    cells[0][0] = tool.token;
+    cells[0][0] =
+      (tool.type || tool.name) === "orange_button"
+        ? appendCellToken(authorData.defaultFloorToken, tool.token)
+        : tool.token;
 
     return buildPlayData({
       cameraView: { width, height },
@@ -1364,6 +1368,10 @@
     return toolTypeForToken(token) === "puncher";
   }
 
+  function isOrangeButtonToken(token) {
+    return toolTypeForToken(token) === "orange_button";
+  }
+
   function directionForPaintTarget(target) {
     const dx = Math.sign(Number(target?.dx) || 0);
     const dy = Math.sign(Number(target?.dy) || 0);
@@ -1467,6 +1475,34 @@
     return true;
   }
 
+  function paintOrangeButtonTarget(target) {
+    if (!target || target.kind === "levelSwitch" || target.face !== "top") {
+      return false;
+    }
+
+    if (!isInsideEditorCell(target.paintX, target.paintY)) {
+      return false;
+    }
+
+    const paintLayer = adjustedPaintLayerForTarget(target);
+
+    if (paintLayer === null || paintLayer === undefined) {
+      return false;
+    }
+
+    const paintToken = effectivePaintToken();
+    const currentValue = state.cells[target.paintY][target.paintX];
+    const nextValue = setSurfaceAttachmentToken(currentValue, paintToken, paintLayer);
+
+    if (nextValue === currentValue) {
+      selectCell(target.paintX, target.paintY);
+      return false;
+    }
+
+    updateCellValue(target.paintX, target.paintY, nextValue);
+    return true;
+  }
+
   function paintFaceTarget(target) {
     if (!target || target.kind === "levelSwitch") {
       return false;
@@ -1500,6 +1536,10 @@
 
     if (isPuncherToken(state.selectedToken)) {
       return paintPuncherTarget(target);
+    }
+
+    if (isOrangeButtonToken(state.selectedToken)) {
+      return paintOrangeButtonTarget(target);
     }
 
     if (!isInsideEditorCell(target.paintX, target.paintY)) {
