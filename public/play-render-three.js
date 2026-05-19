@@ -4206,6 +4206,23 @@
       }
     }
 
+    function orangeButtonSurfaceBaseY(actor, elevation, sink, now = performance.now()) {
+      const defaultBaseY = elevation * elevationUnit - sink + actorVisualLift;
+
+      if (Math.abs(elevation) > 0.001 || Math.abs(sink) > 0.001) {
+        return defaultBaseY;
+      }
+
+      const surfaceDescriptor = terrainPieceDescriptorsAt(actor.x, actor.y, now)
+        .filter((descriptor) =>
+          (descriptor.type === "floor" || descriptor.type === "ice" || descriptor.type === "exit") &&
+          Math.abs((descriptor.terrainHeight ?? 0) - elevation) <= 0.001
+        )
+        .sort((left, right) => right.topY - left.topY)[0];
+
+      return surfaceDescriptor ? surfaceDescriptor.topY : defaultBaseY;
+    }
+
     function addTileTopDetails(x, y, layer, topY, now = performance.now()) {
       const visibility = transitionPieceProgressForCell(x, y);
 
@@ -5995,7 +6012,7 @@
 
       if (actor.type === "orange_button") {
         const buttonHeight = orangeButtonHeight();
-        const baseY = elevation * elevationUnit - sink + actorVisualLift;
+        const baseY = orangeButtonSurfaceBaseY(actor, elevation, sink, now);
         const renderX = actor.renderX ?? actor.x;
         const renderY = actor.renderY ?? actor.y;
         const editorPick = {
