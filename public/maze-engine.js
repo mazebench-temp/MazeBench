@@ -1156,6 +1156,52 @@
       );
     }
 
+    function terrainBlockingLayersAtElevation(
+      state,
+      x,
+      y,
+      elevation,
+      gateState,
+      orangeButtonsPressed = areOrangeButtonsPressed(state)
+    ) {
+      if (!isInsideBoard(x, y)) {
+        return [];
+      }
+
+      const cell = cellIndex(x, y);
+
+      return terrainLayersForCell(state, cell).filter((layer) =>
+        terrainLayerBlocksElevation(
+          state,
+          cell,
+          layer,
+          gateState,
+          orangeButtonsPressed,
+          elevation
+        )
+      );
+    }
+
+    function terrainBlocksOnlyByIceSlope(
+      state,
+      x,
+      y,
+      elevation,
+      gateState,
+      orangeButtonsPressed = areOrangeButtonsPressed(state)
+    ) {
+      const blockers = terrainBlockingLayersAtElevation(
+        state,
+        x,
+        y,
+        elevation,
+        gateState,
+        orangeButtonsPressed
+      );
+
+      return blockers.length > 0 && blockers.every((layer) => layer.type === terrainTypes.ice_slope);
+    }
+
     function actorSupportSurfaceHeightsAt(state, x, y, ignoredActors = null, includePlayers = false) {
       const heights = [];
 
@@ -2350,7 +2396,8 @@
       targetElevation,
       occupied,
       gateState,
-      orangeButtonsPressed
+      orangeButtonsPressed,
+      options = {}
     ) {
       if (
         !canWeightlessMemberEnter(
@@ -2363,10 +2410,55 @@
           orangeButtonsPressed
         )
       ) {
-        return false;
+        if (
+          !options.allowIceSlopeTransit ||
+          !terrainBlocksOnlyByIceSlope(
+            state,
+            targetX,
+            targetY,
+            targetElevation,
+            gateState,
+            orangeButtonsPressed
+          )
+        ) {
+          return false;
+        }
       }
 
       return !isOccupiedAtElevation(occupied, targetX, targetY, targetElevation);
+    }
+
+    function weightlessClusterHasIceSlopeTransit(
+      state,
+      members,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      return members.some((member) =>
+        terrainBlocksOnlyByIceSlope(
+          state,
+          state.actorX[member],
+          state.actorY[member],
+          actorElevation(state, member),
+          gateState,
+          orangeButtonsPressed
+        )
+      );
+    }
+
+    function weightlessClusterHasTrailingMember(state, members, dx, dy) {
+      const memberPositions = new Set(
+        members.map(
+          (member) =>
+            `${state.actorX[member]},${state.actorY[member]},${actorElevation(state, member)}`
+        )
+      );
+
+      return members.some((member) =>
+        memberPositions.has(
+          `${state.actorX[member] - dx},${state.actorY[member] - dy},${actorElevation(state, member)}`
+        )
+      );
     }
 
     function weightlessClusterStep(
@@ -2429,7 +2521,7 @@
           }
         }
 
-        if (!traversal) {
+        if (!traversal && options.allowIceSlopeTransit !== true) {
           traversal = resolveIceSlopeFallTraversalForLanding(
             state,
             targetX,
@@ -2442,7 +2534,7 @@
           );
         }
 
-        if (!traversal) {
+        if (!traversal && options.allowIceSlopeTransit !== true) {
           traversal = resolveIceSlopeTopSlideTraversal(
             state,
             targetX,
@@ -2488,9 +2580,19 @@
         slopePathOffsets = pathOffsets;
       }
 
+      const delaySlopeDescent =
+        slopeDelta?.elevation < 0 && weightlessClusterHasTrailingMember(state, members, dx, dy);
       const step = slopeDelta
-        ? { ...slopeDelta, pathOffsets: slopePathOffsets || [] }
+        ? {
+            ...slopeDelta,
+            elevation: delaySlopeDescent ? 0 : slopeDelta.elevation,
+            pathOffsets: delaySlopeDescent
+              ? (slopePathOffsets || []).map((point) => ({ ...point, elevation: 0 }))
+              : slopePathOffsets || []
+          }
         : { dx, dy, elevation: 0, pathOffsets: [] };
+      const allowIceSlopeTransit =
+        Boolean(slopeDelta) || options.allowIceSlopeTransit === true;
 
       if (
         members.every((member) => {
@@ -2506,7 +2608,8 @@
             targetElevation,
             occupied,
             gateState,
-            orangeButtonsPressed
+            orangeButtonsPressed,
+            { allowIceSlopeTransit }
           );
         })
       ) {
@@ -2819,6 +2922,12 @@
         const attemptSnapshot = pushContext ? cloneState(state) : null;
         const occupiedSnapshot = pushContext ? new Set(occupied) : null;
         const moveCount = moves.length;
+        const allowIceSlopeTransit = weightlessClusterHasIceSlopeTransit(
+          state,
+          members,
+          gateState,
+          orangeButtonsPressed
+        );
         const step = weightlessClusterStep(
           state,
           members,
@@ -2830,6 +2939,7 @@
           pushContext
             ? {
                 ignoredActors,
+                allowIceSlopeTransit,
                 pushSlopeBlocker: (blocker, pushDx = stepDx, pushDy = stepDy) => {
                   if (ignoredActors.has(blocker)) {
                     return false;
@@ -2853,7 +2963,7 @@
                   return result !== null;
                 }
               }
-            : {}
+            : { allowIceSlopeTransit }
         );
 
         if (!step) {
@@ -2972,6 +3082,12 @@
               gateState,
               orangeButtonsPressed
             )
+          ) &&
+          !weightlessClusterHasIceSlopeTransit(
+            state,
+            members,
+            gateState,
+            orangeButtonsPressed
           )
         ) {
           break;

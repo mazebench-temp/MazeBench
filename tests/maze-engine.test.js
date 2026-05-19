@@ -26,11 +26,31 @@ function iceSlopeLayer(direction = "right", elevation = 0) {
   };
 }
 
+function iceSlopeOnIceBlockLayer(direction = "right", elevation = 1) {
+  return {
+    type: "ice_slope",
+    layers: [
+      { type: "ice_block", elevation: 0 },
+      { type: "ice_slope", direction, elevation }
+    ]
+  };
+}
+
 function playerLiftLayer(elevation = 0, raised = false) {
   return {
     type: "player_lift",
     layers: [{ type: "player_lift", elevation, raised }],
     raised
+  };
+}
+
+function wallStack(count, startElevation = 0) {
+  return {
+    type: "wall",
+    layers: Array.from({ length: count }, (_, index) => ({
+      type: "wall",
+      elevation: startElevation + index
+    }))
   };
 }
 
@@ -614,6 +634,92 @@ function createState(playData) {
     { x: 4, y: 0, elevation: 0 },
     { x: 5, y: 0, elevation: 0 }
   ]);
+}
+
+{
+  const terrain = [[
+    wallStack(1),
+    wallStack(1),
+    iceBlockLayer(0),
+    iceBlockLayer(0),
+    iceSlopeOnIceBlockLayer("right", 1),
+    iceBlockLayer(0),
+    iceBlockLayer(0),
+    iceBlockLayer(0),
+    iceBlockLayer(0)
+  ]];
+  const { engine, state } = createState({
+    width: 9,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 3, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const boxMoves = result.moves.filter((move) => move.actorType === "weightless_box");
+
+  assert.equal(result.moved, true);
+  assert.deepEqual(boxMoves.map((move) => [move.toX, move.toElevation]), [
+    [5, 1],
+    [6, 1],
+    [7, 1]
+  ]);
+  assert.deepEqual(boxMoves[0].path, [
+    { x: 1, y: 0, elevation: 1 },
+    { x: 2, y: 0, elevation: 2 },
+    { x: 3, y: 0, elevation: 2 },
+    { x: 4, y: 0, elevation: 2 },
+    { x: 5, y: 0, elevation: 2 }
+  ]);
+  assert.equal(boxMoves[0].pathEndElevation, 2);
+}
+
+{
+  const terrain = [[
+    wallStack(2),
+    wallStack(2),
+    iceBlockLayer(1),
+    iceBlockLayer(1),
+    iceSlopeOnIceBlockLayer("left", 1),
+    iceBlockLayer(0),
+    iceBlockLayer(0),
+    iceBlockLayer(0),
+    iceBlockLayer(0)
+  ]];
+  const { engine, state } = createState({
+    width: 9,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 2, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 2, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 2, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 3, y: 0, elevation: 2, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const boxMoves = result.moves.filter((move) => move.actorType === "weightless_box");
+
+  assert.equal(result.moved, true);
+  assert.deepEqual(boxMoves.map((move) => [move.toX, move.toElevation]), [
+    [5, 1],
+    [6, 1],
+    [7, 1]
+  ]);
+  assert.deepEqual(boxMoves[0].path, [
+    { x: 1, y: 0, elevation: 2 },
+    { x: 2, y: 0, elevation: 2 },
+    { x: 3, y: 0, elevation: 2 },
+    { x: 4, y: 0, elevation: 2 },
+    { x: 5, y: 0, elevation: 2 }
+  ]);
+  assert.equal(boxMoves[0].pathEndElevation, 2);
 }
 
 {
