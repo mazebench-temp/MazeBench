@@ -2461,6 +2461,44 @@
       );
     }
 
+    function weightlessClusterShouldContinueSliding(
+      state,
+      members,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      const memberSet = new Set(members);
+      let hasIceSlideContact = false;
+
+      for (const member of members) {
+        const x = state.actorX[member];
+        const y = state.actorY[member];
+        const elevation = actorElevation(state, member);
+
+        if (isIceOrHole(state, x, y, elevation, gateState, orangeButtonsPressed)) {
+          hasIceSlideContact = true;
+          continue;
+        }
+
+        if (terrainBlocksOnlyByIceSlope(state, x, y, elevation, gateState, orangeButtonsPressed)) {
+          hasIceSlideContact = true;
+          continue;
+        }
+
+        if (
+          terrainSupportsElevation(state, x, y, elevation, gateState, orangeButtonsPressed) ||
+          actorSupportSurfaceHeightsAt(state, x, y, memberSet, true).includes(elevation)
+        ) {
+          return false;
+        }
+      }
+
+      return (
+        hasIceSlideContact ||
+        weightlessClusterHasIceSlopeTransit(state, members, gateState, orangeButtonsPressed)
+      );
+    }
+
     function weightlessClusterStep(
       state,
       members,
@@ -3072,24 +3110,7 @@
           break;
         }
 
-        if (
-          !members.every((member) =>
-            isIceOrHole(
-              state,
-              state.actorX[member],
-              state.actorY[member],
-              actorElevation(state, member),
-              gateState,
-              orangeButtonsPressed
-            )
-          ) &&
-          !weightlessClusterHasIceSlopeTransit(
-            state,
-            members,
-            gateState,
-            orangeButtonsPressed
-          )
-        ) {
+        if (!weightlessClusterShouldContinueSliding(state, members, gateState, orangeButtonsPressed)) {
           break;
         }
       }
@@ -4455,6 +4476,35 @@
 
           if ((originalElevations[member] || 0) !== toElevation || shouldFallIntoHole) {
             const moveRecord = ensureDynamicMove(member, toElevation);
+
+            if (
+              !shouldFallIntoHole &&
+              Array.isArray(moveRecord.path) &&
+              moveRecord.path.length > 0
+            ) {
+              const pathEnd = moveRecord.path[moveRecord.path.length - 1];
+
+              if (
+                pathEnd &&
+                pathEnd.x === state.actorX[member] &&
+                pathEnd.y === state.actorY[member] &&
+                pathEnd.elevation !== toElevation
+              ) {
+                if (typeof moveRecord.pathEndElevation !== "number") {
+                  moveRecord.pathEndElevation = pathEnd.elevation;
+                }
+
+                appendPathPoints(moveRecord.path, [
+                  {
+                    x: state.actorX[member],
+                    y: state.actorY[member],
+                    elevation: toElevation
+                  }
+                ]);
+                moveRecord.pathControlsElevation = true;
+              }
+            }
+
             moveRecord.toRemoved = shouldFallIntoHole;
           }
 
