@@ -3,7 +3,7 @@ h h h h h h h h h h h h h h h h
 h . . . . . . . . . . . . . . .
 h . . . . . # # # # . . . . . .
 h . . . O O # # # # h h h h h h
-h . . o O O # # # # h h h h h h
+h . . .+o O O # # # # h h h h h h
 h . . . . . O O O O . . . h # #
 # # . . . . O O O O . M1 . h # #
 # # . . . . O O O O . . . h # #

@@ -1,7 +1,7 @@
 h h h h h h h h h h h h h h h h
 h h h h h h h h h h h h h h h h
 h O O O . . h h . . . . . . . .
-h O O O o . h h . . . . . . p .
+h O O O .+o . h h . . . . . . p .
 h O O O . . h h . . . . . . . .
 h # # # . . h h . . # # # h h h
 h # # #+M0 +M0 .++M0 h++M0 h++M0 .++M0 .++M0 #+M0 #+M2 # h h h

@@ -7,7 +7,7 @@ h . . . . l h h . O O O O h # h
 h h . . . . h + + h h h O h # h
 # # . h h h h + h h h h O h # #
 h # . . . . . . . . . . M2 . # h
-h # . . . . M1 o . . . h h . # h
+h # . . . . M1 .+o . . . h h . # h
 h # . . . . . . . . . h h . # h
 h # . M0 M0 M0 . . l . O h L . # h
 h # . . . . . . . . . h h h # h

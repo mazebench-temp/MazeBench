@@ -9,7 +9,7 @@ h . . . . . . h h h M0+h h h h h h
 h . . . . . . h h h M0+h h h h h h
 h . . . . . . . . . M0 . . . . h
 h . . . . . . . . . M0 . . . . h
-h . . . . . . . . . M0 o . l . h
+h . . . . . . . . . M0 .+o . l . h
 h . . L . . . . . . . . . . . h
 h . . O . . . . . . . . . . . h
 h h h O O # # # # # # h h h h h

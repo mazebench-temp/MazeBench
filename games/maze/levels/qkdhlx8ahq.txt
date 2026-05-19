@@ -6,7 +6,7 @@ h . M0 . # # h h h # h h h h . h
 h . M0 . # # # # # # # #+M2 #+M2 # . .
 h . M0 . O . . . h . . . . O . .
 h . M0 . O . . . h . . . . O . G
-h . M0 . O . o O O # . L . O . .
+h . M0 . O . .+o O O # . L . O . .
 h . M0 . O . M1 . . # . . . O . .
 h . M0 . O . . L . # . . . O . .
 h . M0 . # # # # # # h . . . h h
