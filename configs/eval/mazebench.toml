@@ -1,0 +1,8 @@
+model = "openai/gpt-4.1-mini"
+num_examples = 1
+rollouts_per_example = 1
+max_tokens = 256
+temperature = 0.2
+
+[[eval]]
+env_id = "mazebench"

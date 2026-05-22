@@ -330,6 +330,68 @@
       updateCameraDirectionMapper();
     }
 
+    function setDebugCameraView(options = {}) {
+      if (!THREE) {
+        return;
+      }
+
+      const requestedMode =
+        options.mode === "perspective" || options.mode === "isometric" ? options.mode : cameraMode;
+
+      debugCameraActive = true;
+
+      if (
+        cameraMode !== requestedMode ||
+        (requestedMode === "perspective" && !camera?.isPerspectiveCamera) ||
+        (requestedMode === "isometric" && !camera?.isOrthographicCamera)
+      ) {
+        cameraMode = requestedMode;
+        createCameraForMode();
+      } else {
+        syncRendererSize();
+      }
+
+      if (Number.isFinite(options.yaw)) {
+        debugCameraTargetYaw = options.yaw;
+      }
+
+      if (Number.isFinite(options.tilt)) {
+        debugCameraTargetTilt = clampDebugCameraTilt(options.tilt);
+      }
+
+      if (Number.isFinite(options.zoom)) {
+        debugCameraTargetZoom = clampDebugCameraZoom(options.zoom);
+      }
+
+      if (options.animate === true) {
+        animateDebugCameraToTarget(Number(options.durationMs) || 260, {
+          animateTilt: true
+        });
+        return;
+      }
+
+      if (debugCameraAnimationFrameId) {
+        window.cancelAnimationFrame(debugCameraAnimationFrameId);
+        debugCameraAnimationFrameId = 0;
+      }
+
+      debugCameraAnimation = null;
+      debugCameraYaw = debugCameraTargetYaw;
+      debugCameraTilt = debugCameraTargetTilt;
+      debugCameraZoom = debugCameraTargetZoom;
+      lastSceneSignature = "";
+      updateCameraModeToggle();
+      updateCameraDirectionMapper();
+
+      if (typeof app.render === "function") {
+        app.render();
+      }
+    }
+
+    function isDebugCameraAnimating() {
+      return Boolean(debugCameraAnimation || debugCameraAnimationFrameId || debugCameraTiltHoldFrameId);
+    }
+
     function debugCameraSignature() {
       if (!debugCameraActive) {
         return `camera:${cameraMode}:default`;
@@ -396,7 +458,15 @@
         return false;
       }
 
-      const progress = clamp01((now - debugCameraAnimation.startMs) / debugCameraAnimation.durationMs);
+      const replayFrameStepMs = Number(app.replayAnimationFrameStepMs);
+      let elapsedMs = now - debugCameraAnimation.startMs;
+
+      if (Number.isFinite(replayFrameStepMs) && replayFrameStepMs > 0) {
+        elapsedMs = (debugCameraAnimation.elapsedMs || 0) + replayFrameStepMs;
+        debugCameraAnimation.elapsedMs = elapsedMs;
+      }
+
+      const progress = clamp01(elapsedMs / debugCameraAnimation.durationMs);
       const eased = app.easeInOutQuad ? app.easeInOutQuad(progress) : progress;
       debugCameraYaw =
         debugCameraAnimation.startYaw +
@@ -7384,7 +7454,9 @@
 
     app.threeRenderer = {
       pickEditorFace,
+      isDebugCameraAnimating,
       setEditorHoverTarget,
+      setDebugCameraView,
       useLevelPreviewCamera,
       invalidateSceneCache,
       prewarmAdjacentLevelTransition,

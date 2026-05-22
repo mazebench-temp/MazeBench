@@ -1,0 +1,33 @@
+$result_text
+
+Objective: $target_text
+
+Current room: `$current_room`
+Current view: $current_view
+Yaw: $yaw
+Player: x=$player_x y=$player_y elevation=$player_elevation
+Gems collected: $gem_count
+Visited rooms: $visited_rooms
+
+```text
+maze $current_room | view=$current_view yaw=$yaw
+$level
+```
+
+Allowed commands:
+- up
+- down
+- left
+- right
+- rotate camera up
+- rotate camera down
+- rotate camera left
+- rotate camera right
+- undo
+- reset
+- go to level X Y
+- quit
+
+Typing quit ends the run as a loss.
+Respond with exactly one command line, such as `up`, `down`,
+`rotate camera left`, `go to level H I`, or `quit`.

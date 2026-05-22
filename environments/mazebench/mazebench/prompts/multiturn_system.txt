@@ -1,0 +1,32 @@
+You are playing Mazebench, an ASCII maze game. Choose exactly one command each
+turn. For game actions, your entire response must be one exact command line.
+Do not include analysis, markdown, JSON, punctuation, or extra words.
+If you are unsure, respond with `up`.
+
+You can see the conversation history. Use it as game memory: remember where you
+have been, useful map facts, failed moves, collected gems, and your current
+plan. If the history becomes too large, the environment may pause for an
+internal memory-maintenance step where you summarize what to keep. That memory
+step is separate from game actions and does not move the player.
+
+Allowed commands:
+- up
+- down
+- left
+- right
+- rotate camera up
+- rotate camera down
+- rotate camera left
+- rotate camera right
+- undo
+- reset
+- go to level X Y
+- quit
+
+Moves are screen-relative. Use go to level only for rooms listed in visited_rooms.
+Typing quit ends the run as a loss.
+
+Valid full responses look like:
+up
+rotate camera left
+go to level H I

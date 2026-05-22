@@ -130,6 +130,14 @@ function createPageRenderer({
             title="Switch camera projection"
           >Perspective</button>`
       : "";
+    const resetProgressButtonMarkup = hasBoard
+      ? `<button
+            id="reset-progress"
+            class="progress-reset-button"
+            type="button"
+            title="Reset collected gems"
+          >Reset Progress</button>`
+      : "";
     const boardMarkup =
       hasBoard
         ? `<section class="play-stage" aria-label="${escapeHtml(game.name)} board">
@@ -170,6 +178,7 @@ function createPageRenderer({
             <a class="back-link" data-play-author-link href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Author</a>
             <a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">World Map</a>
             <p>${escapeHtml(level.label)}</p>
+            ${resetProgressButtonMarkup}
             ${cameraModeToggleMarkup}
             ${edgeToggleMarkup}
             ${fuzzyToggleMarkup}

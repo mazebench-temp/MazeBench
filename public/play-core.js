@@ -86,6 +86,7 @@
     fuzzyToggle,
     edgeToggle,
     cameraModeToggle,
+    resetProgressButton,
     enableCameraControls
   }) {
     const currentPathSegments = window.location.pathname.split("/").filter(Boolean);
@@ -134,6 +135,7 @@
       fuzzyToggle,
       edgeToggle,
       cameraModeToggle,
+      resetProgressButton,
       TILE_SIZE: 64,
       FUZZY_AMOUNT: 0.1,
       NOISE_FPS: 8,
@@ -153,6 +155,7 @@
       GEM_DRAW_WIDTH: 64 * 0.56,
       GEM_SHADOW_WIDTH: 64 * 0.3,
       GEM_SHADOW_HEIGHT: 64 * 0.1,
+      COLLECTED_GEM_ALPHA: 0.22,
       FLOATING_FLOOR_HOVER_BASE: 64 * 0.18,
       FLOATING_FLOOR_HOVER_BOB: 64 * 0.045,
       FLOATING_FLOOR_SHADOW_INSET: 64 * 0.16,
@@ -182,6 +185,7 @@
       weightlessGroupCanvas: document.createElement("canvas"),
       imageCache: new Map(),
       modelTextCache: new Map(),
+      collectedGemIds: new Set(),
       moveHistory: [],
       animationFrameId: null,
       isAnimating: false,
@@ -263,7 +267,9 @@
         width: Number(levelState.width) || 0,
         height: Number(levelState.height) || 0,
         terrain: cloneTerrainState(levelState.terrain),
-        actors: (levelState.actors || []).map((actor) => createRuntimeActor(actor)),
+        actors: (levelState.actors || []).map((actor, index) =>
+          createRuntimeActor(actor, index, levelState.levelId)
+        ),
         raisedPlayerGates: Array.isArray(levelState.raisedPlayerGates)
           ? levelState.raisedPlayerGates.slice()
           : null,
@@ -370,11 +376,227 @@
       return (((actor.x + 1) * 0.61803398875 + (actor.y + 1) * 1.41421356237) % 1) * Math.PI * 2;
     }
 
-    function createRuntimeActor(actor) {
-      const removed = Boolean(actor?.removed);
+    function collectedGemStorageKey() {
+      return `pixel-game:${app.currentGameId}:collected-gems:v1`;
+    }
+
+    function loadCollectedGemIds() {
+      try {
+        const raw = window.localStorage?.getItem(collectedGemStorageKey());
+        const values = JSON.parse(raw || "[]");
+        return new Set(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
+      } catch (error) {
+        return new Set();
+      }
+    }
+
+    function saveCollectedGemIds() {
+      try {
+        window.localStorage?.setItem(
+          collectedGemStorageKey(),
+          JSON.stringify(Array.from(app.collectedGemIds).sort())
+        );
+      } catch (error) {
+        // Storage can fail in private browsing or constrained embedded contexts.
+      }
+    }
+
+    function gemCollectionId(actor, index = 0, levelId = app.currentLevelId) {
+      if (actor?.type !== "gem" || !levelId) {
+        return null;
+      }
+
+      const x = Number.isInteger(actor.x) ? actor.x : 0;
+      const y = Number.isInteger(actor.y) ? actor.y : 0;
+      const elevation = Number.isInteger(actor.elevation) ? actor.elevation : 0;
+      return `${levelId}:gem:${index}:${x},${y},${elevation}`;
+    }
+
+    function applyCollectedGemVisual(actor) {
+      if (!actor || actor.type !== "gem") {
+        return;
+      }
+
+      actor.collected = true;
+      actor.removed = true;
+      actor.showCollectedGhost = true;
+      actor.renderScale = 1;
+      actor.renderAlpha = app.COLLECTED_GEM_ALPHA;
+      actor.renderSink = 0;
+      actor.renderInHole = false;
+    }
+
+    function hideCollectedGemVisual(actor) {
+      if (!actor || actor.type !== "gem") {
+        return;
+      }
+
+      actor.collected = true;
+      actor.removed = true;
+      actor.showCollectedGhost = false;
+      actor.renderScale = 0;
+      actor.renderAlpha = 0;
+      actor.renderSink = 0;
+      actor.renderInHole = false;
+    }
+
+    function clearCollectedGemVisual(actor) {
+      if (!actor || actor.type !== "gem" || actor.collected !== true) {
+        return;
+      }
+
+      actor.collected = false;
+      actor.removed = false;
+      actor.showCollectedGhost = false;
+      actor.renderScale = 1;
+      actor.renderAlpha = 1;
+      actor.renderSink = 0;
+      actor.renderInHole = false;
+    }
+
+    function hideCollectedGemsAtPlayers() {
+      const players = app.state.actors.filter(
+        (actor) => !actor.removed && isPlayerActorType(actor?.type)
+      );
+      let changed = false;
+
+      if (players.length === 0) {
+        return false;
+      }
+
+      app.state.actors.forEach((actor) => {
+        if (actor.type !== "gem" || actor.collected !== true || actor.showCollectedGhost !== true) {
+          return;
+        }
+
+        const isUnderPlayer = players.some(
+          (player) =>
+            player.x === actor.x &&
+            player.y === actor.y &&
+            (player.elevation ?? 0) === (actor.elevation ?? 0)
+        );
+
+        if (isUnderPlayer) {
+          hideCollectedGemVisual(actor);
+          changed = true;
+        }
+      });
+
+      return changed;
+    }
+
+    function applyCollectedGemProgressToActors(actors = app.state.actors, levelId = app.currentLevelId) {
+      actors.forEach((actor, index) => {
+        const collectionId = actor.collectionId || gemCollectionId(actor, index, levelId);
+
+        if (!collectionId) {
+          return;
+        }
+
+        actor.collectionId = collectionId;
+        actor.showCollectedGhost = app.collectedGemIds.has(collectionId);
+
+        if (app.collectedGemIds.has(collectionId)) {
+          applyCollectedGemVisual(actor);
+        }
+      });
+    }
+
+    function recordCollectedGemsFromMoves(moves) {
+      let changed = false;
+
+      (moves || []).forEach((move) => {
+        const actor = move?.actor;
+
+        if (!actor || actor.type !== "gem" || move.toRemoved !== true) {
+          return;
+        }
+
+        const collectionId =
+          actor.collectionId || gemCollectionId(actor, move.actorIndex, app.currentLevelId);
+
+        if (!collectionId || app.collectedGemIds.has(collectionId)) {
+          return;
+        }
+
+        actor.collectionId = collectionId;
+        actor.collected = true;
+        actor.showCollectedGhost = false;
+        app.collectedGemIds.add(collectionId);
+        changed = true;
+      });
+
+      if (changed) {
+        saveCollectedGemIds();
+        syncResetProgressButton();
+      }
+    }
+
+    function syncResetProgressButton() {
+      if (!app.resetProgressButton) {
+        return;
+      }
+
+      const hasProgress = app.collectedGemIds.size > 0;
+      app.resetProgressButton.disabled = false;
+      app.resetProgressButton.dataset.hasProgress = hasProgress ? "true" : "false";
+      app.resetProgressButton.setAttribute("aria-disabled", "false");
+      app.resetProgressButton.setAttribute("aria-label", "Reset collected gem progress");
+    }
+
+    function clearCollectedGemSavedState() {
+      (app.initialPositions || []).forEach((position, index) => {
+        const actor = app.state.actors[index];
+
+        if (!position || actor?.type !== "gem") {
+          return;
+        }
+
+        position.collectionId =
+          position.collectionId || actor.collectionId || gemCollectionId(actor, index, app.currentLevelId);
+        position.collected = false;
+        position.removed = false;
+        position.showCollectedGhost = false;
+      });
+
+      (app.levelEntrySnapshot?.actors || []).forEach((actor, index) => {
+        if (!actor || actor.type !== "gem") {
+          return;
+        }
+
+        actor.collectionId =
+          actor.collectionId ||
+          gemCollectionId(actor, index, app.levelEntrySnapshot?.levelId || app.currentLevelId);
+        actor.collected = false;
+        actor.removed = false;
+        actor.showCollectedGhost = false;
+      });
+    }
+
+    function resetCollectionProgress() {
+      app.collectedGemIds.clear();
+      saveCollectedGemIds();
+      app.state.actors.forEach((actor) => clearCollectedGemVisual(actor));
+      clearCollectedGemSavedState();
+      app.horizontalNeighborLevelStates.clear();
+      syncHorizontalNeighborLevelStates();
+      syncResetProgressButton();
+      syncFloatingFloorTicker();
+      app.render();
+    }
+
+    app.collectedGemIds = loadCollectedGemIds();
+
+    function createRuntimeActor(actor, index = 0, levelId = app.currentLevelId) {
+      const collectionId = gemCollectionId(actor, index, levelId);
+      const collected = collectionId ? app.collectedGemIds.has(collectionId) : false;
+      const removed = Boolean(actor?.removed) || collected;
       const elevation = actor?.elevation ?? 0;
       const runtimeActor = {
         ...actor,
+        collectionId: collectionId || actor?.collectionId || null,
+        collected: actor?.collected === true || collected,
+        showCollectedGhost: actor?.showCollectedGhost === true || collected,
         hoverSeed: actor?.hoverSeed ?? hoverSeedForActor(actor),
         renderX: actor?.renderX ?? actor.x,
         renderY: actor?.renderY ?? actor.y,
@@ -386,6 +608,10 @@
         renderInHole: Boolean(actor?.renderInHole),
         removed
       };
+
+      if (collected) {
+        applyCollectedGemVisual(runtimeActor);
+      }
 
       Object.defineProperty(runtimeActor, "__explicitElevation", {
         value: Object.prototype.hasOwnProperty.call(actor ?? {}, "elevation")
@@ -438,7 +664,9 @@
       });
     }
 
-    app.state.actors = app.state.actors.map((actor) => createRuntimeActor(actor));
+    app.state.actors = app.state.actors.map((actor, index) =>
+      createRuntimeActor(actor, index, app.currentLevelId)
+    );
     registerTerrainImageUrls(app.state.terrain);
     registerActorImageUrls(app.state.actors);
     registerImageUrl(app.PLAYER_LIFT_ARROW_URL);
@@ -462,7 +690,7 @@
       alpha: false,
       antialias: false,
       premultipliedAlpha: false,
-      preserveDrawingBuffer: false
+      preserveDrawingBuffer: Boolean(window.__PIXEL_GAME_REPLAY_CAPTURE__)
     });
     app.fallbackCtx = app.gl ? null : canvas.getContext("2d");
 
@@ -807,7 +1035,10 @@
         x: actor.x,
         y: actor.y,
         removed: actor.removed,
-        elevation: actor.elevation ?? 0
+        elevation: actor.elevation ?? 0,
+        collectionId: actor.collectionId || null,
+        collected: actor.collected === true,
+        showCollectedGhost: actor.showCollectedGhost === true
       }));
     }
 
@@ -818,6 +1049,9 @@
         label: actor.label,
         imageUrl: actor.imageUrl || null,
         modelUrl: actor.modelUrl || null,
+        collectionId: actor.collectionId || null,
+        collected: actor.collected === true,
+        showCollectedGhost: actor.showCollectedGhost === true,
         x: actor.x,
         y: actor.y,
         removed: Boolean(actor.removed),
@@ -1049,7 +1283,9 @@
       app.state.width = levelState.width;
       app.state.height = levelState.height;
       app.state.terrain = cloneTerrainState(levelState.terrain || []);
-      app.state.actors = (levelState.actors || []).map((actor) => createRuntimeActor(actor));
+      app.state.actors = (levelState.actors || []).map((actor, index) =>
+        createRuntimeActor(actor, index, levelState.levelId || app.currentLevelId)
+      );
       registerTerrainImageUrls(app.state.terrain);
       registerActorImageUrls(app.state.actors);
       updateBoardMetrics(app.state.width, app.state.height);
@@ -1122,6 +1358,20 @@
         actor.renderX = target.x;
         actor.renderY = target.y;
         actor.renderElevation = actor.elevation;
+        actor.collectionId = target.collectionId || actor.collectionId || null;
+        actor.collected = target.collected === true || (
+          actor.collectionId ? app.collectedGemIds.has(actor.collectionId) : false
+        );
+
+        if (actor.collected && actor.type === "gem") {
+          if (target.showCollectedGhost === true) {
+            applyCollectedGemVisual(actor);
+          } else {
+            hideCollectedGemVisual(actor);
+          }
+          return;
+        }
+
         actor.renderScale = actor.removed ? 0 : 1;
         actor.renderAlpha = actor.removed ? 0 : 1;
         actor.renderSink = actor.removed ? app.HOLE_SINK_DISTANCE : 0;
@@ -2508,8 +2758,9 @@
 
       app.mazeFrame.style.width = `${boardSize}px`;
       app.mazeFrame.style.height = `${boardSize}px`;
-      const controlWidth = Math.min(app.playStage.clientWidth, boardSize + marginRight);
-      app.playHeader.style.width = `${controlWidth}px`;
+      const shellWidth = app.playShell.clientWidth || app.playStage.clientWidth;
+      const controlWidth = Math.max(boardSize + marginRight, app.playStage.clientWidth);
+      app.playHeader.style.width = `${Math.min(shellWidth, controlWidth)}px`;
     }
 
     function preloadImages() {
@@ -2536,6 +2787,15 @@
       queueHorizontalNeighborLevelState,
       syncHorizontalNeighborLevelStates,
       createRuntimeActor,
+      gemCollectionId,
+      applyCollectedGemVisual,
+      hideCollectedGemVisual,
+      clearCollectedGemVisual,
+      hideCollectedGemsAtPlayers,
+      applyCollectedGemProgressToActors,
+      recordCollectedGemsFromMoves,
+      resetCollectionProgress,
+      syncResetProgressButton,
       registerImageUrl,
       registerTerrainImageUrls,
       registerActorImageUrls,
@@ -2639,6 +2899,7 @@
     rememberHorizontalNeighborLevelState(playData);
     syncHorizontalNeighborLevelStates();
     syncCameraTarget(true);
+    syncResetProgressButton();
     app.initialPositions = cloneActorPositions();
     app.initialTerrain = cloneTerrainState(app.state.terrain);
     app.levelEntrySnapshot = cloneLevelSnapshot();

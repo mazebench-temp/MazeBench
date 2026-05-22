@@ -33,6 +33,17 @@
     const HOLE_FADE_SINK_DISTANCE = Math.max(HOLE_SINK_DISTANCE * 0.72, app.TILE_SIZE * 2);
 
     function createAnimationElapsedTracker() {
+      const replayFrameStepMs = Number(app.replayAnimationFrameStepMs);
+
+      if (Number.isFinite(replayFrameStepMs) && replayFrameStepMs > 0) {
+        let replayElapsedMs = 0;
+
+        return function replayAnimationElapsed() {
+          replayElapsedMs += replayFrameStepMs;
+          return replayElapsedMs;
+        };
+      }
+
       const requestedAt = performance.now();
       let elapsedMs = 0;
       let previousNow = null;
@@ -969,8 +980,9 @@
       startMovePhase(false);
     }
 
-    function buildMovesToPositions(targetPositions) {
+    function buildMovesToPositions(targetPositions, options = {}) {
       const moves = [];
+      const collectedGemVisual = options.collectedGemVisual || null;
 
       state.actors.forEach((actor, index) => {
         const target = targetPositions[index];
@@ -985,9 +997,16 @@
         const toRemoved = Boolean(target.removed);
         const fromElevation = actor.elevation ?? 0;
         const toElevation = target.elevation ?? 0;
+        const isCollectedGemTarget =
+          actor.type === "gem" &&
+          (target.collected === true ||
+            (target.collectionId && app.collectedGemIds?.has?.(target.collectionId)) ||
+            (actor.collectionId && app.collectedGemIds?.has?.(actor.collectionId)));
         actor.x = target.x;
         actor.y = target.y;
         actor.elevation = toElevation;
+        actor.collectionId = target.collectionId || actor.collectionId || null;
+        actor.collected = isCollectedGemTarget;
 
         if (!toRemoved) {
           actor.removed = false;
@@ -1002,6 +1021,14 @@
           actor.renderX = target.x;
           actor.renderY = target.y;
           actor.renderElevation = toElevation;
+          if (isCollectedGemTarget) {
+            if (collectedGemVisual === "ghost" || target.showCollectedGhost === true) {
+              app.applyCollectedGemVisual?.(actor);
+            } else {
+              app.hideCollectedGemVisual?.(actor);
+            }
+            return;
+          }
           actor.renderScale = toRemoved ? 0 : 1;
           actor.renderAlpha = toRemoved ? 0 : 1;
           actor.renderSink = toRemoved ? HOLE_SINK_DISTANCE : 0;
@@ -1030,6 +1057,7 @@
           toElevation,
           snapHoleRestore: fromRemoved && !toRemoved,
           skipHoleFall: actor.type === "floating_floor" && fromRemoved !== toRemoved,
+          collectedGemVisual,
           visibleDuringMove:
             fromRemoved && !toRemoved
               ? true
@@ -1071,6 +1099,9 @@
 
       movement.performPlayerMove(dx, dy, {
         animate: true,
+        durationMs: Number.isFinite(app.replayMoveDurationMs)
+          ? app.replayMoveDurationMs
+          : null,
         recordHistory: true
       });
     }
@@ -1102,7 +1133,9 @@
 
       const raisedPlayerGates = computeRaisedPlayerGateSet();
       const raisedOrangeWalls = computeRaisedOrangeWallSet();
-      const moves = buildMovesToPositions(previousState.actors);
+      const moves = buildMovesToPositions(previousState.actors, {
+        collectedGemVisual: "hidden"
+      });
       movement.applyUndoIceSlideMetadata(moves, previousState);
       const hasLiftReversal = moves.some(
         (move) => {
@@ -1150,7 +1183,9 @@
       restoreTerrainState(app.initialTerrain);
       app.gateRenderOverride = computeRaisedPlayerGateSet();
       app.orangeWallRenderOverride = computeRaisedOrangeWallSet();
-      const moves = buildMovesToPositions(app.initialPositions);
+      const moves = buildMovesToPositions(app.initialPositions, {
+        collectedGemVisual: "ghost"
+      });
 
       if (moves.length > 0) {
         animateMoves(moves, MOVE_DURATION_MS);

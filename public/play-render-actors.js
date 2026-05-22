@@ -796,7 +796,9 @@
       }
 
       state.actors.forEach((actor, index) => {
-        if (actor.removed) {
+        const isCollectedGem = actor.type === "gem" && actor.showCollectedGhost === true;
+
+        if (actor.removed && !isCollectedGem) {
           return;
         }
 
@@ -893,7 +895,9 @@
     }
 
     function paintActor(actor, now = performance.now()) {
-      if (actor.removed) {
+      const isCollectedGem = actor.type === "gem" && actor.showCollectedGhost === true;
+
+      if (actor.removed && !isCollectedGem) {
         return;
       }
 

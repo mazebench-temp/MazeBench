@@ -60,7 +60,10 @@
         x: actor.x,
         y: actor.y,
         removed: Boolean(actor.removed),
-        elevation: actor.elevation ?? 0
+        elevation: actor.elevation ?? 0,
+        collectionId: actor.collectionId || null,
+        collected: actor.collected === true,
+        showCollectedGhost: actor.showCollectedGhost === true
       }));
     }
 

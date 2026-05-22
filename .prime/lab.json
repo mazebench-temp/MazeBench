@@ -1,0 +1,10 @@
+{
+  "choices": {
+    "agents": [
+      "codex"
+    ],
+    "primary_agent": "codex",
+    "use_multiple_agents": false
+  },
+  "setup_source": "prime lab setup"
+}

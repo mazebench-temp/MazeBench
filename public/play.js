@@ -43,7 +43,34 @@
     return edgeToggle;
   }
 
+  function ensureResetProgressButton() {
+    const existing = document.getElementById("reset-progress");
+
+    if (existing) {
+      existing.disabled = false;
+      return existing;
+    }
+
+    const headerMeta = document.querySelector(".play-header-meta");
+
+    if (!headerMeta) {
+      return null;
+    }
+
+    const resetProgressButton = document.createElement("button");
+    resetProgressButton.id = "reset-progress";
+    resetProgressButton.className = "progress-reset-button";
+    resetProgressButton.type = "button";
+    resetProgressButton.textContent = "Reset Progress";
+    resetProgressButton.title = "Reset collected gems";
+
+    const cameraModeToggle = document.getElementById("camera-mode-toggle");
+    headerMeta.insertBefore(resetProgressButton, cameraModeToggle || headerMeta.firstChild);
+    return resetProgressButton;
+  }
+
   const edgeToggle = ensureEdgeToggle();
+  const resetProgressButton = ensureResetProgressButton();
   const app = modules.createPlayCore({
     playData,
     canvas,
@@ -54,6 +81,7 @@
     fuzzyToggle: document.getElementById("fuzzy-toggle"),
     edgeToggle,
     cameraModeToggle: document.getElementById("camera-mode-toggle"),
+    resetProgressButton,
     enableCameraControls: true
   });
 
@@ -132,11 +160,18 @@
     });
   }
 
+  if (app.resetProgressButton) {
+    app.resetProgressButton.addEventListener("click", function () {
+      app.resetCollectionProgress();
+    });
+  }
+
   app.syncPlayLayout();
   app.setupCanvas();
   app.syncCameraTarget(true);
   app.syncFuzzyToggle();
   app.syncEdgeToggle();
+  app.syncResetProgressButton();
   app.syncNoiseTicker();
   app.syncFloatingFloorTicker();
   app.preloadImages().finally(app.render);

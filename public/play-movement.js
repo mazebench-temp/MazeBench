@@ -243,7 +243,8 @@
           finalElevation = toElevation,
           visualOnly = false,
           toRemoved = false,
-          skipHoleFall = false
+          skipHoleFall = false,
+          collectedGemVisual = null
         }) => {
           actor.x = visualOnly ? finalX : toX;
           actor.y = visualOnly ? finalY : toY;
@@ -251,12 +252,26 @@
           actor.renderY = actor.y;
           actor.elevation = visualOnly ? finalElevation : toElevation;
           actor.renderElevation = actor.elevation;
-          actor.renderScale = toRemoved ? 0 : 1;
-          actor.renderAlpha = toRemoved ? 0 : 1;
-          actor.renderSink = toRemoved && !skipHoleFall ? HOLE_SINK_DISTANCE : 0;
           actor.renderInHole = false;
           actor.renderPunchEffect = false;
           actor.removed = Boolean(toRemoved);
+
+          if (
+            actor.type === "gem" &&
+            (actor.collected === true ||
+              (actor.collectionId && app.collectedGemIds?.has?.(actor.collectionId)))
+          ) {
+            if (collectedGemVisual === "ghost" && toRemoved !== true) {
+              app.applyCollectedGemVisual?.(actor);
+            } else {
+              app.hideCollectedGemVisual?.(actor);
+            }
+            return;
+          }
+
+          actor.renderScale = toRemoved ? 0 : 1;
+          actor.renderAlpha = toRemoved ? 0 : 1;
+          actor.renderSink = toRemoved && !skipHoleFall ? HOLE_SINK_DISTANCE : 0;
         }
       );
 
@@ -267,6 +282,8 @@
 
         fillHoleAt(fillHoleX, fillHoleY);
       });
+
+      app.hideCollectedGemsAtPlayers?.();
     }
 
     function applyMoveLogicalPositions(moves) {
@@ -284,6 +301,9 @@
       const animate = options.animate !== false;
       const recordHistory = options.recordHistory !== false;
       const onFinish = typeof options.onFinish === "function" ? options.onFinish : null;
+      const durationMs = Number.isFinite(options.durationMs)
+        ? Math.max(0, options.durationMs)
+        : null;
       const engine = createCurrentEngine();
       const engineState = engine.cloneState(engine.initialState);
       const previousState = {
@@ -294,6 +314,7 @@
       const raisedOrangeWalls = computeRaisedOrangeWallSet();
       const moveResult = engine.move(engineState, dx, dy);
       const moves = moveResult.moves.map(moveFromEngineRecord).filter(Boolean);
+      app.recordCollectedGemsFromMoves?.(moves);
       const liftToggles = Array.isArray(moveResult.liftToggles) ? moveResult.liftToggles : [];
       const finalRaisedOrangeWalls = computeRaisedOrangeWallSet(
         actorSnapshotsFromEngineState(engineState)
@@ -315,7 +336,7 @@
           applyMoveLogicalPositions(moves);
           app.gateRenderOverride = raisedPlayerGates;
           app.orangeWallRenderOverride = raisedOrangeWalls;
-          app.animateMoves(moves, null, {
+          app.animateMoves(moves, durationMs, {
             onFinish,
             preTerrainLiftMoves,
             startLiftPhase: () => {

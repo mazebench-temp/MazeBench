@@ -6,3 +6,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .env
+.venv/
+
+# outputs from `prime eval run`
+/outputs/
+/environments/*/outputs/

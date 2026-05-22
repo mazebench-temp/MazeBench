@@ -1,0 +1,2240 @@
+#!/usr/bin/env node
+
+const fs = require("node:fs");
+const path = require("node:path");
+const readline = require("node:readline");
+const vm = require("node:vm");
+
+const {
+  defaultLevelIdForGame,
+  getGame,
+  getLevel,
+  getLevelState
+} = require("../server/app");
+
+const ROOT_DIR = path.resolve(__dirname, "..");
+
+function normalizeGameWonGemCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? count : 100;
+}
+
+function configuredGameWonGemCount() {
+  if (process.env.MAZEBENCH_GAME_WON_GEM_COUNT) {
+    return normalizeGameWonGemCount(process.env.MAZEBENCH_GAME_WON_GEM_COUNT);
+  }
+
+  const candidates = [
+    path.join(ROOT_DIR, "environments", "mazebench", "mazebench", "mazebench.py"),
+    path.resolve(__dirname, "..", "..", "mazebench.py")
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const source = fs.readFileSync(candidate, "utf8");
+      const match = source.match(/^GAME_WON_GEM_COUNT\s*=\s*(\d+)\s*$/m);
+      if (match) {
+        return normalizeGameWonGemCount(match[1]);
+      }
+    } catch (_error) {
+      // Fall back to the built-in default when running outside the env package.
+    }
+  }
+
+  return 100;
+}
+
+const GAME_WON_GEM_COUNT = configuredGameWonGemCount();
+const TILE_GRANULARITY = 4;
+const MAX_PITCH = TILE_GRANULARITY;
+const TOP_DOWN_TILE_SIZE = 4;
+const TILTED_TILE_WIDTH = 4;
+const TILTED_MAX_DEPTH_STEP = 4;
+const TILTED_MAX_Z_STEP = 4;
+const FLOOR_THICKNESS = 0.16;
+const ACTOR_INSET = 0.18;
+const ACTOR_HEIGHT = 0.82;
+const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
+const MOVE_ACTIONS = new Map([
+  ["U", { dx: 0, dy: -1, label: "Up" }],
+  ["D", { dx: 0, dy: 1, label: "Down" }],
+  ["L", { dx: -1, dy: 0, label: "Left" }],
+  ["R", { dx: 1, dy: 0, label: "Right" }]
+]);
+const TERRAIN_LETTERS = {
+  block_asset: "K",
+  empty: " ",
+  exit: "E",
+  floor: "A",
+  hole: "H",
+  ice: "I",
+  ice_block: "I",
+  ice_slope: "V",
+  orange_button: "N",
+  orange_wall: "O",
+  player_gate: "Y",
+  player_lift: "L",
+  shrub: "S",
+  tree: "T",
+  wall: "W"
+};
+const ACTOR_LETTERS = {
+  box: "B",
+  circle_player: "C",
+  floating_floor: "F",
+  gem: "G",
+  orange_button: "N",
+  player: "P",
+  puncher: "Q",
+  weightless_box: "M"
+};
+const DEFAULT_WORLD_AXIS = Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+const WORLD_LEVEL_PATTERN = /^level_([A-Z])x([A-Z])$/;
+
+function parseArgs(argv) {
+  const options = {
+    gameId: "maze",
+    gameWonGemCount: GAME_WON_GEM_COUNT,
+    json: false,
+    levelId: "",
+    maxExpandedStates: 1000000,
+    moves: "",
+    pitch: 1,
+    solve: false,
+    yaw: 0,
+    once: false
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    const next = () => argv[++index] || "";
+
+    if (arg === "--game") {
+      options.gameId = next();
+    } else if (arg === "--level") {
+      options.levelId = next();
+    } else if (arg === "--moves") {
+      options.moves = next();
+      options.once = true;
+    } else if (arg === "--json") {
+      options.json = true;
+      options.once = true;
+    } else if (arg === "--solve") {
+      options.solve = true;
+    } else if (arg === "--max-expanded-states") {
+      options.maxExpandedStates = Number(next()) || options.maxExpandedStates;
+    } else if (arg === "--game-won-gem-count" || arg === "--game-won-gems") {
+      options.gameWonGemCount = normalizeGameWonGemCount(next());
+    } else if (arg === "--pitch") {
+      options.pitch = clampPitch(Number(next()));
+    } else if (arg === "--view") {
+      options.pitch = pitchFromView(next());
+    } else if (arg === "--yaw") {
+      options.yaw = normalizeYaw(Number(next()));
+    } else if (arg === "--once") {
+      options.once = true;
+    } else if (arg === "--help" || arg === "-h") {
+      printHelp();
+      process.exit(0);
+    }
+  }
+
+  return options;
+}
+
+function printHelp() {
+  console.log(`Usage: npm run maze:terminal -- [options]
+
+Options:
+  --level <id>       Maze world level id, for example level_HxI.
+  --moves <UDLR>     Apply moves and print the resulting board once.
+  --view <name>      top, top-diagonal, diagonal, side-diagonal, or side.
+  --pitch <0-4>      Camera pitch; 0 is top-down, 4 is side.
+  --yaw <0-3>        Camera yaw rotation.
+  --json             Print machine-readable state instead of terminal text.
+  --solve            Include the JS solver answer in --json output.
+  --max-expanded-states <n>
+                     Solver search cap used by --solve.
+  --game-won-gem-count <n>
+                     Unique gems required for the game_won condition.
+  --once             Render once and exit.
+
+Interactive controls:
+  Arrow keys         Up/Down/Left/Right movement relative to the current view.
+	  i/k               Rotate Camera Up/Down.
+	  j/l               Rotate Camera Left/Right.
+	  z/u               Undo.
+	  r                 Reset level.
+	  q                 Quit and print scorecard.`);
+}
+
+function clampPitch(value) {
+  return Math.max(0, Math.min(MAX_PITCH, Number.isInteger(value) ? value : 0));
+}
+
+function pitchFromView(value) {
+  const index = VIEW_NAMES.indexOf(String(value || "").toLowerCase());
+  return index === -1 ? 0 : index;
+}
+
+function normalizeYaw(value) {
+  const integerValue = Number.isInteger(value) ? value : 0;
+  return ((integerValue % 4) + 4) % 4;
+}
+
+function moveVector(dx, dy) {
+  return {
+    dx: Object.is(dx, -0) ? 0 : dx,
+    dy: Object.is(dy, -0) ? 0 : dy
+  };
+}
+
+function screenMoveVector(move, yaw = 0) {
+  const screenMove = MOVE_ACTIONS.get(String(move || "").toUpperCase());
+
+  if (!screenMove) {
+    return null;
+  }
+
+  const { dx, dy } = screenMove;
+
+  switch (normalizeYaw(yaw)) {
+    case 1:
+      return moveVector(dy, -dx);
+    case 2:
+      return moveVector(-dx, -dy);
+    case 3:
+      return moveVector(-dy, dx);
+    default:
+      return moveVector(dx, dy);
+  }
+}
+
+function normalizeAxisValues(values, fallback = DEFAULT_WORLD_AXIS) {
+  const safeFallback = Array.isArray(fallback) ? fallback : DEFAULT_WORLD_AXIS;
+
+  if (!Array.isArray(values) || values.length === 0) {
+    return safeFallback.slice();
+  }
+
+  const normalized = values
+    .filter((value) => typeof value === "string" && /^[A-Z]$/.test(value))
+    .slice();
+
+  return normalized.length > 0 ? normalized : safeFallback.slice();
+}
+
+function parseWorldLevelId(levelId, worldColumns = DEFAULT_WORLD_AXIS, worldRows = DEFAULT_WORLD_AXIS) {
+  const match = String(levelId || "").match(WORLD_LEVEL_PATTERN);
+
+  if (!match) {
+    return null;
+  }
+
+  const columns = normalizeAxisValues(worldColumns);
+  const rows = normalizeAxisValues(worldRows);
+  const columnIndex = columns.indexOf(match[1]);
+  const rowIndex = rows.indexOf(match[2]);
+
+  if (columnIndex === -1 || rowIndex === -1) {
+    return null;
+  }
+
+  return {
+    columnIndex,
+    rowIndex
+  };
+}
+
+function worldLevelId(columnIndex, rowIndex, worldColumns = DEFAULT_WORLD_AXIS, worldRows = DEFAULT_WORLD_AXIS) {
+  const columns = normalizeAxisValues(worldColumns);
+  const rows = normalizeAxisValues(worldRows);
+
+  if (columns.length === 0 || rows.length === 0) {
+    return null;
+  }
+
+  const normalizedColumn = ((columnIndex % columns.length) + columns.length) % columns.length;
+  const normalizedRow = ((rowIndex % rows.length) + rows.length) % rows.length;
+  return `level_${columns[normalizedColumn]}x${rows[normalizedRow]}`;
+}
+
+function adjacentWorldLevelId(levelId, dx, dy, worldColumns = DEFAULT_WORLD_AXIS, worldRows = DEFAULT_WORLD_AXIS) {
+  const coordinates = parseWorldLevelId(levelId, worldColumns, worldRows);
+
+  if (!coordinates) {
+    return null;
+  }
+
+  return worldLevelId(
+    coordinates.columnIndex + dx,
+    coordinates.rowIndex + dy,
+    worldColumns,
+    worldRows
+  );
+}
+
+function isPlayerActorType(type) {
+  return type === "player" || type === "circle_player";
+}
+
+function loadBrowserScript(relativePath) {
+  const absolutePath = path.join(ROOT_DIR, relativePath);
+  const source = fs.readFileSync(absolutePath, "utf8");
+
+  vm.runInThisContext(source, {
+    filename: absolutePath,
+    displayErrors: true
+  });
+}
+
+function loadMazeEngine() {
+  global.window = global.window || {};
+  loadBrowserScript("public/maze-engine.js");
+  return global.window.MazeEngine;
+}
+
+function loadMazeSolver() {
+  global.window = global.window || {};
+  if (!global.window.MazeEngine) {
+    loadMazeEngine();
+  }
+  loadBrowserScript("public/maze-solver.js");
+  return global.window.MazeSolver;
+}
+
+function resolvePlayData(options) {
+  const game = getGame(options.gameId);
+
+  if (!game) {
+    throw new Error(`Unknown game: ${options.gameId}`);
+  }
+
+  const levelId = options.levelId || defaultLevelIdForGame(game);
+  const level = getLevel(game, levelId);
+
+  if (!level) {
+    throw new Error(`Unknown level: ${levelId}`);
+  }
+
+  return {
+    game,
+    level,
+    playData: getLevelState(game, level)
+  };
+}
+
+function cloneTransferActor(actor) {
+  return {
+    type: actor.type,
+    groupId: actor.groupId ?? null,
+    label: actor.label,
+    imageUrl: actor.imageUrl || null,
+    modelUrl: actor.modelUrl || null,
+    direction: actor.direction || actor.facing || null,
+    removed: false,
+    elevation: actor.elevation ?? 0,
+    x: actor.x,
+    y: actor.y
+  };
+}
+
+function buildRuntimeRoom(mazeEngine, playData, transferActor = null) {
+  const roomPlayData = {
+    ...playData,
+    actors: (playData.actors || []).map((actor) => ({ ...actor }))
+  };
+
+  if (transferActor) {
+    roomPlayData.actors = roomPlayData.actors
+      .filter((actor) => !isPlayerActorType(actor.type))
+      .concat({ ...transferActor });
+  }
+
+  const engine = mazeEngine.createEngine(roomPlayData);
+
+  return {
+    engine,
+    playData: roomPlayData,
+    state: engine.cloneState(engine.initialState)
+  };
+}
+
+function captureRoomSnapshot(context) {
+  return {
+    engine: context.engine,
+    level: context.level,
+    playData: context.playData,
+    state: context.engine.cloneState(context.state)
+  };
+}
+
+function cloneRoomSnapshot(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    engine: snapshot.engine,
+    level: snapshot.level,
+    playData: snapshot.playData,
+    state: snapshot.engine.cloneState(snapshot.state)
+  };
+}
+
+function captureHistorySnapshot(context) {
+  return {
+    entrySnapshot: cloneRoomSnapshot(context.entrySnapshot),
+    room: captureRoomSnapshot(context)
+  };
+}
+
+function restoreRoomSnapshot(context, snapshot) {
+  const room = cloneRoomSnapshot(snapshot);
+
+  if (!room) {
+    return false;
+  }
+
+  context.engine = room.engine;
+  context.level = room.level;
+  context.playData = room.playData;
+  context.state = room.state;
+  return true;
+}
+
+function createRunStats(levelId) {
+  return {
+    actionCounts: {
+      move: 0,
+      reset: 0,
+      rotateCamera: 0,
+      undo: 0
+    },
+    blockedMoves: 0,
+    collectedGemIds: new Set(),
+    elevationChanges: 0,
+    elevationGain: 0,
+    elevationLoss: 0,
+    maxElevation: null,
+    minElevation: null,
+    moveAttempts: {
+      D: 0,
+      L: 0,
+      R: 0,
+      U: 0
+    },
+    moveSuccesses: {
+      D: 0,
+      L: 0,
+      R: 0,
+      U: 0
+    },
+    pitchRotations: {
+      down: 0,
+      up: 0
+    },
+    roomTransitions: 0,
+    startedAtMs: Date.now(),
+    startingLevelId: levelId,
+    successfulMoves: 0,
+    uniqueElevationTiles: new Set(),
+    uniqueTiles: new Set(),
+    visitedRooms: new Set(levelId ? [levelId] : []),
+    yawRotations: {
+      left: 0,
+      right: 0
+    }
+  };
+}
+
+function createTerminalContext(mazeEngine, options) {
+  const normalizedOptions = {
+    ...options,
+    gameWonGemCount: normalizeGameWonGemCount(options.gameWonGemCount)
+  };
+  const { game, level, playData } = resolvePlayData(normalizedOptions);
+  const room = buildRuntimeRoom(mazeEngine, playData);
+  const context = {
+    engine: room.engine,
+    entrySnapshot: null,
+    game,
+    history: [],
+    level,
+    mazeEngine,
+    options: normalizedOptions,
+    playData: room.playData,
+    stats: null,
+    state: room.state
+  };
+
+  context.entrySnapshot = captureRoomSnapshot(context);
+  context.stats = createRunStats(context.level.id);
+  recordPlayerVisit(context);
+  return context;
+}
+
+function terrainTypeNameByValue(terrainTypes) {
+  return Object.fromEntries(Object.entries(terrainTypes).map(([name, value]) => [value, name]));
+}
+
+function cellIndex(playData, x, y) {
+  return y * playData.width + x;
+}
+
+function terrainStateOverridesCell(stateType, cell) {
+  if (!stateType) {
+    return false;
+  }
+
+  return stateType !== (cell.type || "empty");
+}
+
+function terrainTypeAt(playData, state, typeNames, x, y) {
+  const index = cellIndex(playData, x, y);
+  const stateType = typeNames[state.terrain[index]];
+  const cell = playData.terrain[y]?.[x] || {};
+
+  if (terrainStateOverridesCell(stateType, cell)) {
+    return stateType;
+  }
+
+  const layers = Array.isArray(cell.layers) ? cell.layers : [];
+  if (layers.length > 0) {
+    return layers.reduce((top, layer) =>
+      (layer.elevation ?? 0) >= (top.elevation ?? 0) ? layer : top
+    ).type || cell.type || "empty";
+  }
+
+  return cell.type || "empty";
+}
+
+function terrainLayerHeight(layer, state, index, type) {
+  const layerElevation = layer.elevation ?? 0;
+
+  if (
+    type === "wall" ||
+    type === "ice_block" ||
+    type === "ice_slope" ||
+    type === "shrub" ||
+    type === "block_asset"
+  ) {
+    return layerElevation + 1;
+  }
+
+  if (type === "tree") {
+    return layerElevation + 3;
+  }
+
+  if (type === "player_lift") {
+    return state.liftRaised[index] ? layerElevation + 1 : layerElevation;
+  }
+
+  if (type === "orange_wall") {
+    return layerElevation + 1;
+  }
+
+  if (type === "player_gate") {
+    return layerElevation + 1;
+  }
+
+  return layerElevation;
+}
+
+function transitionLayerSurfaceHeight(playData, state, typeNames, layer, x, y) {
+  const type = layer.type || "empty";
+  const elevation = layer.elevation ?? 0;
+
+  if (type === "empty" || type === "hole") {
+    return null;
+  }
+
+  if (
+    type === "wall" ||
+    type === "ice_block" ||
+    type === "ice_slope" ||
+    type === "shrub" ||
+    type === "block_asset"
+  ) {
+    return elevation + 1;
+  }
+
+  if (type === "tree") {
+    return elevation + 3;
+  }
+
+  if (type === "player_lift") {
+    const index = cellIndex(playData, x, y);
+    return state.liftRaised[index] ? elevation + 1 : elevation;
+  }
+
+  if (type === "orange_wall") {
+    return elevation + 1;
+  }
+
+  if (type === "player_gate") {
+    const index = cellIndex(playData, x, y);
+    const stateType = typeNames[state.terrain[index]];
+    return stateType === "player_gate" ? elevation + 1 : elevation;
+  }
+
+  return elevation;
+}
+
+function transitionLayerBlocksElevation(playData, state, typeNames, layer, x, y, elevation) {
+  const type = layer.type || "empty";
+  const layerElevation = layer.elevation ?? 0;
+
+  if (type === "wall" || type === "ice_block") {
+    return layerElevation === elevation;
+  }
+
+  if (type === "ice_slope") {
+    return elevation === layerElevation || elevation === layerElevation + 1;
+  }
+
+  if (type === "tree") {
+    return elevation >= layerElevation && elevation < layerElevation + 3;
+  }
+
+  if (type === "shrub" || type === "block_asset") {
+    return elevation >= layerElevation && elevation <= layerElevation + 1;
+  }
+
+  if (type === "player_lift") {
+    const index = cellIndex(playData, x, y);
+    return state.liftRaised[index] && layerElevation === elevation;
+  }
+
+  if (type === "orange_wall") {
+    return layerElevation === elevation;
+  }
+
+  if (type === "player_gate") {
+    const index = cellIndex(playData, x, y);
+    const stateType = typeNames[state.terrain[index]];
+    return stateType === "player_gate" && layerElevation === elevation;
+  }
+
+  return false;
+}
+
+function transitionTerrainBlocksElevation(playData, state, typeNames, x, y, elevation) {
+  if (x < 0 || y < 0 || x >= playData.width || y >= playData.height) {
+    return true;
+  }
+
+  return terrainLayersAt(playData, state, typeNames, x, y).some((layer) =>
+    transitionLayerBlocksElevation(playData, state, typeNames, layer, x, y, elevation)
+  );
+}
+
+function transitionSurfaceTypeAt(playData, state, engine, x, y, elevation) {
+  if (x < 0 || y < 0 || x >= playData.width || y >= playData.height) {
+    return null;
+  }
+
+  const typeNames = terrainTypeNameByValue(engine.terrainTypes);
+
+  if (transitionTerrainBlocksElevation(playData, state, typeNames, x, y, elevation)) {
+    return null;
+  }
+
+  return (
+    terrainLayersAt(playData, state, typeNames, x, y)
+      .map((layer, index) => ({
+        index,
+        layer,
+        surfaceHeight: transitionLayerSurfaceHeight(playData, state, typeNames, layer, x, y)
+      }))
+      .filter((entry) => entry.surfaceHeight === elevation)
+      .sort(
+        (left, right) =>
+          (right.layer.elevation ?? 0) - (left.layer.elevation ?? 0) ||
+          right.index - left.index
+      )[0]
+      ?.layer.type || null
+  );
+}
+
+function transitionHoleTypeAt(playData, state, engine, x, y, elevation) {
+  if (x < 0 || y < 0 || x >= playData.width || y >= playData.height) {
+    return null;
+  }
+
+  const typeNames = terrainTypeNameByValue(engine.terrainTypes);
+
+  return (
+    terrainLayersAt(playData, state, typeNames, x, y).find(
+      (layer) => layer.type === "hole" && (layer.elevation ?? 0) === elevation
+    )?.type || null
+  );
+}
+
+function terrainLayersAt(playData, state, typeNames, x, y) {
+  const index = cellIndex(playData, x, y);
+  const stateType = typeNames[state.terrain[index]];
+  const cell = playData.terrain[y]?.[x] || {};
+
+  if (terrainStateOverridesCell(stateType, cell)) {
+    if (stateType === "empty") {
+      return [];
+    }
+
+    return [
+      {
+        elevation: 0,
+        type: stateType
+      }
+    ];
+  }
+
+  const layers = Array.isArray(cell.layers) ? cell.layers : [];
+
+  if (layers.length > 0) {
+    return layers.filter((layer) => layer?.type && layer.type !== "empty");
+  }
+
+  const type = terrainTypeAt(playData, state, typeNames, x, y);
+  return type && type !== "empty" ? [{ elevation: 0, type }] : [];
+}
+
+function terrainLetter(type) {
+  return TERRAIN_LETTERS[type] || String(type || "?").charAt(0).toUpperCase() || "?";
+}
+
+function actorLetter(type) {
+  return ACTOR_LETTERS[type] || String(type || "?").charAt(0).toUpperCase() || "?";
+}
+
+function rotatePoint(x, y, yaw) {
+  switch (yaw) {
+    case 1:
+      return { x: y, y: -x };
+    case 2:
+      return { x: -x, y: -y };
+    case 3:
+      return { x: -y, y: x };
+    default:
+      return { x, y };
+  }
+}
+
+function cameraSteps(pitch) {
+  if (pitch === 0) {
+    return {
+      depthStep: TOP_DOWN_TILE_SIZE,
+      zStep: 0
+    };
+  }
+
+  return {
+    depthStep: TILTED_MAX_DEPTH_STEP * ((MAX_PITCH - pitch) / MAX_PITCH),
+    zStep: TILTED_MAX_Z_STEP * (pitch / MAX_PITCH)
+  };
+}
+
+function projectPoint(playData, point, options) {
+  const yaw = normalizeYaw(options.yaw);
+  const pitch = clampPitch(options.pitch);
+  const centeredX = point.x - playData.width / 2;
+  const centeredY = point.y - playData.height / 2;
+  const rotated = rotatePoint(centeredX, centeredY, yaw);
+
+  if (pitch === 0) {
+    return {
+      depth: point.z,
+      x: rotated.x * TOP_DOWN_TILE_SIZE,
+      y: rotated.y * TOP_DOWN_TILE_SIZE
+    };
+  }
+
+  const { depthStep, zStep } = cameraSteps(pitch);
+
+  return {
+    depth: rotated.y * pitch + point.z * (MAX_PITCH - pitch + 1),
+    x: rotated.x * TILTED_TILE_WIDTH,
+    y: rotated.y * depthStep - point.z * zStep
+  };
+}
+
+function addFace(faces, points, letter, kind, options = {}) {
+  faces.push({
+    kind,
+    letter,
+    layer: options.layer || 0,
+    topLetter: options.topLetter || letter.toUpperCase(),
+    points
+  });
+}
+
+function boxCorners(box) {
+  const { x0, x1, y0, y1, z0, z1 } = box;
+
+  return [
+    { x: x0, y: y0, z: z0 },
+    { x: x1, y: y0, z: z0 },
+    { x: x1, y: y1, z: z0 },
+    { x: x0, y: y1, z: z0 },
+    { x: x0, y: y0, z: z1 },
+    { x: x1, y: y0, z: z1 },
+    { x: x1, y: y1, z: z1 },
+    { x: x0, y: y1, z: z1 }
+  ];
+}
+
+function addActorSolidFace(faces, box, letter) {
+  addFace(faces, boxCorners(box), letter.toLowerCase(), "actor_solid", {
+    layer: 20,
+    topLetter: letter.toUpperCase()
+  });
+}
+
+function addBoxFaces(faces, box, letter, options = {}) {
+  const { x0, x1, y0, y1, z0, z1 } = box;
+  const layer = options.layer || 0;
+  const sides = options.sides || {
+    east: z0,
+    north: z0,
+    south: z0,
+    west: z0
+  };
+
+  if (z1 < z0) {
+    return;
+  }
+
+  addFace(
+    faces,
+    [
+      { x: x0, y: y0, z: z1 },
+      { x: x1, y: y0, z: z1 },
+      { x: x1, y: y1, z: z1 },
+      { x: x0, y: y1, z: z1 }
+    ],
+    letter.toUpperCase(),
+    "top",
+    { layer }
+  );
+
+  if (Math.abs(z1 - z0) < 0.001) {
+    return;
+  }
+
+  const sideLetter = letter.toLowerCase();
+
+  if (sides.south < z1) {
+    addFace(
+      faces,
+      [
+        { x: x0, y: y1, z: sides.south },
+        { x: x1, y: y1, z: sides.south },
+        { x: x1, y: y1, z: z1 },
+        { x: x0, y: y1, z: z1 }
+      ],
+      sideLetter,
+      "side",
+      { layer }
+    );
+  }
+
+  if (sides.east < z1) {
+    addFace(
+      faces,
+      [
+        { x: x1, y: y0, z: sides.east },
+        { x: x1, y: y1, z: sides.east },
+        { x: x1, y: y1, z: z1 },
+        { x: x1, y: y0, z: z1 }
+      ],
+      sideLetter,
+      "side",
+      { layer }
+    );
+  }
+
+  if (sides.west < z1) {
+    addFace(
+      faces,
+      [
+        { x: x0, y: y0, z: sides.west },
+        { x: x0, y: y1, z: sides.west },
+        { x: x0, y: y1, z: z1 },
+        { x: x0, y: y0, z: z1 }
+      ],
+      sideLetter,
+      "side",
+      { layer }
+    );
+  }
+
+  if (sides.north < z1) {
+    addFace(
+      faces,
+      [
+        { x: x0, y: y0, z: sides.north },
+        { x: x1, y: y0, z: sides.north },
+        { x: x1, y: y0, z: z1 },
+        { x: x0, y: y0, z: z1 }
+      ],
+      sideLetter,
+      "side",
+      { layer }
+    );
+  }
+}
+
+function terrainBoxForLayer(playData, state, layer, x, y) {
+  const index = cellIndex(playData, x, y);
+  const type = layer.type || "empty";
+
+  if (type === "empty" || type === "hole") {
+    return null;
+  }
+
+  const top = terrainLayerHeight(layer, state, index, type);
+  const elevation = layer.elevation ?? 0;
+  const bottom = top > elevation ? elevation : top - FLOOR_THICKNESS;
+
+  return {
+    x0: x,
+    x1: x + 1,
+    y0: y,
+    y1: y + 1,
+    z0: bottom,
+    z1: top
+  };
+}
+
+function terrainTopHeightAt(playData, state, typeNames, x, y) {
+  if (x < 0 || y < 0 || x >= playData.width || y >= playData.height) {
+    return -Infinity;
+  }
+
+  const layers = terrainLayersAt(playData, state, typeNames, x, y);
+  let height = -Infinity;
+
+  layers.forEach((layer) => {
+    const type = layer.type || "empty";
+
+    if (type === "empty" || type === "hole") {
+      return;
+    }
+
+    const index = cellIndex(playData, x, y);
+    height = Math.max(height, terrainLayerHeight(layer, state, index, type));
+  });
+
+  return height;
+}
+
+function exposedTerrainSides(playData, state, typeNames, box, x, y) {
+  const sideFloor = (neighborHeight) => Math.max(box.z0, neighborHeight);
+
+  return {
+    east: sideFloor(terrainTopHeightAt(playData, state, typeNames, x + 1, y)),
+    north: sideFloor(terrainTopHeightAt(playData, state, typeNames, x, y - 1)),
+    south: sideFloor(terrainTopHeightAt(playData, state, typeNames, x, y + 1)),
+    west: sideFloor(terrainTopHeightAt(playData, state, typeNames, x - 1, y))
+  };
+}
+
+function buildSceneFaces(playData, engine, state) {
+  const typeNames = terrainTypeNameByValue(engine.terrainTypes);
+  const faces = [];
+
+  for (let y = 0; y < playData.height; y += 1) {
+    for (let x = 0; x < playData.width; x += 1) {
+      const layers = terrainLayersAt(playData, state, typeNames, x, y);
+
+      layers.forEach((layer) => {
+        const box = terrainBoxForLayer(playData, state, layer, x, y);
+
+        if (box) {
+          addBoxFaces(faces, box, terrainLetter(layer.type), {
+            layer: 0,
+            sides: exposedTerrainSides(playData, state, typeNames, box, x, y)
+          });
+        }
+      });
+    }
+  }
+
+  for (let index = 0; index < engine.actorCount; index += 1) {
+    if (state.actorRemoved[index]) {
+      continue;
+    }
+
+    const actor = playData.actors[index] || {};
+    const type = engine.actorTypes[index] || actor.type || "";
+
+    if (type === "gem") {
+      const z0 = (state.actorElevation[index] || 0) + 0.18;
+      const box = {
+        x0: state.actorX[index] + 0.3,
+        x1: state.actorX[index] + 0.7,
+        y0: state.actorY[index] + 0.3,
+        y1: state.actorY[index] + 0.7,
+        z0,
+        z1: z0 + 0.45
+      };
+
+      addBoxFaces(
+        faces,
+        box,
+        actorLetter(type),
+        { layer: 10 }
+      );
+      addActorSolidFace(faces, box, actorLetter(type));
+      continue;
+    }
+
+    const z0 = state.actorElevation[index] || 0;
+    const box = {
+      x0: state.actorX[index] + ACTOR_INSET,
+      x1: state.actorX[index] + 1 - ACTOR_INSET,
+      y0: state.actorY[index] + ACTOR_INSET,
+      y1: state.actorY[index] + 1 - ACTOR_INSET,
+      z0,
+      z1: z0 + ACTOR_HEIGHT
+    };
+
+    addBoxFaces(
+      faces,
+      box,
+      actorLetter(type),
+      { layer: 10 }
+    );
+    addActorSolidFace(faces, box, actorLetter(type));
+  }
+
+  return faces;
+}
+
+function projectedFace(face, playData, options) {
+  const points = face.points.map((point) => projectPoint(playData, point, options));
+
+  return {
+    ...face,
+    averageDepth: points.reduce((sum, point) => sum + point.depth, 0) / points.length,
+    averageY: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+    pitch: clampPitch(options.pitch),
+    points
+  };
+}
+
+function faceSortKey(face) {
+  return face.layer * 10000 + face.averageY + face.averageDepth * 0.1 + (face.kind === "top" ? 0.04 : 0);
+}
+
+function pointInPolygon(x, y, polygon) {
+  let inside = false;
+
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const currentPoint = polygon[index];
+    const previousPoint = polygon[previous];
+    const crosses =
+      (currentPoint.y > y) !== (previousPoint.y > y) &&
+      x <
+        ((previousPoint.x - currentPoint.x) * (y - currentPoint.y)) /
+          ((previousPoint.y - currentPoint.y) || 0.000001) +
+          currentPoint.x;
+
+    if (crosses) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+function drawLine(canvas, x0, y0, x1, y1, letter) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy), 1);
+
+  for (let step = 0; step <= steps; step += 1) {
+    const x = Math.round(x0 + (dx * step) / steps);
+    const y = Math.round(y0 + (dy * step) / steps);
+
+    if (canvas[y]?.[x] !== undefined) {
+      canvas[y][x] = letter;
+    }
+  }
+}
+
+function drawProjectedFace(canvas, face) {
+  const minX = Math.floor(Math.min(...face.points.map((point) => point.x)));
+  const maxX = Math.ceil(Math.max(...face.points.map((point) => point.x)));
+  const minY = Math.floor(Math.min(...face.points.map((point) => point.y)));
+  const maxY = Math.ceil(Math.max(...face.points.map((point) => point.y)));
+
+  if (face.kind === "actor_solid") {
+    if (face.pitch === MAX_PITCH) {
+      const centerX = Math.round((minX + maxX) / 2);
+      const left = centerX - Math.floor(TILE_GRANULARITY / 2);
+      const top = maxY - TILE_GRANULARITY;
+      drawRect(canvas, left, top, TILE_GRANULARITY, TILE_GRANULARITY, face.letter);
+      return;
+    }
+
+    const width = Math.max(1, maxX - minX + 1);
+    const height = Math.max(1, maxY - minY + 1);
+    const topRows = Math.max(0, Math.min(height, Math.round(height * ((MAX_PITCH - face.pitch) / MAX_PITCH))));
+
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        if (canvas[y]?.[x] === undefined) {
+          continue;
+        }
+
+        const localX = x - minX;
+        const localY = y - minY;
+        const inset = height > 2 && localY > 0 && localY < height - 1 ? 0 : 1;
+
+        if (width > 2 && (localX < inset || localX >= width - inset)) {
+          continue;
+        }
+
+        canvas[y][x] = localY < topRows ? face.topLetter : face.letter;
+      }
+    }
+
+    return;
+  }
+
+  let painted = false;
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (!canvas[y]?.[x]) {
+        continue;
+      }
+
+      if (pointInPolygon(x + 0.5, y + 0.5, face.points)) {
+        canvas[y][x] = face.letter;
+        painted = true;
+      }
+    }
+  }
+
+  if (!painted) {
+    for (let index = 0; index < face.points.length; index += 1) {
+      const current = face.points[index];
+      const next = face.points[(index + 1) % face.points.length];
+      drawLine(
+        canvas,
+        Math.round(current.x),
+        Math.round(current.y),
+        Math.round(next.x),
+        Math.round(next.y),
+        face.letter
+      );
+    }
+  }
+}
+
+function trimCanvasRows(rows) {
+  const nonEmptyRows = rows
+    .map((row, index) => ({ index, row }))
+    .filter(({ row }) => /[^ ]/.test(row));
+
+  if (nonEmptyRows.length === 0) {
+    return "";
+  }
+
+  const top = nonEmptyRows[0].index;
+  const bottom = nonEmptyRows[nonEmptyRows.length - 1].index;
+  let left = Infinity;
+  let right = -Infinity;
+
+  for (let y = top; y <= bottom; y += 1) {
+    const row = rows[y];
+    const first = row.search(/[^ ]/);
+    const last = row.length - 1 - row.split("").reverse().join("").search(/[^ ]/);
+
+    if (first !== -1) {
+      left = Math.min(left, first);
+      right = Math.max(right, last);
+    }
+  }
+
+  return rows.slice(top, bottom + 1).map((row) => row.slice(left, right + 1)).join("\n");
+}
+
+function displayDimensions(playData, yaw) {
+  return yaw % 2 === 0
+    ? { width: playData.width, height: playData.height }
+    : { width: playData.height, height: playData.width };
+}
+
+function displayCoordinatesForWorld(playData, yaw, x, y) {
+  switch (yaw) {
+    case 1:
+      return { x: playData.height - 1 - y, y: x };
+    case 2:
+      return { x: playData.width - 1 - x, y: playData.height - 1 - y };
+    case 3:
+      return { x: y, y: playData.width - 1 - x };
+    default:
+      return { x, y };
+  }
+}
+
+function worldCoordinatesForDisplay(playData, yaw, x, y) {
+  switch (yaw) {
+    case 1:
+      return { x: y, y: playData.height - 1 - x };
+    case 2:
+      return { x: playData.width - 1 - x, y: playData.height - 1 - y };
+    case 3:
+      return { x: playData.width - 1 - y, y: x };
+    default:
+      return { x, y };
+  }
+}
+
+function terrainTopAt(playData, state, typeNames, x, y) {
+  if (x < 0 || y < 0 || x >= playData.width || y >= playData.height) {
+    return null;
+  }
+
+  const layers = terrainLayersAt(playData, state, typeNames, x, y);
+  let top = null;
+
+  layers.forEach((layer) => {
+    const type = layer.type || "empty";
+
+    if (type === "empty" || type === "hole") {
+      return;
+    }
+
+    const index = cellIndex(playData, x, y);
+    const height = terrainLayerHeight(layer, state, index, type);
+
+    if (!top || height >= top.height) {
+      top = {
+        height,
+        type
+      };
+    }
+  });
+
+  return top;
+}
+
+function terrainBlocksAt(playData, state, typeNames, x, y) {
+  return terrainLayersAt(playData, state, typeNames, x, y)
+    .map((layer) => {
+      const type = layer.type || "empty";
+
+      if (type === "empty" || type === "hole") {
+        return null;
+      }
+
+      const index = cellIndex(playData, x, y);
+      const bottom = layer.elevation ?? 0;
+      const top = Math.max(bottom, terrainLayerHeight(layer, state, index, type));
+
+      return {
+        bottom,
+        letter: terrainLetter(type),
+        top,
+        type
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.bottom - right.bottom || left.top - right.top);
+}
+
+function maxTerrainStackHeight(playData, state, typeNames) {
+  let maxHeight = 0;
+
+  for (let y = 0; y < playData.height; y += 1) {
+    for (let x = 0; x < playData.width; x += 1) {
+      terrainBlocksAt(playData, state, typeNames, x, y).forEach((block) => {
+        maxHeight = Math.max(maxHeight, block.top);
+      });
+    }
+  }
+
+  return maxHeight;
+}
+
+function actorRows(playData, engine, state, yaw) {
+  const rows = new Map();
+
+  for (let index = 0; index < engine.actorCount; index += 1) {
+    if (state.actorRemoved[index]) {
+      continue;
+    }
+
+    const type = engine.actorTypes[index] || playData.actors[index]?.type || "";
+    const display = displayCoordinatesForWorld(
+      playData,
+      yaw,
+      state.actorX[index],
+      state.actorY[index]
+    );
+    const entry = {
+      displayX: display.x,
+      displayY: display.y,
+      elevation: state.actorElevation[index] || 0,
+      letter: actorLetter(type)
+    };
+
+    if (!rows.has(display.y)) {
+      rows.set(display.y, []);
+    }
+
+    rows.get(display.y).push(entry);
+  }
+
+  return rows;
+}
+
+function drawRect(canvas, left, top, width, height, letter) {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  for (let y = top; y < top + height; y += 1) {
+    for (let x = left; x < left + width; x += 1) {
+      if (canvas[y]?.[x] !== undefined) {
+        canvas[y][x] = letter;
+      }
+    }
+  }
+}
+
+function drawRectIfBlank(canvas, left, top, width, height, letter) {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  for (let y = top; y < top + height; y += 1) {
+    for (let x = left; x < left + width; x += 1) {
+      if (canvas[y]?.[x] === " ") {
+        canvas[y][x] = letter;
+      }
+    }
+  }
+}
+
+function drawTerrainTopForLevel(canvas, block, screenX, baseY, topRows, sideRows, level) {
+  if (block.top !== level) {
+    return;
+  }
+
+  drawRect(
+    canvas,
+    screenX,
+    baseY - block.top * sideRows,
+    TILE_GRANULARITY,
+    topRows,
+    block.letter
+  );
+}
+
+function drawTerrainSideForLevel(canvas, block, screenX, baseY, topRows, sideRows, frontHeight, level) {
+  if (sideRows <= 0) {
+    return;
+  }
+
+  if (block.top > block.bottom) {
+    if (level < block.bottom || level >= block.top || frontHeight >= level + 1) {
+      return;
+    }
+
+    const exposedBottom = Math.max(level, frontHeight);
+    drawRect(
+      canvas,
+      screenX,
+      baseY - (level + 1) * sideRows + topRows,
+      TILE_GRANULARITY,
+      (level + 1 - exposedBottom) * sideRows,
+      block.letter.toLowerCase()
+    );
+    return;
+  }
+
+  if (block.top !== level || frontHeight >= block.top) {
+    return;
+  }
+
+  const exposedBottom = Math.max(block.top - 1, frontHeight);
+  drawRect(
+    canvas,
+    screenX,
+    baseY - block.top * sideRows + topRows,
+    TILE_GRANULARITY,
+    (block.top - exposedBottom) * sideRows,
+    block.letter.toLowerCase()
+  );
+}
+
+function actorCells(playData, engine, state, yaw) {
+  const cells = new Map();
+
+  for (let index = 0; index < engine.actorCount; index += 1) {
+    if (state.actorRemoved[index]) {
+      continue;
+    }
+
+    const type = engine.actorTypes[index] || playData.actors[index]?.type || "";
+    const display = displayCoordinatesForWorld(
+      playData,
+      yaw,
+      state.actorX[index],
+      state.actorY[index]
+    );
+    const key = `${display.x},${display.y}`;
+    const entry = {
+      displayX: display.x,
+      displayY: display.y,
+      elevation: state.actorElevation[index] || 0,
+      letter: actorLetter(type)
+    };
+
+    if (!cells.has(key)) {
+      cells.set(key, []);
+    }
+
+    cells.get(key).push(entry);
+  }
+
+  return cells;
+}
+
+function renderAsciiSide(playData, engine, state, options) {
+  const yaw = normalizeYaw(options.yaw);
+  const typeNames = terrainTypeNameByValue(engine.terrainTypes);
+  const dimensions = displayDimensions(playData, yaw);
+  const maxTerrainHeight = maxTerrainStackHeight(playData, state, typeNames);
+  const maxActorHeight = Math.max(
+    0,
+    ...Array.from({ length: engine.actorCount }, (_, index) =>
+      state.actorRemoved[index] ? 0 : (state.actorElevation[index] || 0) + 1
+    )
+  );
+  const maxHeight = Math.max(1, maxTerrainHeight, maxActorHeight);
+  const baseline = maxHeight * TILE_GRANULARITY;
+  const width = dimensions.width * TILE_GRANULARITY;
+  const height = baseline + 1;
+  const canvas = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
+  const actorsByCell = actorCells(playData, engine, state, yaw);
+
+  for (let displayY = dimensions.height - 1; displayY >= 0; displayY -= 1) {
+    for (let displayX = 0; displayX < dimensions.width; displayX += 1) {
+      const screenX = displayX * TILE_GRANULARITY;
+      const { x, y } = worldCoordinatesForDisplay(playData, yaw, displayX, displayY);
+      const blocks = terrainBlocksAt(playData, state, typeNames, x, y);
+
+      blocks.forEach((block) => {
+        const letter = block.letter.toLowerCase();
+
+        if (block.top > block.bottom) {
+          drawRectIfBlank(
+            canvas,
+            screenX,
+            baseline - block.top * TILE_GRANULARITY,
+            TILE_GRANULARITY,
+            (block.top - block.bottom) * TILE_GRANULARITY,
+            letter
+          );
+        } else {
+          drawRectIfBlank(canvas, screenX, baseline, TILE_GRANULARITY, 1, letter);
+        }
+      });
+
+      const actors = actorsByCell.get(`${displayX},${displayY}`) || [];
+      actors
+        .sort((left, right) => left.elevation - right.elevation)
+        .forEach((actor) => {
+          drawRectIfBlank(
+            canvas,
+            screenX,
+            baseline - (actor.elevation + 1) * TILE_GRANULARITY,
+            TILE_GRANULARITY,
+            TILE_GRANULARITY,
+            actor.letter.toLowerCase()
+          );
+        });
+    }
+  }
+
+  return trimCanvasRows(canvas.map((row) => row.join("")));
+}
+
+function renderAsciiLayered(playData, engine, state, options) {
+  const yaw = normalizeYaw(options.yaw);
+  const pitch = clampPitch(options.pitch);
+  const typeNames = terrainTypeNameByValue(engine.terrainTypes);
+  const dimensions = displayDimensions(playData, yaw);
+  const topRows = TILE_GRANULARITY - pitch;
+  const sideRows = pitch;
+  const rowStep = Math.max(1, topRows);
+  const maxTerrainHeight = maxTerrainStackHeight(playData, state, typeNames);
+  const maxActorHeight = Math.max(
+    0,
+    ...Array.from({ length: engine.actorCount }, (_, index) =>
+      state.actorRemoved[index] ? 0 : (state.actorElevation[index] || 0) + 1
+    )
+  );
+  const topMargin = Math.max(maxTerrainHeight, maxActorHeight) * sideRows + 1;
+  const width = dimensions.width * TILE_GRANULARITY;
+  const height =
+    topMargin +
+    dimensions.height * rowStep +
+    TILE_GRANULARITY +
+    Math.max(1, sideRows) +
+    2;
+  const canvas = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
+  const actorsByRow = actorRows(playData, engine, state, yaw);
+  const maxSceneHeight = Math.max(maxTerrainHeight, maxActorHeight);
+
+  for (let displayY = 0; displayY < dimensions.height; displayY += 1) {
+    const baseY = topMargin + displayY * rowStep;
+    const rowActors = actorsByRow.get(displayY) || [];
+
+    for (let level = 0; level <= maxSceneHeight; level += 1) {
+      for (let displayX = 0; displayX < dimensions.width; displayX += 1) {
+        const { x, y } = worldCoordinatesForDisplay(playData, yaw, displayX, displayY);
+        const blocks = terrainBlocksAt(playData, state, typeNames, x, y);
+
+        if (blocks.length === 0) {
+          continue;
+        }
+
+        const screenX = displayX * TILE_GRANULARITY;
+        const front = worldCoordinatesForDisplay(playData, yaw, displayX, displayY + 1);
+        const frontTop = terrainTopAt(playData, state, typeNames, front.x, front.y);
+        const frontHeight = frontTop?.height ?? -1;
+
+        blocks.forEach((block) => {
+          drawTerrainTopForLevel(canvas, block, screenX, baseY, topRows, sideRows, level);
+        });
+
+        blocks.forEach((block) => {
+          drawTerrainSideForLevel(
+            canvas,
+            block,
+            screenX,
+            baseY,
+            topRows,
+            sideRows,
+            frontHeight,
+            level
+          );
+        });
+      }
+
+      rowActors
+        .filter((actor) => actor.elevation === level || actor.elevation + 1 === level)
+        .sort((left, right) => left.displayX - right.displayX || left.elevation - right.elevation)
+        .forEach((actor) => {
+          const screenX = actor.displayX * TILE_GRANULARITY;
+          const topY = baseY - (actor.elevation + 1) * sideRows;
+
+          if (actor.elevation + 1 === level) {
+            drawRect(canvas, screenX, topY, TILE_GRANULARITY, topRows, actor.letter);
+          }
+
+          if (actor.elevation === level) {
+            drawRect(canvas, screenX, topY + topRows, TILE_GRANULARITY, sideRows, actor.letter.toLowerCase());
+          }
+        });
+    }
+  }
+
+  return trimCanvasRows(canvas.map((row) => row.join("")));
+}
+
+function renderAscii(_playData, _engine, _state, _options) {
+  if (clampPitch(_options.pitch) === MAX_PITCH) {
+    return renderAsciiSide(_playData, _engine, _state, _options);
+  }
+
+  return renderAsciiLayered(_playData, _engine, _state, _options);
+}
+
+function renderAsciiProjected(playData, engine, state, options) {
+  const pitch = clampPitch(options.pitch);
+  const projectedFaces = buildSceneFaces(playData, engine, state)
+    .filter((face) => pitch !== 0 || face.kind === "top")
+    .filter((face) =>
+      pitch !== MAX_PITCH ||
+      face.kind === "actor_solid" ||
+      (face.kind === "side" && face.layer < 10)
+    )
+    .map((face) => projectedFace(face, playData, options));
+
+  if (projectedFaces.length === 0) {
+    return "";
+  }
+
+  const minX = Math.floor(Math.min(...projectedFaces.flatMap((face) => face.points.map((point) => point.x)))) - 2;
+  const maxX = Math.ceil(Math.max(...projectedFaces.flatMap((face) => face.points.map((point) => point.x)))) + 2;
+  const minY = Math.floor(Math.min(...projectedFaces.flatMap((face) => face.points.map((point) => point.y)))) - 2;
+  const maxY = Math.ceil(Math.max(...projectedFaces.flatMap((face) => face.points.map((point) => point.y)))) + 2;
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+  const canvas = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
+
+  projectedFaces
+    .map((face) => ({
+      ...face,
+      points: face.points.map((point) => ({
+        ...point,
+        x: point.x - minX,
+        y: point.y - minY
+      }))
+    }))
+    .sort((left, right) => faceSortKey(left) - faceSortKey(right))
+    .forEach((face) => drawProjectedFace(canvas, face));
+
+  return trimCanvasRows(canvas.map((row) => row.join("")));
+}
+
+function activePlayerEntries(context) {
+  const entries = [];
+
+  for (let index = 0; index < context.engine.actorCount; index += 1) {
+    if (
+      !context.state.actorRemoved[index] &&
+      isPlayerActorType(context.engine.actorTypes[index])
+    ) {
+      entries.push({
+        elevation: context.state.actorElevation[index] || 0,
+        index,
+        source: context.playData.actors[index] || {},
+        type: context.engine.actorTypes[index],
+        x: context.state.actorX[index],
+        y: context.state.actorY[index]
+      });
+    }
+  }
+
+  return entries;
+}
+
+function activePlayerEntry(context) {
+  return activePlayerEntries(context)[0] || null;
+}
+
+function playerTileKey(context, player, includeElevation = false) {
+  if (!context?.level?.id || !player) {
+    return null;
+  }
+
+  const base = `${context.level.id}:${player.x},${player.y}`;
+  return includeElevation ? `${base},${player.elevation ?? 0}` : base;
+}
+
+function recordPlayerVisit(context) {
+  const stats = context?.stats;
+  const player = activePlayerEntry(context);
+
+  if (!stats || !player) {
+    return;
+  }
+
+  const tileKey = playerTileKey(context, player, false);
+  const elevationTileKey = playerTileKey(context, player, true);
+
+  if (tileKey) {
+    stats.uniqueTiles.add(tileKey);
+  }
+
+  if (elevationTileKey) {
+    stats.uniqueElevationTiles.add(elevationTileKey);
+  }
+
+  stats.visitedRooms.add(context.level.id);
+  stats.minElevation =
+    stats.minElevation === null ? player.elevation : Math.min(stats.minElevation, player.elevation);
+  stats.maxElevation =
+    stats.maxElevation === null ? player.elevation : Math.max(stats.maxElevation, player.elevation);
+}
+
+function terminalGemId(context, index) {
+  const actor = context.playData.actors[index] || {};
+  const type = context.engine.actorTypes[index] || actor.type || "actor";
+  const x = actor.x ?? context.state.actorX[index] ?? 0;
+  const y = actor.y ?? context.state.actorY[index] ?? 0;
+  const elevation = actor.elevation ?? context.state.actorElevation[index] ?? 0;
+  return `${context.level.id}:${type}:${index}:${x},${y},${elevation}`;
+}
+
+function applyCollectedGemsToContext(context) {
+  if (!context?.stats?.collectedGemIds?.size) {
+    return;
+  }
+
+  for (let index = 0; index < context.engine.actorCount; index += 1) {
+    const type = context.engine.actorTypes[index] || context.playData.actors[index]?.type || "";
+
+    if (type === "gem" && context.stats.collectedGemIds.has(terminalGemId(context, index))) {
+      context.state.actorRemoved[index] = 1;
+    }
+  }
+}
+
+function visibleGemIds(context) {
+  applyCollectedGemsToContext(context);
+  const ids = [];
+
+  for (let index = 0; index < context.engine.actorCount; index += 1) {
+    const type = context.engine.actorTypes[index] || context.playData.actors[index]?.type || "";
+
+    if (type === "gem" && !context.state.actorRemoved[index]) {
+      ids.push(terminalGemId(context, index));
+    }
+  }
+
+  return ids;
+}
+
+function recordCollectedGems(context, beforeIds) {
+  const stats = context?.stats;
+
+  if (!stats) {
+    return [];
+  }
+
+  const before = new Set(beforeIds || []);
+  const after = new Set(visibleGemIds(context));
+  const collected = [];
+
+  before.forEach((id) => {
+    if (!after.has(id) && !stats.collectedGemIds.has(id)) {
+      stats.collectedGemIds.add(id);
+      collected.push(id);
+    }
+  });
+
+  return collected;
+}
+
+function recordMoveStats(context, move, result, before) {
+  const stats = context?.stats;
+
+  if (!stats || !MOVE_ACTIONS.has(move)) {
+    return;
+  }
+
+  const afterPlayer = activePlayerEntry(context);
+  const roomChanged = before.levelId !== context.level.id;
+  const playerMoved =
+    before.player &&
+    afterPlayer &&
+    (before.player.x !== afterPlayer.x ||
+      before.player.y !== afterPlayer.y ||
+      before.player.elevation !== afterPlayer.elevation);
+  const moved = Boolean(result === true || result?.moved || roomChanged || playerMoved);
+
+  stats.actionCounts.move += 1;
+  stats.moveAttempts[move] += 1;
+
+  if (moved) {
+    stats.successfulMoves += 1;
+    stats.moveSuccesses[move] += 1;
+  } else {
+    stats.blockedMoves += 1;
+  }
+
+  if (roomChanged) {
+    stats.roomTransitions += 1;
+  }
+
+  if (before.player && afterPlayer && before.player.elevation !== afterPlayer.elevation) {
+    const delta = afterPlayer.elevation - before.player.elevation;
+    stats.elevationChanges += 1;
+
+    if (delta > 0) {
+      stats.elevationGain += delta;
+    } else {
+      stats.elevationLoss += Math.abs(delta);
+    }
+  }
+
+  if (before.levelId === context.level.id) {
+    recordCollectedGems(context, before.visibleGemIds);
+  }
+
+  recordPlayerVisit(context);
+}
+
+function edgeTransitionForMove(context, dx, dy) {
+  const players = activePlayerEntries(context);
+
+  if (players.length !== 1) {
+    return null;
+  }
+
+  const player = players[0];
+  const onEdge =
+    (dx < 0 && player.x === 0) ||
+    (dx > 0 && player.x === context.playData.width - 1) ||
+    (dy < 0 && player.y === 0) ||
+    (dy > 0 && player.y === context.playData.height - 1);
+
+  if (!onEdge) {
+    return null;
+  }
+
+  const sourceType = transitionSurfaceTypeAt(
+    context.playData,
+    context.state,
+    context.engine,
+    player.x,
+    player.y,
+    player.elevation
+  );
+
+  if (!sourceType) {
+    return null;
+  }
+
+  const nextLevelId = adjacentWorldLevelId(
+    context.level.id,
+    dx,
+    dy,
+    context.playData.worldColumns,
+    context.playData.worldRows
+  );
+
+  if (!nextLevelId) {
+    return null;
+  }
+
+  const nextLevel = getLevel(context.game, nextLevelId);
+
+  if (!nextLevel) {
+    return false;
+  }
+
+  const nextPlayData = getLevelState(context.game, nextLevel);
+  const nextRoom = buildRuntimeRoom(context.mazeEngine, nextPlayData);
+  const targetX = dx < 0
+    ? nextRoom.playData.width - 1
+    : dx > 0
+      ? 0
+      : Math.min(player.x, nextRoom.playData.width - 1);
+  const targetY = dy < 0
+    ? nextRoom.playData.height - 1
+    : dy > 0
+      ? 0
+      : Math.min(player.y, nextRoom.playData.height - 1);
+  const targetSurfaceType = transitionSurfaceTypeAt(
+    nextRoom.playData,
+    nextRoom.state,
+    nextRoom.engine,
+    targetX,
+    targetY,
+    player.elevation
+  );
+  const targetType =
+    targetSurfaceType ||
+    transitionHoleTypeAt(nextRoom.playData, nextRoom.state, nextRoom.engine, targetX, targetY, player.elevation) ||
+    "empty";
+
+  if (!isAllowedEdgeTransition(sourceType, targetType)) {
+    return false;
+  }
+
+  const transferActor = cloneTransferActor({
+    ...player.source,
+    type: player.type,
+    elevation: player.elevation,
+    x: targetX,
+    y: targetY
+  });
+
+  context.level = nextLevel;
+  context.playData = {
+    ...nextRoom.playData,
+    actors: nextRoom.playData.actors
+      .filter((actor) => !isPlayerActorType(actor.type))
+      .concat(transferActor)
+  };
+  context.engine = context.mazeEngine.createEngine(context.playData);
+  context.state = context.engine.cloneState(context.engine.initialState);
+
+  return true;
+}
+
+function isAllowedEdgeTransition(sourceType, targetType) {
+  if (!sourceType || !targetType) {
+    return false;
+  }
+
+  if (sourceType === "floor" && targetType === "hole") {
+    return true;
+  }
+
+  return sourceType === targetType;
+}
+
+function applyMove(context, move) {
+  const action = screenMoveVector(move, context.options.yaw);
+  if (!action) {
+    return null;
+  }
+
+  applyCollectedGemsToContext(context);
+  const beforeStats = {
+    levelId: context.level.id,
+    player: activePlayerEntry(context),
+    visibleGemIds: visibleGemIds(context)
+  };
+  const previous = captureHistorySnapshot(context);
+  const edgeTransition = edgeTransitionForMove(context, action.dx, action.dy);
+
+  if (edgeTransition !== null) {
+    if (edgeTransition) {
+      context.history.push(previous);
+      context.entrySnapshot = captureRoomSnapshot(context);
+    }
+
+    recordMoveStats(context, move, edgeTransition, beforeStats);
+    return edgeTransition;
+  }
+
+  const result = context.engine.move(context.state, action.dx, action.dy);
+
+  if (result?.moved) {
+    context.history.push(previous);
+  }
+
+  recordMoveStats(context, move, result, beforeStats);
+  return result;
+}
+
+function undoMove(context) {
+  const previous = context.history.pop();
+  const stats = context.stats;
+
+  if (stats) {
+    stats.actionCounts.undo += 1;
+  }
+
+  if (!previous) {
+    return false;
+  }
+
+  restoreRoomSnapshot(context, previous.room);
+  context.entrySnapshot = cloneRoomSnapshot(previous.entrySnapshot) || captureRoomSnapshot(context);
+  recordPlayerVisit(context);
+  return true;
+}
+
+function resetLevel(context) {
+  const stats = context.stats;
+
+  if (stats) {
+    stats.actionCounts.reset += 1;
+  }
+
+  if (!context.entrySnapshot) {
+    return false;
+  }
+
+  restoreRoomSnapshot(context, context.entrySnapshot);
+  context.entrySnapshot = captureRoomSnapshot(context);
+  context.history.length = 0;
+  applyCollectedGemsToContext(context);
+  recordPlayerVisit(context);
+  return true;
+}
+
+function applyMoves(context, moves) {
+  for (const move of String(moves || "").toUpperCase()) {
+    applyMove(context, move);
+  }
+}
+
+function solverDirectionsForYaw(yaw) {
+  return Array.from(MOVE_ACTIONS.keys())
+    .map((label) => ({
+      label,
+      ...screenMoveVector(label, yaw)
+    }))
+    .filter((direction) => Number.isFinite(direction.dx) && Number.isFinite(direction.dy));
+}
+
+async function solveContext(context) {
+  const mazeSolver = loadMazeSolver();
+
+  return mazeSolver.solveWithAStar(context.engine, {
+    directions: solverDirectionsForYaw(context.options.yaw),
+    maxExpandedStates: context.options.maxExpandedStates
+  });
+}
+
+function renderScreen(context) {
+  applyCollectedGemsToContext(context);
+  const { engine, level, options, playData, state } = context;
+  const solved = engine.isSolved(state) ? " solved" : "";
+  const header =
+    `${playData.gameId} ${level.id} | view=${VIEW_NAMES[options.pitch]} yaw=${options.yaw}${solved}`;
+  return `${header}\n${renderAscii(playData, engine, state, options)}`;
+}
+
+async function buildJsonPayload(context) {
+  applyCollectedGemsToContext(context);
+  const observation = renderAscii(context.playData, context.engine, context.state, context.options);
+  const payload = {
+    gameId: context.playData.gameId,
+    height: context.playData.height,
+    inputMoves: context.options.moves || "",
+    levelId: context.level.id,
+    pitch: context.options.pitch,
+    solved: context.engine.isSolved(context.state),
+    view: VIEW_NAMES[context.options.pitch],
+    width: context.playData.width,
+    yaw: context.options.yaw,
+    observation,
+    screen: renderScreen(context)
+  };
+
+  if (context.options.solve) {
+    const solution = await solveContext(context);
+    payload.solution = {
+      expanded: solution.expanded ?? null,
+      maxExpanded: solution.maxExpanded ?? null,
+      moves: solution.moves ?? null,
+      path: solution.path || "",
+      status: solution.status
+    };
+  }
+
+  return payload;
+}
+
+function countTotalGems(game) {
+  return (game?.levels || []).reduce((total, level) => {
+    try {
+      const state = getLevelState(game, level);
+      return total + (state.actors || []).filter((actor) => actor.type === "gem").length;
+    } catch (_error) {
+      return total;
+    }
+  }, 0);
+}
+
+function totalRoomCount(game) {
+  return game?.worldMap?.byPosition?.size || game?.levels?.length || 0;
+}
+
+function buildScorecard(context, nowMs = Date.now()) {
+  const stats = context.stats || createRunStats(context.level?.id || "");
+  const player = activePlayerEntry(context);
+  const durationMs = nowMs - stats.startedAtMs;
+  const totalGems = countTotalGems(context.game);
+  const totalRooms = totalRoomCount(context.game);
+  const collectedGemCount = stats.collectedGemIds.size;
+  const gameWonGemCount = normalizeGameWonGemCount(context.options?.gameWonGemCount);
+  const totalActions =
+    stats.actionCounts.move +
+    stats.actionCounts.rotateCamera +
+    stats.actionCounts.undo +
+    stats.actionCounts.reset;
+
+  return JSON.stringify(
+    {
+      scorecard: {
+        result: {
+          won: collectedGemCount === gameWonGemCount,
+          percent: (100 * collectedGemCount) / gameWonGemCount
+        },
+        gems: {
+          collected: collectedGemCount,
+          total: totalGems,
+          ids: Array.from(stats.collectedGemIds).sort()
+        },
+        rooms: {
+          current: context.level.id,
+          starting: stats.startingLevelId,
+          visited: stats.visitedRooms.size,
+          total: totalRooms,
+          ids: Array.from(stats.visitedRooms).sort()
+        },
+        tiles: {
+          visited: stats.uniqueTiles.size
+        },
+        duration: {
+          milliseconds: durationMs,
+          seconds: Math.round(durationMs / 1000)
+        },
+        current_position: player
+          ? {
+              level_id: context.level.id,
+              x: player.x,
+              y: player.y,
+              elevation: player.elevation
+            }
+          : null,
+        actions: {
+          total: totalActions,
+          moves: {
+            attempted: stats.actionCounts.move,
+            successful: stats.successfulMoves,
+            blocked: stats.blockedMoves,
+            room_transitions: stats.roomTransitions,
+            by_direction: Object.fromEntries(
+              Array.from(MOVE_ACTIONS.entries()).map(([key, action]) => [
+                action.label.toLowerCase(),
+                {
+                  attempted: stats.moveAttempts[key] || 0,
+                  successful: stats.moveSuccesses[key] || 0
+                }
+              ])
+            )
+          },
+          camera: {
+            total: stats.actionCounts.rotateCamera,
+            pitch_up: stats.pitchRotations.up,
+            pitch_down: stats.pitchRotations.down,
+            yaw_left: stats.yawRotations.left,
+            yaw_right: stats.yawRotations.right
+          },
+          undo: stats.actionCounts.undo,
+          reset: stats.actionCounts.reset
+        },
+        elevation: {
+          changes: stats.elevationChanges,
+          gain: stats.elevationGain,
+          loss: stats.elevationLoss,
+          min: stats.minElevation,
+          max: stats.maxElevation
+        }
+      }
+    },
+    null,
+    2
+  );
+}
+
+function isGameWon(context) {
+  const collectedGemCount = context?.stats?.collectedGemIds?.size || 0;
+  const gameWonGemCount = normalizeGameWonGemCount(context?.options?.gameWonGemCount);
+  return collectedGemCount === gameWonGemCount;
+}
+
+function printScreen(context, clear = false) {
+  if (clear && process.stdout.isTTY) {
+    process.stdout.write("\x1Bc");
+  }
+  console.log(renderScreen(context));
+}
+
+function startInteractive(context) {
+  printScreen(context, true);
+  console.log("\nArrows move in screen direction. i/k pitch camera. j/l yaw camera. z/u undo. r resets. q quits with scorecard.");
+
+  readline.emitKeypressEvents(process.stdin);
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+
+  function endRun() {
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    process.stdin.pause();
+    console.log(buildScorecard(context));
+    process.exit(0);
+  }
+
+  process.stdin.on("keypress", (_text, key = {}) => {
+    let shouldRender = true;
+
+    if (key.name === "q" || (key.ctrl && key.name === "c")) {
+      endRun();
+    } else if (key.name === "up") {
+      applyMove(context, "U");
+    } else if (key.name === "down") {
+      applyMove(context, "D");
+    } else if (key.name === "left") {
+      applyMove(context, "L");
+    } else if (key.name === "right") {
+      applyMove(context, "R");
+    } else if (key.name === "i") {
+      context.options.pitch = clampPitch(context.options.pitch - 1);
+      context.stats.actionCounts.rotateCamera += 1;
+      context.stats.pitchRotations.up += 1;
+    } else if (key.name === "k") {
+      context.options.pitch = clampPitch(context.options.pitch + 1);
+      context.stats.actionCounts.rotateCamera += 1;
+      context.stats.pitchRotations.down += 1;
+    } else if (key.name === "j") {
+      context.options.yaw = normalizeYaw(context.options.yaw - 1);
+      context.stats.actionCounts.rotateCamera += 1;
+      context.stats.yawRotations.left += 1;
+    } else if (key.name === "l") {
+      context.options.yaw = normalizeYaw(context.options.yaw + 1);
+      context.stats.actionCounts.rotateCamera += 1;
+      context.stats.yawRotations.right += 1;
+    } else if (key.name === "z" || key.name === "u") {
+      undoMove(context);
+    } else if (key.name === "r") {
+      resetLevel(context);
+    } else {
+      shouldRender = false;
+    }
+
+    if (shouldRender) {
+      printScreen(context, true);
+      if (isGameWon(context)) {
+        endRun();
+        return;
+      }
+      console.log("\nArrows move in screen direction. i/k pitch camera. j/l yaw camera. z/u undo. r resets. q quits with scorecard.");
+    }
+  });
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const mazeEngine = loadMazeEngine();
+  const context = createTerminalContext(mazeEngine, options);
+
+  applyMoves(context, options.moves);
+
+  if (options.json) {
+    const payload = await buildJsonPayload(context);
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+
+  if (options.once || !process.stdin.isTTY) {
+    printScreen(context, false);
+    return;
+  }
+
+  startInteractive(context);
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  applyMove,
+  buildJsonPayload,
+  buildScorecard,
+  createTerminalContext,
+  GAME_WON_GEM_COUNT,
+  isGameWon,
+  loadMazeEngine,
+  loadMazeSolver,
+  normalizeGameWonGemCount,
+  renderScreen,
+  resetLevel,
+  solveContext,
+  undoMove,
+  screenMoveVector
+};
