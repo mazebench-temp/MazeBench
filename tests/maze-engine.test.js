@@ -2183,4 +2183,63 @@ function createState(playData) {
   assert.equal(result.moves.some((move) => move.actorIndex === 1 && move.punchSlide), false);
 }
 
+{
+  const terrain = floorTerrain(6, 1);
+  terrain[0][5] = { type: "wall" };
+  const { engine, state } = createState({
+    width: 6,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "box", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "puncher", direction: "right", x: 2, y: 0, elevation: 0, removed: false },
+      { type: "box", x: 3, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const carriedPuncherMove = result.moves.find((move) => move.actorIndex === 2 && !move.visualOnly);
+  const puncherVisualMove = result.moves.find((move) => move.actorIndex === 2 && move.visualOnly);
+  const punchedBoxMove = result.moves.find((move) => move.actorIndex === 3 && !move.visualOnly);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [2, 0]);
+  assert.deepEqual([state.actorX[2], state.actorY[2]], [3, 0]);
+  assert.deepEqual([state.actorX[3], state.actorY[3]], [4, 0]);
+  assert.deepEqual(
+    {
+      fromX: carriedPuncherMove.fromX,
+      fromY: carriedPuncherMove.fromY,
+      toX: carriedPuncherMove.toX,
+      toY: carriedPuncherMove.toY
+    },
+    { fromX: 2, fromY: 0, toX: 3, toY: 0 }
+  );
+  assert.deepEqual(
+    {
+      fromX: puncherVisualMove.fromX,
+      fromY: puncherVisualMove.fromY,
+      toX: puncherVisualMove.toX,
+      toY: puncherVisualMove.toY,
+      finalX: puncherVisualMove.finalX,
+      finalY: puncherVisualMove.finalY,
+      punchSequence: puncherVisualMove.punchSequence
+    },
+    { fromX: 2, fromY: 0, toX: 4, toY: 0, finalX: 3, finalY: 0, punchSequence: 0 }
+  );
+  assert.equal(punchedBoxMove.punchStartX, 3);
+  assert.equal(punchedBoxMove.punchStartY, 0);
+  assert.deepEqual(
+    punchedBoxMove.punchSegments.map(({ sequence, fromX, fromY, toX, toY }) => ({
+      sequence,
+      fromX,
+      fromY,
+      toX,
+      toY
+    })),
+    [{ sequence: 0, fromX: 3, fromY: 0, toX: 4, toY: 0 }]
+  );
+}
+
 console.log("maze-engine tests passed");

@@ -534,7 +534,12 @@
 
     function punchPhaseTwoDistance(move) {
       if (isPunchVisualMove(move)) {
-        return moveDistance(move);
+        return segmentDistance(
+          typeof move.finalX === "number" ? move.finalX : move.fromX,
+          typeof move.finalY === "number" ? move.finalY : move.fromY,
+          move.toX,
+          move.toY
+        );
       }
 
       const firstSegment = firstPunchSegment(move);
@@ -782,8 +787,8 @@
         typeof durationMs !== "number" &&
         moves.some(
           (move) =>
-            normalizedPunchSegments(move).some((segment) => segment.sequence > 0) ||
-            (isPunchVisualMove(move) && punchSequenceForVisualMove(move) > 0)
+            normalizedPunchSegments(move).length > 0 ||
+            (isPunchVisualMove(move) && Number.isFinite(Number(move.punchSequence)))
         );
       const punchPhaseOneDuration =
         hasPunchPhase && typeof durationMs !== "number"
@@ -974,17 +979,34 @@
 
                 if (isPunchVisualMove(move)) {
                   const timing = punchSequenceTimings.timings.get(punchSequenceForVisualMove(move));
+                  const baseX = typeof move.finalX === "number" ? move.finalX : fromX;
+                  const baseY = typeof move.finalY === "number" ? move.finalY : fromY;
+                  const baseElevation =
+                    typeof move.finalElevation === "number" ? move.finalElevation : fromElevation;
 
                   if (!timing || elapsedMs < timing.start) {
-                    renderToX = fromX;
-                    renderToY = fromY;
-                    renderToElevation = fromElevation;
-                    positionProgress = 1;
+                    const distance = pathSegmentDistance(
+                      { x: fromX, y: fromY, elevation: fromElevation },
+                      { x: baseX, y: baseY, elevation: baseElevation }
+                    );
+
+                    renderToX = baseX;
+                    renderToY = baseY;
+                    renderToElevation = baseElevation;
+                    positionProgress = segmentProgress(
+                      elapsedMs,
+                      distance,
+                      timing ? timing.start : punchPhaseOneDuration,
+                      move.iceSlide === true
+                    );
                     renderPunchEffect = false;
                   } else if (elapsedMs < timing.punchEnd) {
                     const distance = punchPhaseTwoDistance(move);
                     const duration = punchPhaseTwoDurationFor(move);
 
+                    renderFromX = baseX;
+                    renderFromY = baseY;
+                    renderFromElevation = baseElevation;
                     positionProgress = segmentProgress(elapsedMs - timing.start, distance, duration, true);
                     renderPunchEffect = true;
                   } else if (retractPunchDuringFall) {
@@ -997,19 +1019,15 @@
                     positionProgress = 1;
                     renderPunchEffect = true;
                   } else if (elapsedMs < timing.retractEnd) {
-                    const finalX = typeof move.finalX === "number" ? move.finalX : fromX;
-                    const finalY = typeof move.finalY === "number" ? move.finalY : fromY;
-                    const finalElevation =
-                      typeof move.finalElevation === "number" ? move.finalElevation : fromElevation;
                     const distance = punchRetractDistance(move);
                     const duration = punchRetractDurationFor(move);
 
                     renderFromX = toX;
                     renderFromY = toY;
-                    renderToX = finalX;
-                    renderToY = finalY;
+                    renderToX = baseX;
+                    renderToY = baseY;
                     renderFromElevation = toElevation;
-                    renderToElevation = finalElevation;
+                    renderToElevation = baseElevation;
                     positionProgress = segmentProgress(
                       elapsedMs - timing.punchEnd,
                       distance,
@@ -1018,17 +1036,12 @@
                     );
                     renderPunchEffect = true;
                   } else {
-                    const finalX = typeof move.finalX === "number" ? move.finalX : fromX;
-                    const finalY = typeof move.finalY === "number" ? move.finalY : fromY;
-                    const finalElevation =
-                      typeof move.finalElevation === "number" ? move.finalElevation : fromElevation;
-
-                    renderFromX = finalX;
-                    renderFromY = finalY;
-                    renderToX = finalX;
-                    renderToY = finalY;
-                    renderFromElevation = finalElevation;
-                    renderToElevation = finalElevation;
+                    renderFromX = baseX;
+                    renderFromY = baseY;
+                    renderToX = baseX;
+                    renderToY = baseY;
+                    renderFromElevation = baseElevation;
+                    renderToElevation = baseElevation;
                     positionProgress = 1;
                     renderPunchEffect = false;
                   }

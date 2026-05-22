@@ -3495,6 +3495,17 @@
       );
     }
 
+    function punchTriggerActorAt(state, x, y, elevation) {
+      return actorAt(
+        state,
+        x,
+        y,
+        (actor) =>
+          actorElevation(state, actor) === elevation &&
+          (isPlayerActor(actor) || isPushableActor(actor))
+      );
+    }
+
     function canPunchActorCarryPuncher(type) {
       return type === "box" || type === "floating_floor" || type === "weightless_box";
     }
@@ -3959,22 +3970,33 @@
       searchMode,
       punchSequence = 0
     ) {
-      if (searchMode || moves.some((move) => move.actorIndex === puncher)) {
+      if (
+        searchMode ||
+        moves.some((move) => move.actorIndex === puncher && move.visualOnly && move.punchEffect)
+      ) {
         return;
       }
+
+      const carrierMove = moves.find((move) => move.actorIndex === puncher && !move.visualOnly);
+      const fromX = carrierMove?.fromX ?? state.actorX[puncher];
+      const fromY = carrierMove?.fromY ?? state.actorY[puncher];
+      const fromElevation = carrierMove?.fromElevation ?? actorElevation(state, puncher);
+      const finalX = carrierMove?.toX ?? state.actorX[puncher];
+      const finalY = carrierMove?.toY ?? state.actorY[puncher];
+      const finalElevation = carrierMove?.toElevation ?? actorElevation(state, puncher);
 
       moves.push({
         actorIndex: puncher,
         actorType: actorTypes[puncher],
-        fromX: state.actorX[puncher],
-        fromY: state.actorY[puncher],
+        fromX,
+        fromY,
         toX: targetX,
         toY: targetY,
-        finalX: state.actorX[puncher],
-        finalY: state.actorY[puncher],
-        fromElevation: actorElevation(state, puncher),
+        finalX,
+        finalY,
+        fromElevation,
         toElevation: actorElevation(state, puncher),
-        finalElevation: actorElevation(state, puncher),
+        finalElevation,
         iceSlide: true,
         punchEffect: true,
         punchSequence,
@@ -4017,12 +4039,16 @@
       originalActorX,
       originalActorY,
       originalActorElevation,
-      searchMode
+      searchMode,
+      options = {}
     ) {
       if (!actorTypes.includes("puncher")) {
         return;
       }
 
+      const candidateActorIndexes =
+        options.candidateActorIndexes instanceof Set ? options.candidateActorIndexes : null;
+      const sequenceBase = Number.isFinite(options.sequenceBase) ? options.sequenceBase : 0;
       const triggered = new Set();
       let triggeredThisPass = true;
       let passCount = 0;
@@ -4034,15 +4060,16 @@
         const occupied = buildOccupiedMap(state);
         const gateState = computeRaisedPlayerGateSet(state);
         const orangeButtonsPressed = areOrangeButtonsPressed(state);
-        const candidates = moves
-          .filter((move) => !move.visualOnly && !move.toRemoved)
-          .map((move) => move.actorIndex)
-          .filter(
-            (actorIndex, index, actorIndexes) =>
-              actorIndexes.indexOf(actorIndex) === index &&
-              !state.actorRemoved[actorIndex] &&
-              (isPlayerActor(actorIndex) || isPushableActor(actorIndex))
-          );
+        const candidates = (
+          candidateActorIndexes
+            ? Array.from(candidateActorIndexes)
+            : moves.filter((move) => !move.visualOnly && !move.toRemoved).map((move) => move.actorIndex)
+        ).filter(
+          (actorIndex, index, actorIndexes) =>
+            actorIndexes.indexOf(actorIndex) === index &&
+            !state.actorRemoved[actorIndex] &&
+            (isPlayerActor(actorIndex) || isPushableActor(actorIndex))
+        );
 
         for (const actorIndex of candidates) {
           const elevation = actorElevation(state, actorIndex);
@@ -4113,7 +4140,7 @@
             continue;
           }
 
-          const punchSequence = passCount - 1;
+          const punchSequence = sequenceBase + passCount - 1;
 
           markPunchStartOnMoves(moves, punchStarts);
           recordPunchSegments(state, moves, punchStarts, punchSequence, searchMode);
@@ -4129,9 +4156,45 @@
             searchMode,
             punchSequence
           );
+
+          if (candidateActorIndexes) {
+            const members =
+              actorTypes[actorIndex] === "weightless_box"
+                ? weightlessGroupMembers(state, actorGroupIds[actorIndex])
+                : [actorIndex];
+
+            members.forEach((member) => candidateActorIndexes.add(member));
+          }
+
           triggeredThisPass = true;
         }
       }
+    }
+
+    function nextPunchSequence(moves) {
+      let nextSequence = 0;
+
+      moves.forEach((move) => {
+        if (Array.isArray(move.punchSegments)) {
+          move.punchSegments.forEach((segment) => {
+            const sequence = Number(segment?.sequence);
+
+            if (Number.isFinite(sequence)) {
+              nextSequence = Math.max(nextSequence, sequence + 1);
+            }
+          });
+        }
+
+        if (move.visualOnly && move.punchEffect) {
+          const sequence = Number(move.punchSequence);
+
+          if (Number.isFinite(sequence)) {
+            nextSequence = Math.max(nextSequence, sequence + 1);
+          }
+        }
+      });
+
+      return nextSequence;
     }
 
     function syncAttachedPunchersForMoves(
@@ -4142,8 +4205,10 @@
       originalActorElevation,
       searchMode
     ) {
+      const punchCandidates = new Set();
+
       if (!actorTypes.includes("puncher")) {
-        return;
+        return punchCandidates;
       }
 
       moves
@@ -4174,6 +4239,17 @@
             state.actorX[puncher] = move.toX + dx;
             state.actorY[puncher] = move.toY + dy;
             state.actorElevation[puncher] = move.toElevation ?? move.fromElevation ?? 0;
+            const targetActor = punchTriggerActorAt(
+              state,
+              state.actorX[puncher],
+              state.actorY[puncher],
+              actorElevation(state, puncher)
+            );
+
+            if (targetActor !== -1 && targetActor !== move.actorIndex) {
+              punchCandidates.add(targetActor);
+            }
+
             const visualMoveIndex = moves.findIndex(
               (candidate) => candidate.actorIndex === puncher && candidate.visualOnly
             );
@@ -4195,6 +4271,8 @@
             );
           }
         });
+
+      return punchCandidates;
     }
 
     function syncAttachedSurfaceAttachmentsForMoves(
@@ -5111,7 +5189,7 @@
           originalActorElevation,
           searchMode
         );
-        syncAttachedPunchersForMoves(
+        const movedPuncherCandidates = syncAttachedPunchersForMoves(
           state,
           moves,
           originalActorX,
@@ -5119,6 +5197,20 @@
           originalActorElevation,
           searchMode
         );
+        if (movedPuncherCandidates.size > 0) {
+          applyPunchers(
+            state,
+            moves,
+            originalActorX,
+            originalActorY,
+            originalActorElevation,
+            searchMode,
+            {
+              candidateActorIndexes: movedPuncherCandidates,
+              sequenceBase: nextPunchSequence(moves)
+            }
+          );
+        }
         collapseSequentialActorMoves(moves);
         applyHoleFalls(state, moves);
         pendingLiftToggles.forEach(({ x, y, raised }) => {
