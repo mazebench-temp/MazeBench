@@ -1900,6 +1900,7 @@ function createState(playData) {
   });
 
   const result = engine.move(state, 1, 0);
+  const puncherVisualMove = result.moves.find((move) => move.actorIndex === 1 && move.visualOnly);
 
   assert.equal(result.moved, true);
   assert.deepEqual([state.actorX[0], state.actorY[0]], [3, 0]);
@@ -1938,7 +1939,19 @@ function createState(playData) {
       toY: 0
     }
   );
-  assert.equal(result.moves.some((move) => move.actorType === "puncher" && move.visualOnly), true);
+  assert.deepEqual(
+    {
+      fromX: puncherVisualMove.fromX,
+      fromY: puncherVisualMove.fromY,
+      toX: puncherVisualMove.toX,
+      toY: puncherVisualMove.toY,
+      targetX: puncherVisualMove.targetX,
+      targetY: puncherVisualMove.targetY,
+      finalX: puncherVisualMove.finalX,
+      finalY: puncherVisualMove.finalY
+    },
+    { fromX: 1, fromY: 0, toX: 2, toY: 0, targetX: 3, targetY: 0, finalX: 1, finalY: 0 }
+  );
 }
 
 {
@@ -2444,6 +2457,169 @@ function createState(playData) {
   assert.equal(boxMove.toRemoved, true);
   assert.equal(attachedPuncherMove.toRemoved, true);
   assert.equal(attachedPuncherMove.stickyCarrierEntityKey, "weightless:M0");
+}
+
+{
+  const terrain = floorTerrain(4, 5);
+  terrain[4][2] = { type: "wall" };
+  const { engine, state } = createState({
+    width: 4,
+    height: 5,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 2, removed: false },
+      { type: "box", x: 2, y: 1, elevation: 0, removed: false },
+      { type: "puncher", direction: "down", x: 2, y: 2, elevation: 0, removed: false },
+      { type: "box", x: 1, y: 2, elevation: 0, removed: false },
+      { type: "puncher", direction: "up", x: 1, y: 1, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const upperBoxMove = result.moves.find((move) => move.actorIndex === 1 && !move.visualOnly);
+  const lowerBoxMove = result.moves.find((move) => move.actorIndex === 3 && !move.visualOnly);
+  const downPuncherMove = result.moves.find((move) => move.actorIndex === 2 && !move.visualOnly);
+  const upPuncherMove = result.moves.find((move) => move.actorIndex === 4 && !move.visualOnly);
+  const downPuncherVisualMove = result.moves.find((move) => move.actorIndex === 2 && move.visualOnly);
+  const upPuncherVisualMove = result.moves.find((move) => move.actorIndex === 4 && move.visualOnly);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [2, 0]);
+  assert.deepEqual([state.actorX[3], state.actorY[3]], [2, 3]);
+  assert.deepEqual([state.actorX[2], state.actorY[2]], [2, 1]);
+  assert.deepEqual([state.actorX[4], state.actorY[4]], [2, 2]);
+  assert.equal(upperBoxMove.punchSlide, true);
+  assert.equal(lowerBoxMove.punchSlide, true);
+  assert.equal(downPuncherMove.stickyCarrierEntityKey, "actor:1");
+  assert.equal(upPuncherMove.stickyCarrierEntityKey, "actor:3");
+  assert.deepEqual(
+    {
+      toX: downPuncherVisualMove.toX,
+      toY: downPuncherVisualMove.toY,
+      finalX: downPuncherVisualMove.finalX,
+      finalY: downPuncherVisualMove.finalY,
+      punchSequence: downPuncherVisualMove.punchSequence
+    },
+    { toX: 2, toY: 2, finalX: 2, finalY: 1, punchSequence: 0 }
+  );
+  assert.deepEqual(
+    {
+      toX: upPuncherVisualMove.toX,
+      toY: upPuncherVisualMove.toY,
+      finalX: upPuncherVisualMove.finalX,
+      finalY: upPuncherVisualMove.finalY,
+      punchSequence: upPuncherVisualMove.punchSequence
+    },
+    { toX: 2, toY: 1, finalX: 2, finalY: 2, punchSequence: 0 }
+  );
+}
+
+{
+  const terrain = floorTerrain(7, 6);
+  terrain[5][2] = { type: "wall" };
+  terrain[5][3] = { type: "wall" };
+  terrain[5][4] = { type: "wall" };
+  const { engine, state } = createState({
+    width: 7,
+    height: 6,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 3, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 4, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 4, y: 1, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 4, y: 2, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 3, y: 2, elevation: 0, removed: false },
+      { type: "puncher", direction: "down", x: 2, y: 1, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M1", x: 1, y: 1, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M1", x: 2, y: 1, elevation: 0, removed: false },
+      { type: "puncher", direction: "down", x: 2, y: 2, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const m0Moves = result.moves.filter(
+    (move) => move.actorType === "weightless_box" && [1, 2, 3, 4, 5, 6].includes(move.actorIndex)
+  );
+  const m1Moves = result.moves.filter(
+    (move) => move.actorType === "weightless_box" && [8, 9].includes(move.actorIndex)
+  );
+
+  assert.equal(result.moved, true);
+  assert.deepEqual(
+    [state.actorX[1], state.actorY[1], state.actorX[6], state.actorY[6]],
+    [2, 2, 3, 4]
+  );
+  assert.deepEqual(
+    [state.actorX[8], state.actorY[8], state.actorX[9], state.actorY[9]],
+    [2, 3, 3, 3]
+  );
+  assert.deepEqual([state.actorX[7], state.actorY[7]], [2, 3]);
+  assert.deepEqual([state.actorX[10], state.actorY[10]], [3, 4]);
+  assert.equal(m0Moves.every((move) => move.punchSlide === true), true);
+  assert.equal(m1Moves.every((move) => move.punchSlide === true), true);
+}
+
+{
+  const terrain = floorTerrain(7, 1);
+  terrain[0][6] = { type: "wall" };
+  const { engine, state } = createState({
+    width: 7,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "puncher", direction: "right", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "box", x: 2, y: 0, elevation: 0, removed: false },
+      { type: "box", x: 3, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [3, 0]);
+  assert.deepEqual([state.actorX[2], state.actorY[2]], [4, 0]);
+  assert.deepEqual([state.actorX[3], state.actorY[3]], [5, 0]);
+  assert.equal(
+    [0, 2, 3].every((actorIndex) =>
+      result.moves.some((move) => move.actorIndex === actorIndex && move.punchSlide === true)
+    ),
+    true
+  );
+}
+
+{
+  const terrain = floorTerrain(7, 2);
+  terrain[0][6] = { type: "wall" };
+  terrain[1][6] = { type: "wall" };
+  const { engine, state } = createState({
+    width: 7,
+    height: 2,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "puncher", direction: "right", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 1, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M1", x: 3, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0]], [3, 0]);
+  assert.deepEqual([state.actorX[2], state.actorY[2]], [4, 0]);
+  assert.deepEqual([state.actorX[3], state.actorY[3]], [4, 1]);
+  assert.deepEqual([state.actorX[4], state.actorY[4]], [5, 0]);
+  assert.equal(
+    [0, 2, 3, 4].every((actorIndex) =>
+      result.moves.some((move) => move.actorIndex === actorIndex && move.punchSlide === true)
+    ),
+    true
+  );
 }
 
 console.log("maze-engine tests passed");

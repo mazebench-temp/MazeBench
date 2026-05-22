@@ -6006,7 +6006,9 @@
         return;
       }
 
-      const start = puncherAnchoredCenter(cellCenter(actor.x, actor.y), direction, depth);
+      const baseX = Number.isFinite(actor.renderPunchBaseX) ? actor.renderPunchBaseX : actor.x;
+      const baseY = Number.isFinite(actor.renderPunchBaseY) ? actor.renderPunchBaseY : actor.y;
+      const start = puncherAnchoredCenter(cellCenter(baseX, baseY), direction, depth);
       const end = center;
       const lengthX = Math.abs(end.x - start.x);
       const lengthZ = Math.abs(end.z - start.z);

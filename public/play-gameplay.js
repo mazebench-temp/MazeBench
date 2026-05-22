@@ -586,6 +586,10 @@
       return segmentDuration(punchRetractDistance(move), isPunchVisualMove(move));
     }
 
+    function punchVisualCycleDurationFor(move) {
+      return punchPhaseTwoDurationFor(move) + punchRetractDurationFor(move);
+    }
+
     function punchSequenceForVisualMove(move) {
       const sequence = Number(move.punchSequence);
       return Number.isFinite(sequence) ? sequence : 0;
@@ -621,11 +625,7 @@
             });
 
           if (isPunchVisualMove(move) && punchSequenceForVisualMove(move) === sequence) {
-            punchDuration = Math.max(punchDuration, punchPhaseTwoDurationFor(move));
-
-            if (!retractPunchDuringFall) {
-              retractDuration = Math.max(retractDuration, punchRetractDurationFor(move));
-            }
+            punchDuration = Math.max(punchDuration, punchVisualCycleDurationFor(move));
           }
         });
 
@@ -749,6 +749,13 @@
         return;
       }
 
+      moves.sort((left, right) => {
+        const leftVisual = isPunchVisualMove(left) ? 1 : 0;
+        const rightVisual = isPunchVisualMove(right) ? 1 : 0;
+
+        return leftVisual - rightVisual;
+      });
+
       app.isAnimating = true;
       const startLiftPhaseCallback =
         typeof options.startLiftPhase === "function" ? options.startLiftPhase : null;
@@ -780,8 +787,7 @@
         (move) => !preTerrainLiftMoveSet.has(move)
       );
       const hasPunchPhase = moves.some((move) => hasPunchStart(move) || isPunchVisualMove(move));
-      const retractPunchDuringFall =
-        hasPunchPhase && holeStateMoves.length > 0 && typeof durationMs !== "number";
+      const retractPunchDuringFall = false;
       const hasSequencedPunchPhase =
         hasPunchPhase &&
         typeof durationMs !== "number" &&
@@ -815,6 +821,214 @@
             : Math.max(MOVE_DURATION_MS, ...moves.map(moveDurationFor));
       const useIceSlideTiming = typeof durationMs !== "number";
       const completedLiftMoves = new Set();
+      const logicalMoveByActor = new Map();
+
+      moves.forEach((move) => {
+        if (move.visualOnly !== true && move.actor && !logicalMoveByActor.has(move.actor)) {
+          logicalMoveByActor.set(move.actor, move);
+        }
+      });
+
+      function lerpMovePoint(fromX, fromY, fromElevation, toX, toY, toElevation, progress) {
+        return {
+          x: fromX + (toX - fromX) * progress,
+          y: fromY + (toY - fromY) * progress,
+          elevation: fromElevation + (toElevation - fromElevation) * progress
+        };
+      }
+
+      function visualBasePointForMove(move, elapsedMs) {
+        const fromElevation = move.fromElevation ?? move.actor?.elevation ?? 0;
+        const toElevation = move.toElevation ?? fromElevation;
+        const punchSegments = normalizedPunchSegments(move);
+        const usesPath = Array.isArray(move.path) && move.path.length > 1;
+
+        if (hasSequencedPunchPhase && useIceSlideTiming && punchSegments.length > 0) {
+          const firstSegment = punchSegments[0];
+
+          if (elapsedMs < punchPhaseOneDuration) {
+            const distance = punchPhaseOneDistance(move);
+            const duration = punchPhaseOneDurationFor(move);
+            const progress = segmentProgress(
+              elapsedMs,
+              distance,
+              duration,
+              firstSegment.startIceSlide === true,
+              move.reverseIceSlide === true
+            );
+
+            if (usesPath) {
+              const point = pointAlongPathToPoint(
+                move,
+                {
+                  x: firstSegment.fromX,
+                  y: firstSegment.fromY,
+                  elevation: firstSegment.fromElevation
+                },
+                progress
+              );
+
+              if (point) {
+                return point;
+              }
+            }
+
+            return lerpMovePoint(
+              move.fromX,
+              move.fromY,
+              fromElevation,
+              firstSegment.fromX,
+              firstSegment.fromY,
+              firstSegment.fromElevation,
+              progress
+            );
+          }
+
+          let activeSegment = null;
+          let activeTiming = null;
+          let lastCompletedSegment = null;
+
+          for (let index = 0; index < punchSegments.length; index += 1) {
+            const segment = punchSegments[index];
+            const timing = punchSequenceTimings.timings.get(segment.sequence);
+
+            if (!timing) {
+              continue;
+            }
+
+            if (elapsedMs < timing.start) {
+              break;
+            }
+
+            if (elapsedMs < timing.punchEnd) {
+              activeSegment = segment;
+              activeTiming = timing;
+              break;
+            }
+
+            lastCompletedSegment = segment;
+          }
+
+          if (activeSegment && activeTiming) {
+            const distance = punchSegmentDistance(activeSegment);
+            const duration = punchSegmentDurationFor(move, activeSegment);
+            const progress = segmentProgress(
+              elapsedMs - activeTiming.start,
+              distance,
+              duration,
+              activeSegment.punchSlide === true || move.punchSlide === true || move.iceSlide === true
+            );
+
+            return lerpMovePoint(
+              activeSegment.fromX,
+              activeSegment.fromY,
+              activeSegment.fromElevation,
+              activeSegment.toX,
+              activeSegment.toY,
+              activeSegment.toElevation,
+              progress
+            );
+          }
+
+          const renderSegment = lastCompletedSegment || firstSegment;
+
+          return {
+            x: renderSegment.toX,
+            y: renderSegment.toY,
+            elevation: renderSegment.toElevation
+          };
+        }
+
+        if (hasPunchPhase && useIceSlideTiming && hasPunchStart(move)) {
+          const punchPhaseTwoStart = punchPhaseOneDuration;
+          const punchRetractStart = punchPhaseOneDuration + punchPhaseTwoDuration;
+          const inPunchPhase = elapsedMs >= punchPhaseTwoStart;
+          const inRetractPhase = !retractPunchDuringFall && elapsedMs >= punchRetractStart;
+
+          if (inRetractPhase) {
+            return { x: move.toX, y: move.toY, elevation: toElevation };
+          }
+
+          if (inPunchPhase) {
+            const distance = punchPhaseTwoDistance(move);
+            const duration = punchPhaseTwoDurationFor(move);
+            const progress = segmentProgress(
+              Math.max(0, elapsedMs - punchPhaseTwoStart),
+              distance,
+              duration,
+              move.punchSlide === true || move.iceSlide === true
+            );
+
+            return lerpMovePoint(
+              move.punchStartX,
+              move.punchStartY,
+              move.punchStartElevation ?? fromElevation,
+              move.toX,
+              move.toY,
+              toElevation,
+              progress
+            );
+          }
+
+          const distance = punchPhaseOneDistance(move);
+          const duration = punchPhaseOneDurationFor(move);
+          const progress = segmentProgress(
+            elapsedMs,
+            distance,
+            duration,
+            move.punchStartIceSlide === true,
+            move.reverseIceSlide === true
+          );
+
+          if (usesPath) {
+            const point = pointAlongPath(move, progress);
+
+            if (point) {
+              return point;
+            }
+          }
+
+          return lerpMovePoint(
+            move.fromX,
+            move.fromY,
+            fromElevation,
+            move.punchStartX,
+            move.punchStartY,
+            move.punchStartElevation ?? fromElevation,
+            progress
+          );
+        }
+
+        if (usesPath && !hasPunchStart(move)) {
+          const progress = useIceSlideTiming && move.iceSlide
+            ? iceSlideProgressForDuration(elapsedMs, pathDistanceFor(move), moveDuration, move.reverseIceSlide === true)
+            : moveDuration <= 0
+              ? 1
+              : easeInOutQuad(Math.min(1, elapsedMs / moveDuration));
+          const point = pointAlongPath(move, progress);
+
+          if (point) {
+            return point;
+          }
+        }
+
+        const distance = moveDistance(move);
+        const progress = useIceSlideTiming && move.iceSlide
+          ? iceSlideProgressForDuration(elapsedMs, distance, moveDuration, move.reverseIceSlide === true)
+          : moveDuration <= 0
+            ? 1
+            : easeInOutQuad(Math.min(1, elapsedMs / moveDuration));
+
+        return lerpMovePoint(
+          move.fromX,
+          move.fromY,
+          fromElevation,
+          move.toX,
+          move.toY,
+          toElevation,
+          progress
+        );
+      }
 
       function runLiftAnimation(activeLiftMoves, nextPhase, options = {}) {
         if (activeLiftMoves.length === 0) {
@@ -983,68 +1197,48 @@
                   const baseY = typeof move.finalY === "number" ? move.finalY : fromY;
                   const baseElevation =
                     typeof move.finalElevation === "number" ? move.finalElevation : fromElevation;
+                  const baseMove = logicalMoveByActor.get(actor);
+                  const basePoint = baseMove
+                    ? visualBasePointForMove(baseMove, elapsedMs)
+                    : { x: baseX, y: baseY, elevation: baseElevation };
+                  const lungeDx = toX - baseX;
+                  const lungeDy = toY - baseY;
+                  let lungeProgress = 0;
 
                   if (!timing || elapsedMs < timing.start) {
-                    const distance = pathSegmentDistance(
-                      { x: fromX, y: fromY, elevation: fromElevation },
-                      { x: baseX, y: baseY, elevation: baseElevation }
-                    );
-
-                    renderToX = baseX;
-                    renderToY = baseY;
-                    renderToElevation = baseElevation;
-                    positionProgress = segmentProgress(
-                      elapsedMs,
-                      distance,
-                      timing ? timing.start : punchPhaseOneDuration,
-                      move.iceSlide === true
-                    );
                     renderPunchEffect = false;
-                  } else if (elapsedMs < timing.punchEnd) {
+                  } else {
                     const distance = punchPhaseTwoDistance(move);
                     const duration = punchPhaseTwoDurationFor(move);
+                    const lungeEnd = timing.start + duration;
+                    const retractDuration = punchRetractDurationFor(move);
+                    const retractEnd = lungeEnd + retractDuration;
 
-                    renderFromX = baseX;
-                    renderFromY = baseY;
-                    renderFromElevation = baseElevation;
-                    positionProgress = segmentProgress(elapsedMs - timing.start, distance, duration, true);
-                    renderPunchEffect = true;
-                  } else if (retractPunchDuringFall) {
-                    renderFromX = toX;
-                    renderFromY = toY;
-                    renderToX = toX;
-                    renderToY = toY;
-                    renderFromElevation = toElevation;
-                    renderToElevation = toElevation;
-                    positionProgress = 1;
-                    renderPunchEffect = true;
-                  } else if (elapsedMs < timing.retractEnd) {
-                    const distance = punchRetractDistance(move);
-                    const duration = punchRetractDurationFor(move);
-
-                    renderFromX = toX;
-                    renderFromY = toY;
-                    renderToX = baseX;
-                    renderToY = baseY;
-                    renderFromElevation = toElevation;
-                    renderToElevation = baseElevation;
-                    positionProgress = segmentProgress(
-                      elapsedMs - timing.punchEnd,
-                      distance,
-                      duration,
-                      true
-                    );
-                    renderPunchEffect = true;
-                  } else {
-                    renderFromX = baseX;
-                    renderFromY = baseY;
-                    renderToX = baseX;
-                    renderToY = baseY;
-                    renderFromElevation = baseElevation;
-                    renderToElevation = baseElevation;
-                    positionProgress = 1;
-                    renderPunchEffect = false;
+                    if (elapsedMs < lungeEnd) {
+                      lungeProgress = segmentProgress(elapsedMs - timing.start, distance, duration, true);
+                      renderPunchEffect = true;
+                    } else if (elapsedMs < retractEnd) {
+                      lungeProgress = 1 - segmentProgress(
+                        elapsedMs - lungeEnd,
+                        punchRetractDistance(move),
+                        retractDuration,
+                        true
+                      );
+                      renderPunchEffect = true;
+                    } else {
+                      renderPunchEffect = false;
+                    }
                   }
+
+                  renderFromX = basePoint.x;
+                  renderFromY = basePoint.y;
+                  renderToX = basePoint.x + lungeDx;
+                  renderToY = basePoint.y + lungeDy;
+                  renderFromElevation = basePoint.elevation;
+                  renderToElevation = basePoint.elevation;
+                  positionProgress = lungeProgress;
+                  actor.renderPunchBaseX = basePoint.x;
+                  actor.renderPunchBaseY = basePoint.y;
                 } else if (punchSegments.length > 0) {
                   const firstSegment = punchSegments[0];
 
@@ -1324,15 +1518,13 @@
               } = move;
               const fallStartElevation = fallPhaseStartElevationForMove(move);
 
-              if (retractPunchDuringFall && isPunchVisualMove(move)) {
-                const finalX = typeof move.finalX === "number" ? move.finalX : move.fromX;
-                const finalY = typeof move.finalY === "number" ? move.finalY : move.fromY;
-
-                actor.renderX = toX + (finalX - toX) * eased;
-                actor.renderY = toY + (finalY - toY) * eased;
-                actor.renderElevation = fallStartElevation;
+              if (isPunchVisualMove(move)) {
+                actor.renderX = typeof move.finalX === "number" ? move.finalX : move.fromX;
+                actor.renderY = typeof move.finalY === "number" ? move.finalY : move.fromY;
+                actor.renderElevation =
+                  typeof move.finalElevation === "number" ? move.finalElevation : fallStartElevation;
                 actor.renderInHole = false;
-                actor.renderPunchEffect = true;
+                actor.renderPunchEffect = false;
                 actor.renderAlpha = 1;
                 actor.renderScale = 1;
                 actor.renderSink = 0;

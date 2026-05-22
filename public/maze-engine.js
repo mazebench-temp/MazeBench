@@ -3698,208 +3698,7 @@
       }
     }
 
-    function canPunchActorStep(
-      state,
-      actorIndex,
-      targetX,
-      targetY,
-      occupied,
-      gateState,
-      orangeButtonsPressed
-    ) {
-      const elevation = actorElevation(state, actorIndex);
-
-      if (!isInsideBoard(targetX, targetY)) {
-        return false;
-      }
-
-      if (terrainBlocksElevation(state, targetX, targetY, elevation, gateState, orangeButtonsPressed)) {
-        return false;
-      }
-
-      return !isOccupiedAtElevation(occupied, targetX, targetY, elevation);
-    }
-
-    function punchSingleActor(
-      state,
-      actorIndex,
-      dx,
-      dy,
-      occupied,
-      moves,
-      gateState,
-      orangeButtonsPressed,
-      originalActorX,
-      originalActorY,
-      originalActorElevation,
-      searchMode
-    ) {
-      const fromX = state.actorX[actorIndex];
-      const fromY = state.actorY[actorIndex];
-      const elevation = actorElevation(state, actorIndex);
-      removeOccupiedAtElevation(occupied, fromX, fromY, elevation);
-
-      let nextX = fromX;
-      let nextY = fromY;
-
-      while (
-        canPunchActorStep(
-          state,
-          actorIndex,
-          nextX + dx,
-          nextY + dy,
-          occupied,
-          gateState,
-          orangeButtonsPressed
-        )
-      ) {
-        nextX += dx;
-        nextY += dy;
-      }
-
-      if (nextX === fromX && nextY === fromY) {
-        addOccupiedAtElevation(occupied, fromX, fromY, elevation);
-        return false;
-      }
-
-      state.actorX[actorIndex] = nextX;
-      state.actorY[actorIndex] = nextY;
-      addOccupiedAtElevation(occupied, nextX, nextY, elevation);
-
-      if (!searchMode) {
-        mergeMoveRecord(
-          state,
-          moves,
-          actorIndex,
-          originalActorX,
-          originalActorY,
-          originalActorElevation,
-          {
-            iceSlide: true,
-            punchSlide: true
-          }
-        );
-      } else {
-        mergeMoveRecord(state, moves, actorIndex, originalActorX, originalActorY, originalActorElevation, {
-          punchSlide: true
-        });
-      }
-
-      return true;
-    }
-
-    function canPunchWeightlessStep(state, members, dx, dy, occupied, gateState, orangeButtonsPressed) {
-      const memberSet = new Set(members);
-
-      return members.every((member) => {
-        const targetX = state.actorX[member] + dx;
-        const targetY = state.actorY[member] + dy;
-        const elevation = actorElevation(state, member);
-
-        if (!isInsideBoard(targetX, targetY)) {
-          return false;
-        }
-
-        if (terrainBlocksElevation(state, targetX, targetY, elevation, gateState, orangeButtonsPressed)) {
-          return false;
-        }
-
-        const blocker = actorAt(
-          state,
-          targetX,
-          targetY,
-          (actor) =>
-            !memberSet.has(actor) &&
-            !isNonBlockingActor(actor) &&
-            actorElevation(state, actor) === elevation
-        );
-
-        if (blocker !== -1) {
-          return false;
-        }
-
-        return !isOccupiedAtElevation(occupied, targetX, targetY, elevation);
-      });
-    }
-
-    function punchWeightlessGroup(
-      state,
-      actorIndex,
-      dx,
-      dy,
-      occupied,
-      moves,
-      gateState,
-      orangeButtonsPressed,
-      originalActorX,
-      originalActorY,
-      originalActorElevation,
-      searchMode
-    ) {
-      const members = weightlessGroupMembers(state, actorGroupIds[actorIndex]);
-
-      if (members.length === 0) {
-        return false;
-      }
-
-      members.forEach((member) => {
-        removeOccupiedAtElevation(
-          occupied,
-          state.actorX[member],
-          state.actorY[member],
-          actorElevation(state, member)
-        );
-      });
-
-      let moved = false;
-
-      while (
-        canPunchWeightlessStep(state, members, dx, dy, occupied, gateState, orangeButtonsPressed)
-      ) {
-        members.forEach((member) => {
-          state.actorX[member] += dx;
-          state.actorY[member] += dy;
-        });
-        moved = true;
-      }
-
-      members.forEach((member) => {
-        addOccupiedAtElevation(
-          occupied,
-          state.actorX[member],
-          state.actorY[member],
-          actorElevation(state, member)
-        );
-      });
-
-      if (!moved) {
-        return false;
-      }
-
-      members.forEach((member) => {
-        mergeMoveRecord(
-          state,
-          moves,
-          member,
-          originalActorX,
-          originalActorY,
-          originalActorElevation,
-          {
-            iceSlide: !searchMode,
-            punchSlide: true
-          }
-        );
-      });
-
-      return true;
-    }
-
-    function punchStartSnapshotsForActor(state, actorIndex, moves) {
-      const members =
-        actorTypes[actorIndex] === "weightless_box"
-          ? weightlessGroupMembers(state, actorGroupIds[actorIndex])
-          : [actorIndex];
-
+    function punchStartSnapshotsForMembers(state, members, moves) {
       return members.map((member) => {
         const moveRecord = moves.find((move) => move.actorIndex === member && !move.visualOnly);
 
@@ -3984,18 +3783,23 @@
       const finalX = carrierMove?.toX ?? state.actorX[puncher];
       const finalY = carrierMove?.toY ?? state.actorY[puncher];
       const finalElevation = carrierMove?.toElevation ?? actorElevation(state, puncher);
+      const { dx, dy } = puncherDirectionVector(actorDirections[puncher]);
+      const lungeX = finalX + dx;
+      const lungeY = finalY + dy;
 
       moves.push({
         actorIndex: puncher,
         actorType: actorTypes[puncher],
         fromX,
         fromY,
-        toX: targetX,
-        toY: targetY,
+        targetX,
+        targetY,
+        toX: lungeX,
+        toY: lungeY,
         finalX,
         finalY,
         fromElevation,
-        toElevation: actorElevation(state, puncher),
+        toElevation: finalElevation,
         finalElevation,
         iceSlide: true,
         punchEffect: true,
@@ -4054,6 +3858,111 @@
       return leftX === rightX && leftY === rightY && leftElevation === rightElevation;
     }
 
+    function pushEntityHasPunchSegment(moves, actorIndex) {
+      const entityKey = pushEntityKey(actorIndex);
+
+      return moves.some(
+        (move) =>
+          !move.visualOnly &&
+          pushEntityKey(move.actorIndex) === entityKey &&
+          Array.isArray(move.punchSegments) &&
+          move.punchSegments.length > 0
+      );
+    }
+
+    function punchFrontSortValue(state, actorIndex, dx, dy) {
+      const members = isPushableActor(actorIndex) ? pushActorMembers(state, actorIndex) : [actorIndex];
+
+      return members.reduce((front, member) => {
+        const value = state.actorX[member] * dx + state.actorY[member] * dy;
+
+        return Math.max(front, value);
+      }, -Infinity);
+    }
+
+    function punchTriggerMembers(state, actorIndex) {
+      return isPushableActor(actorIndex) ? pushActorMembers(state, actorIndex) : [actorIndex];
+    }
+
+    function collectPunchTrainMembers(state, actorIndex, dx, dy) {
+      const members = [];
+      const memberSet = new Set();
+      const entityKeys = new Set();
+
+      function entityKeyForPunchActor(actor) {
+        return isPushableActor(actor) ? pushEntityKey(actor) : `actor:${actor}`;
+      }
+
+      function addActorEntity(actor) {
+        const entityKey = entityKeyForPunchActor(actor);
+
+        if (entityKeys.has(entityKey)) {
+          return false;
+        }
+
+        entityKeys.add(entityKey);
+        punchTriggerMembers(state, actor).forEach((member) => {
+          if (!memberSet.has(member)) {
+            memberSet.add(member);
+            members.push(member);
+          }
+        });
+
+        return true;
+      }
+
+      addActorEntity(actorIndex);
+
+      let expanded = true;
+
+      while (expanded) {
+        expanded = false;
+
+        members.slice().forEach((member) => {
+          const targetX = state.actorX[member] + dx;
+          const targetY = state.actorY[member] + dy;
+          const elevation = actorElevation(state, member);
+          const nextActor = actorAt(
+            state,
+            targetX,
+            targetY,
+            (actor) =>
+              !memberSet.has(actor) &&
+              actorElevation(state, actor) === elevation &&
+              (isPlayerActor(actor) || isPushableActor(actor))
+          );
+
+          if (nextActor !== -1 && addActorEntity(nextActor)) {
+            expanded = true;
+          }
+        });
+      }
+
+      return members;
+    }
+
+    function removePunchMembersFromOccupied(state, occupied, members) {
+      members.forEach((member) => {
+        removeOccupiedAtElevation(
+          occupied,
+          state.actorX[member],
+          state.actorY[member],
+          actorElevation(state, member)
+        );
+      });
+    }
+
+    function addPunchMembersToOccupied(state, occupied, members) {
+      members.forEach((member) => {
+        addOccupiedAtElevation(
+          occupied,
+          state.actorX[member],
+          state.actorY[member],
+          actorElevation(state, member)
+        );
+      });
+    }
+
     function applyPunchers(
       state,
       moves,
@@ -4069,10 +3978,158 @@
 
       const candidateActorIndexes =
         options.candidateActorIndexes instanceof Set ? options.candidateActorIndexes : null;
+      const includeUnpunchedMovedActors = options.includeUnpunchedMovedActors === true;
       const sequenceBase = Number.isFinite(options.sequenceBase) ? options.sequenceBase : 0;
       const triggered = new Set();
       let triggeredThisPass = true;
       let passCount = 0;
+
+      function positionKey(x, y, elevation) {
+        return `${x},${y},${elevation || 0}`;
+      }
+
+      function movingMemberInfoMap(infos) {
+        const map = new Map();
+
+        infos.forEach((info) => {
+          info.members.forEach((member) => {
+            map.set(member, info);
+          });
+        });
+
+        return map;
+      }
+
+      function targetKeysForInfo(info) {
+        return info.members.map((member) =>
+          positionKey(
+            state.actorX[member] + info.dx,
+            state.actorY[member] + info.dy,
+            actorElevation(state, member)
+          )
+        );
+      }
+
+      function targetCountsForInfos(infos) {
+        const counts = new Map();
+
+        infos.forEach((info) => {
+          targetKeysForInfo(info).forEach((key) => {
+            counts.set(key, (counts.get(key) || 0) + 1);
+          });
+        });
+
+        return counts;
+      }
+
+      function actorTargetsPosition(actor, info, x, y, elevation) {
+        return (
+          state.actorX[actor] + info.dx === x &&
+          state.actorY[actor] + info.dy === y &&
+          actorElevation(state, actor) === elevation
+        );
+      }
+
+      function canSimultaneousPunchStep(info, movingMemberInfo, targetCounts, occupied) {
+        return info.members.every((member) => {
+          const targetX = state.actorX[member] + info.dx;
+          const targetY = state.actorY[member] + info.dy;
+          const elevation = actorElevation(state, member);
+          const targetKey = positionKey(targetX, targetY, elevation);
+
+          if (!isInsideBoard(targetX, targetY)) {
+            return false;
+          }
+
+          if (terrainBlocksElevation(state, targetX, targetY, elevation, info.gateState, info.orangeButtonsPressed)) {
+            return false;
+          }
+
+          if ((targetCounts.get(targetKey) || 0) > 1) {
+            return false;
+          }
+
+          const blocker = actorAt(
+            state,
+            targetX,
+            targetY,
+            (actor) =>
+              !info.memberSet.has(actor) &&
+              !isNonBlockingActor(actor) &&
+              actorElevation(state, actor) === elevation
+          );
+
+          if (blocker !== -1) {
+            if (!movingMemberInfo.has(blocker)) {
+              return false;
+            }
+
+            const blockerInfo = movingMemberInfo.get(blocker);
+
+            if (
+              blockerInfo &&
+              blockerInfo !== info &&
+              actorTargetsPosition(
+                blocker,
+                blockerInfo,
+                state.actorX[member],
+                state.actorY[member],
+                elevation
+              )
+            ) {
+              return false;
+            }
+          }
+
+          if (
+            blocker === -1 &&
+            isOccupiedAtElevation(occupied, targetX, targetY, elevation)
+          ) {
+            return false;
+          }
+
+          return true;
+        });
+      }
+
+      function moveSimultaneousPunchGroup(infos, occupied) {
+        const movedInfos = new Set();
+        let stepCount = 0;
+
+        while (stepCount < actorCount + width + height) {
+          stepCount += 1;
+          let movingInfos = infos.slice();
+          let changed = true;
+
+          while (changed) {
+            changed = false;
+            const movingMemberInfo = movingMemberInfoMap(movingInfos);
+            const targetCounts = targetCountsForInfos(movingInfos);
+            const nextMovingInfos = movingInfos.filter((info) =>
+              canSimultaneousPunchStep(info, movingMemberInfo, targetCounts, occupied)
+            );
+
+            if (nextMovingInfos.length !== movingInfos.length) {
+              changed = true;
+              movingInfos = nextMovingInfos;
+            }
+          }
+
+          if (movingInfos.length === 0) {
+            break;
+          }
+
+          movingInfos.forEach((info) => {
+            info.members.forEach((member) => {
+              state.actorX[member] += info.dx;
+              state.actorY[member] += info.dy;
+            });
+            movedInfos.add(info);
+          });
+        }
+
+        return movedInfos;
+      }
 
       while (triggeredThisPass && passCount < actorCount + width + height) {
         triggeredThisPass = false;
@@ -4081,16 +4138,33 @@
         const occupied = buildOccupiedMap(state);
         const gateState = computeRaisedPlayerGateSet(state);
         const orangeButtonsPressed = areOrangeButtonsPressed(state);
-        const candidates = (
+        const candidateSource = (
           candidateActorIndexes
             ? Array.from(candidateActorIndexes)
             : moves.filter((move) => !move.visualOnly && !move.toRemoved).map((move) => move.actorIndex)
-        ).filter(
+        );
+
+        if (candidateActorIndexes && includeUnpunchedMovedActors) {
+          moves.forEach((move) => {
+            if (
+              move.visualOnly ||
+              move.toRemoved ||
+              pushEntityHasPunchSegment(moves, move.actorIndex)
+            ) {
+              return;
+            }
+
+            candidateSource.push(move.actorIndex);
+          });
+        }
+
+        const candidates = candidateSource.filter(
           (actorIndex, index, actorIndexes) =>
             actorIndexes.indexOf(actorIndex) === index &&
             !state.actorRemoved[actorIndex] &&
             (isPlayerActor(actorIndex) || isPushableActor(actorIndex))
         );
+        const triggers = [];
 
         for (const actorIndex of candidates) {
           const elevation = actorElevation(state, actorIndex);
@@ -4124,45 +4198,88 @@
             continue;
           }
 
-          triggered.add(triggerKey);
           const { dx, dy } = puncherDirectionVector(actorDirections[puncher]);
-          const punchStarts = punchStartSnapshotsForActor(state, actorIndex, moves);
-          const didPunch =
-            actorTypes[actorIndex] === "weightless_box"
-              ? punchWeightlessGroup(
-                  state,
-                  actorIndex,
-                  dx,
-                  dy,
-                  occupied,
-                  moves,
-                  gateState,
-                  orangeButtonsPressed,
-                  originalActorX,
-                  originalActorY,
-                  originalActorElevation,
-                  searchMode
-                )
-              : punchSingleActor(
-                  state,
-                  actorIndex,
-                  dx,
-                  dy,
-                  occupied,
-                  moves,
-                  gateState,
-                  orangeButtonsPressed,
-                  originalActorX,
-                  originalActorY,
-                  originalActorElevation,
-                  searchMode
-                );
 
-          if (!didPunch) {
+          triggers.push({
+            actorIndex,
+            dx,
+            dy,
+            elevation,
+            front: punchFrontSortValue(state, actorIndex, dx, dy),
+            puncher,
+            triggerKey
+          });
+        }
+
+        triggers.sort(
+          (left, right) =>
+            left.dx - right.dx ||
+            left.dy - right.dy ||
+            left.front - right.front ||
+            left.actorIndex - right.actorIndex
+        );
+
+        const claimedMembers = new Set();
+        const triggerInfos = [];
+
+        triggers
+          .filter(
+            ({ actorIndex, triggerKey }) =>
+              !state.actorRemoved[actorIndex] && !triggered.has(triggerKey)
+          )
+          .forEach((trigger) => {
+            const members = collectPunchTrainMembers(state, trigger.actorIndex, trigger.dx, trigger.dy);
+
+            if (members.some((member) => claimedMembers.has(member))) {
+              return;
+            }
+
+            members.forEach((member) => claimedMembers.add(member));
+            triggerInfos.push({
+              ...trigger,
+              gateState,
+              members,
+              memberSet: new Set(members),
+              orangeButtonsPressed,
+              punchStarts: punchStartSnapshotsForMembers(state, members, moves)
+            });
+          });
+
+        triggerInfos.forEach(({ members }) => {
+          if (members.length > 0) {
+            removePunchMembersFromOccupied(state, occupied, members);
+          }
+        });
+
+        const movedInfos = moveSimultaneousPunchGroup(triggerInfos, occupied);
+
+        triggerInfos.forEach(({ members }) => {
+          addPunchMembersToOccupied(state, occupied, members);
+        });
+
+        for (const info of triggerInfos) {
+          if (!movedInfos.has(info)) {
             continue;
           }
 
+          const { actorIndex, puncher, triggerKey, punchStarts } = info;
+          triggered.add(triggerKey);
           const punchSequence = sequenceBase + passCount - 1;
+
+          info.members.forEach((member) => {
+            mergeMoveRecord(
+              state,
+              moves,
+              member,
+              originalActorX,
+              originalActorY,
+              originalActorElevation,
+              {
+                iceSlide: !searchMode,
+                punchSlide: true
+              }
+            );
+          });
 
           markPunchStartOnMoves(moves, punchStarts);
           recordPunchSegments(state, moves, punchStarts, punchSequence, searchMode);
@@ -4180,12 +4297,7 @@
           );
 
           if (candidateActorIndexes) {
-            const members =
-              actorTypes[actorIndex] === "weightless_box"
-                ? weightlessGroupMembers(state, actorGroupIds[actorIndex])
-                : [actorIndex];
-
-            members.forEach((member) => candidateActorIndexes.add(member));
+            info.members.forEach((member) => candidateActorIndexes.add(member));
           }
 
           triggeredThisPass = true;
@@ -4285,6 +4397,24 @@
         }
       }
 
+      function retargetPuncherVisualMove(visualMove, puncherMove) {
+        if (!visualMove || !puncherMove) {
+          return;
+        }
+
+        const { dx, dy } = puncherDirectionVector(actorDirections[visualMove.actorIndex]);
+        const baseX = puncherMove.toX;
+        const baseY = puncherMove.toY;
+        const baseElevation = puncherMove.toElevation ?? puncherMove.fromElevation ?? 0;
+
+        visualMove.toX = baseX + dx;
+        visualMove.toY = baseY + dy;
+        visualMove.toElevation = baseElevation;
+        visualMove.finalX = baseX;
+        visualMove.finalY = baseY;
+        visualMove.finalElevation = baseElevation;
+      }
+
       moves.forEach((move) => {
         if (
           move.visualOnly ||
@@ -4321,6 +4451,15 @@
         state.actorElevation[move.actorIndex] = move.toElevation;
         state.actorRemoved[move.actorIndex] = carrierMove.toRemoved === true ? 1 : 0;
         copyStickyCarrierMoveData(carrierMove, move, dx, dy);
+        retargetPuncherVisualMove(
+          moves.find(
+            (candidate) =>
+              candidate.actorIndex === move.actorIndex &&
+              candidate.visualOnly &&
+              candidate.punchEffect === true
+          ),
+          move
+        );
         syncedPunchers.add(move.actorIndex);
       });
 
@@ -4367,13 +4506,12 @@
               punchCandidates.add(targetActor);
             }
 
-            const visualMoveIndex = moves.findIndex(
-              (candidate) => candidate.actorIndex === puncher && candidate.visualOnly
+            const visualMove = moves.find(
+              (candidate) =>
+                candidate.actorIndex === puncher &&
+                candidate.visualOnly &&
+                candidate.punchEffect === true
             );
-
-            if (visualMoveIndex !== -1) {
-              moves.splice(visualMoveIndex, 1);
-            }
 
             const puncherMove = mergeMoveRecord(
               state,
@@ -4388,6 +4526,7 @@
             );
 
             copyStickyCarrierMoveData(move, puncherMove, dx, dy);
+            retargetPuncherVisualMove(visualMove, puncherMove);
 
             if (move.toRemoved === true) {
               state.actorRemoved[puncher] = 1;
@@ -5334,7 +5473,7 @@
 
       if (moves.length > 0) {
         collapseSequentialActorMoves(moves);
-        applyPunchers(
+        let movedPuncherCandidates = syncAttachedPunchersForMoves(
           state,
           moves,
           originalActorX,
@@ -5342,7 +5481,23 @@
           originalActorElevation,
           searchMode
         );
-        let movedPuncherCandidates = syncAttachedPunchersForMoves(
+
+        applyPunchers(
+          state,
+          moves,
+          originalActorX,
+          originalActorY,
+          originalActorElevation,
+          searchMode,
+          movedPuncherCandidates.size > 0
+            ? {
+                candidateActorIndexes: movedPuncherCandidates,
+                includeUnpunchedMovedActors: true,
+                sequenceBase: nextPunchSequence(moves)
+              }
+            : {}
+        );
+        movedPuncherCandidates = syncAttachedPunchersForMoves(
           state,
           moves,
           originalActorX,
@@ -5366,6 +5521,7 @@
             searchMode,
             {
               candidateActorIndexes: movedPuncherCandidates,
+              includeUnpunchedMovedActors: true,
               sequenceBase: nextPunchSequence(moves)
             }
           );
