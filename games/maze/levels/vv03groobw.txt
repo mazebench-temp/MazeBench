@@ -8,9 +8,9 @@ h # .+h .+h .+# .+#+G .+# .+I .+h .+h . .+h .+h .+#+# h h
 . p . .+h .+Sr .+I+Sr .+I+I+Sr .+I+I+I .+h++I .+h++I .+I+I+I .+h .+h .+#+# h h
 . . . .+h .+Sr .+I+Sr .+I+I+Sr .+I+I+I .+h++I .+h++I .+I+I+I . .+h .+#+# h h
 # # # # # # # .+# .+h .+h .+#+# #+# #+# #+# h h
-h h h # + h + .+# .+h .+h .+#+# h h h h h
-h h h # + h + .+# .+h .+h .+#+# h h h h h
-h h # # # h + .+# .+h .+h .+#+# h h h h h
-h h # #+G # h + .+# .+h .+h .+#+# h h h h h
-h h # # # h + .+# .+h .+h .+#+# h h h h h
-h h h h h h + .+# .+h .+h .+#+# h h h h h
+h h h # + h + .+# .+h .+h .+#+# # # # h h
+h h h # + h + .+# .+h .+h .+#+# # #+G # h h
+h h # # # h + .+# .+h .+h .+#+# # # # h h
+h h # #+G # h + .+# .+h .+h .+#+# # h h h h
+h h # # # h + .+# .+h .+h .+#+# # h h h h
+h h h h h h + .+# .+h .+h .+#+# # h h h h

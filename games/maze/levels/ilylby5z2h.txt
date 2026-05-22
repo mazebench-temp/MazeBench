@@ -1,0 +1,16 @@
++ + + + + i+p + + + I + + + + + +
++ + + + + i + + + I + + + + + +
++ + I I+I I+I i++I+Sl I+Sl I I I+M0 +I +I +I I+I I +
++ + I + I i + + + I + + + ++I I +
++ + I + I i + I+I I+I+Sr I++I I++I I++I I++I I++I # +
++ + I + I i i i++I+Su i I + + + I+I+Su I +
++ + I + I+M1+M1 I + I+Su i I+Sd + + + I+Su I +
++ + I + I+Sd + + I i I+I+Sd + + . .+Su . .
++ + I + I+I + + I i i++I+I i i . . . .
++ I+I I++I I++I I I+I+Sl I+Sl I I I++I I I .+Sl . . .
++ I+I+Sd I I I + + I + ++I + + . . .+Sd .
++ I+I+I+Sd I + I+I + + I I+I I+I + + + + I +
++ I+I+I+I+Sd I + I+Su + + + + I+Su + + + + I +
++ I+I+I+I+I+Sd I + I + + + + I + + + + I +
++ I+I+I+I+I+I+Sd # I # I I I I I I I I I # +
++ I+I+I+I+I+I+I+G + + + + + + + + + + + + + +
