@@ -53,6 +53,8 @@ const authorData = {
     { imageUrl: null, label: "Orange Button", name: "orange_button", token: "o", type: "orange_button" },
     { direction: "right", imageUrl: null, label: "Puncher", name: "puncher", token: "pr", type: "puncher" },
     { direction: "left", imageUrl: null, label: "Puncher Left", name: "puncher", token: "pl", type: "puncher" },
+    { direction: "up", imageUrl: null, label: "Puncher Up", name: "puncher", token: "pu", type: "puncher" },
+    { direction: "down", imageUrl: null, label: "Puncher Down", name: "puncher", token: "pd", type: "puncher" },
     { imageUrl: null, label: "Player", name: "player", token: "P" },
     {
       imageUrl: "/assets/maze/images/gem.png",
@@ -191,16 +193,18 @@ assert.deepEqual(
 );
 
 const puncherPlayData = adapter.buildPlayData({
-  cells: [["W+pr", ".++pl"]],
+  cells: [["W+pr", ".++pl", ".+pu", ".+pd"]],
   height: 1,
-  width: 2
+  width: 4
 });
 
 assert.deepEqual(
   puncherPlayData.actors.map((actor) => [actor.type, actor.x, actor.y, actor.elevation, actor.direction]),
   [
     ["puncher", 0, 0, 1, "right"],
-    ["puncher", 1, 0, 1, "left"]
+    ["puncher", 1, 0, 1, "left"],
+    ["puncher", 2, 0, 0, "up"],
+    ["puncher", 3, 0, 0, "down"]
   ]
 );
 

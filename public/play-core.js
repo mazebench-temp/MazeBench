@@ -1049,6 +1049,8 @@
         label: actor.label,
         imageUrl: actor.imageUrl || null,
         modelUrl: actor.modelUrl || null,
+        direction: actor.direction || null,
+        facing: actor.facing || null,
         collectionId: actor.collectionId || null,
         collected: actor.collected === true,
         showCollectedGhost: actor.showCollectedGhost === true,

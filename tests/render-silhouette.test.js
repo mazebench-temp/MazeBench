@@ -190,6 +190,18 @@ function createRenderApp({ terrain, actors, playData = {} }) {
 }
 
 {
+  const app = createRenderApp({
+    terrain: buildTerrain(1, 1),
+    actors: [{ type: "puncher", direction: "down", x: 0, y: 0, removed: false, elevation: 0 }]
+  });
+  const actorSnapshot = app.cloneActorState(app.state.actors[0]);
+  const levelSnapshot = app.cloneLevelSnapshot();
+
+  assert.equal(actorSnapshot.direction, "down");
+  assert.equal(levelSnapshot.actors[0].direction, "down");
+}
+
+{
   const terrain = buildTerrain(4, 4);
   terrain[0][2] = { type: "player_lift", raised: true, imageUrl: null, underlay: null };
   terrain[1][1] = { type: "player_lift", raised: true, imageUrl: null, underlay: null };
