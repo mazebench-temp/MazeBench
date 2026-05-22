@@ -4029,6 +4029,27 @@
       );
     }
 
+    function puncherWasAttachedToPushEntityAtMoveStart(
+      state,
+      puncher,
+      actorIndex,
+      originalActorX,
+      originalActorY,
+      originalActorElevation
+    ) {
+      const members = pushActorMembers(state, actorIndex);
+
+      return members.some((member) =>
+        puncherWasAttachedToActorAtMoveStart(
+          puncher,
+          member,
+          originalActorX,
+          originalActorY,
+          originalActorElevation
+        )
+      );
+    }
+
     function statePositionEquals(leftX, leftY, leftElevation, rightX, rightY, rightElevation) {
       return leftX === rightX && leftY === rightY && leftElevation === rightElevation;
     }
@@ -4085,7 +4106,8 @@
           }
 
           if (
-            puncherWasAttachedToActorAtMoveStart(
+            puncherWasAttachedToPushEntityAtMoveStart(
+              state,
               puncher,
               actorIndex,
               originalActorX,
@@ -4206,10 +4228,101 @@
       searchMode
     ) {
       const punchCandidates = new Set();
+      const syncedPunchers = new Set();
 
       if (!actorTypes.includes("puncher")) {
         return punchCandidates;
       }
+
+      function copyStickyCarrierMoveData(carrierMove, puncherMove, dx, dy) {
+        puncherMove.stickyCarrierActorIndex = carrierMove.actorIndex;
+        puncherMove.stickyCarrierEntityKey = pushEntityKey(carrierMove.actorIndex);
+        puncherMove.stickyCarrierDx = dx;
+        puncherMove.stickyCarrierDy = dy;
+
+        if (carrierMove.iceSlide === true) {
+          puncherMove.iceSlide = true;
+        }
+
+        if (carrierMove.punchSlide === true) {
+          puncherMove.punchSlide = true;
+        }
+
+        if (typeof carrierMove.punchStartX === "number") {
+          puncherMove.punchStartX = carrierMove.punchStartX + dx;
+          puncherMove.punchStartY = carrierMove.punchStartY + dy;
+          puncherMove.punchStartElevation = carrierMove.punchStartElevation;
+          puncherMove.punchStartIceSlide = carrierMove.punchStartIceSlide;
+        }
+
+        if (Array.isArray(carrierMove.punchSegments)) {
+          puncherMove.punchSegments = carrierMove.punchSegments.map((segment) => ({
+            ...segment,
+            fromX: segment.fromX + dx,
+            fromY: segment.fromY + dy,
+            toX: segment.toX + dx,
+            toY: segment.toY + dy
+          }));
+        }
+
+        if (Array.isArray(carrierMove.path)) {
+          puncherMove.path = carrierMove.path.map((point) => ({
+            x: point.x + dx,
+            y: point.y + dy,
+            elevation: point.elevation
+          }));
+          puncherMove.pathControlsElevation = carrierMove.pathControlsElevation;
+          puncherMove.pathEndElevation = carrierMove.pathEndElevation;
+        }
+
+        if (carrierMove.toRemoved === true) {
+          puncherMove.toRemoved = true;
+          puncherMove.skipHoleFall = carrierMove.skipHoleFall;
+          puncherMove.visibleDuringMove = carrierMove.visibleDuringMove;
+          puncherMove.fadeOut = carrierMove.fadeOut;
+          puncherMove.fadeStartProgress = carrierMove.fadeStartProgress;
+          puncherMove.fadeEndProgress = carrierMove.fadeEndProgress;
+        }
+      }
+
+      moves.forEach((move) => {
+        if (
+          move.visualOnly ||
+          move.actorType !== "puncher" ||
+          typeof move.stickyCarrierActorIndex !== "number"
+        ) {
+          return;
+        }
+
+        const carrierMove = moves.find(
+          (candidate) =>
+            !candidate.visualOnly &&
+            candidate.actorIndex === move.stickyCarrierActorIndex &&
+            pushEntityKey(candidate.actorIndex) === move.stickyCarrierEntityKey
+        );
+
+        if (!carrierMove) {
+          return;
+        }
+
+        const dx =
+          typeof move.stickyCarrierDx === "number"
+            ? move.stickyCarrierDx
+            : move.fromX - carrierMove.fromX;
+        const dy =
+          typeof move.stickyCarrierDy === "number"
+            ? move.stickyCarrierDy
+            : move.fromY - carrierMove.fromY;
+        move.toX = carrierMove.toX + dx;
+        move.toY = carrierMove.toY + dy;
+        move.toElevation = carrierMove.toElevation ?? carrierMove.fromElevation ?? 0;
+        state.actorX[move.actorIndex] = move.toX;
+        state.actorY[move.actorIndex] = move.toY;
+        state.actorElevation[move.actorIndex] = move.toElevation;
+        state.actorRemoved[move.actorIndex] = carrierMove.toRemoved === true ? 1 : 0;
+        copyStickyCarrierMoveData(carrierMove, move, dx, dy);
+        syncedPunchers.add(move.actorIndex);
+      });
 
       moves
         .filter(
@@ -4222,7 +4335,7 @@
         )
         .forEach((move) => {
           for (let puncher = 0; puncher < actorCount; puncher += 1) {
-            if (!isPuncherActor(puncher) || state.actorRemoved[puncher]) {
+            if (!isPuncherActor(puncher) || state.actorRemoved[puncher] || syncedPunchers.has(puncher)) {
               continue;
             }
 
@@ -4239,6 +4352,7 @@
             state.actorX[puncher] = move.toX + dx;
             state.actorY[puncher] = move.toY + dy;
             state.actorElevation[puncher] = move.toElevation ?? move.fromElevation ?? 0;
+            syncedPunchers.add(puncher);
             const targetActor = punchTriggerActorAt(
               state,
               state.actorX[puncher],
@@ -4246,7 +4360,10 @@
               actorElevation(state, puncher)
             );
 
-            if (targetActor !== -1 && targetActor !== move.actorIndex) {
+            if (
+              targetActor !== -1 &&
+              pushEntityKey(targetActor) !== pushEntityKey(move.actorIndex)
+            ) {
               punchCandidates.add(targetActor);
             }
 
@@ -4258,7 +4375,7 @@
               moves.splice(visualMoveIndex, 1);
             }
 
-            mergeMoveRecord(
+            const puncherMove = mergeMoveRecord(
               state,
               moves,
               puncher,
@@ -4269,6 +4386,12 @@
                 iceSlide: !searchMode && move.iceSlide === true
               }
             );
+
+            copyStickyCarrierMoveData(move, puncherMove, dx, dy);
+
+            if (move.toRemoved === true) {
+              state.actorRemoved[puncher] = 1;
+            }
           }
         });
 
@@ -4382,6 +4505,26 @@
     function applyHoleFalls(state, moves) {
       const gateState = computeRaisedPlayerGateSet(state);
       const orangeButtonsPressed = areOrangeButtonsPressed(state);
+      const stickyPuncherMoves = [];
+
+      function copyCarrierRemovalToStickyPuncher(move) {
+        const carrierMove = moves.find(
+          (candidate) =>
+            !candidate.visualOnly &&
+            candidate.actorIndex === move.stickyCarrierActorIndex &&
+            pushEntityKey(candidate.actorIndex) === move.stickyCarrierEntityKey
+        );
+
+        move.toRemoved = Boolean(carrierMove?.toRemoved);
+
+        if (carrierMove?.toRemoved === true) {
+          move.skipHoleFall = carrierMove.skipHoleFall;
+          move.visibleDuringMove = carrierMove.visibleDuringMove;
+          move.fadeOut = carrierMove.fadeOut;
+          move.fadeStartProgress = carrierMove.fadeStartProgress;
+          move.fadeEndProgress = carrierMove.fadeEndProgress;
+        }
+      }
 
       moves.forEach((move) => {
         if (move.visualOnly) {
@@ -4390,6 +4533,14 @@
 
         move.fromRemoved = Boolean(move.fromRemoved);
         move.toRemoved = Boolean(move.toRemoved);
+
+        if (
+          move.actorType === "puncher" &&
+          typeof move.stickyCarrierActorIndex === "number"
+        ) {
+          stickyPuncherMoves.push(move);
+          return;
+        }
 
         if (move.actorType === "weightless_box") {
           return;
@@ -4438,6 +4589,8 @@
           move.toRemoved = true;
         }
       });
+
+      stickyPuncherMoves.forEach(copyCarrierRemovalToStickyPuncher);
     }
 
     function applyMoveFinalState(state, moves) {
@@ -5189,7 +5342,7 @@
           originalActorElevation,
           searchMode
         );
-        const movedPuncherCandidates = syncAttachedPunchersForMoves(
+        let movedPuncherCandidates = syncAttachedPunchersForMoves(
           state,
           moves,
           originalActorX,
@@ -5197,7 +5350,13 @@
           originalActorElevation,
           searchMode
         );
-        if (movedPuncherCandidates.size > 0) {
+        let stickyPuncherPassCount = 0;
+
+        while (
+          movedPuncherCandidates.size > 0 &&
+          stickyPuncherPassCount < actorCount + width + height
+        ) {
+          stickyPuncherPassCount += 1;
           applyPunchers(
             state,
             moves,
@@ -5210,6 +5369,14 @@
               sequenceBase: nextPunchSequence(moves)
             }
           );
+          movedPuncherCandidates = syncAttachedPunchersForMoves(
+            state,
+            moves,
+            originalActorX,
+            originalActorY,
+            originalActorElevation,
+            searchMode
+          );
         }
         collapseSequentialActorMoves(moves);
         applyHoleFalls(state, moves);
@@ -5218,6 +5385,14 @@
         });
         applyMoveFinalState(state, moves);
         syncDynamicActorElevationsAndFalls(state, moves);
+        syncAttachedPunchersForMoves(
+          state,
+          moves,
+          originalActorX,
+          originalActorY,
+          originalActorElevation,
+          searchMode
+        );
         syncAttachedSurfaceAttachmentsForMoves(
           state,
           moves,
