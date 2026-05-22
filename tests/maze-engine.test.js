@@ -2646,4 +2646,30 @@ function createState(playData) {
   assert.deepEqual([state.actorX[2], state.actorY[2], state.actorElevation[2]], [3, 0, 1]);
 }
 
+{
+  const terrain = floorTerrain(4, 2);
+  terrain[0][0] = iceBlockLayer(0);
+  terrain[1][0] = iceBlockLayer(0);
+  const { engine, state } = createState({
+    width: 4,
+    height: 2,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 1, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 0, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0], state.actorElevation[0]], [1, 1, 0]);
+  assert.deepEqual([state.actorX[1], state.actorY[1], state.actorElevation[1]], [1, 0, 0]);
+  assert.deepEqual([state.actorX[2], state.actorY[2], state.actorElevation[2]], [2, 0, 0]);
+  assert.deepEqual([state.actorX[3], state.actorY[3], state.actorElevation[3]], [2, 1, 0]);
+  assert.equal(result.moves.some((move) => move.actorIndex === 0 && move.iceSlipOff), true);
+}
+
 console.log("maze-engine tests passed");

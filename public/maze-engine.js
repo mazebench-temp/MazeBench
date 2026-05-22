@@ -5150,7 +5150,7 @@
             orangeButtonsPressed,
             new Set([player])
           );
-          const slipLanding =
+          let slipLanding =
             !canEnterHole && !canStandAtTarget
               ? playerIceSlipLanding(
                   state,
@@ -5165,11 +5165,27 @@
                   orangeButtonsPressed
                 )
               : null;
-          const canSlipOffIce = slipLanding !== null;
+          let canSlipOffIce = slipLanding !== null;
+          const blockingActor =
+            !isInsideBoard(targetX, targetY) || canSlipOffIce || canTraverseSlope
+              ? -1
+              : blockingActorAtElevation(
+                  state,
+                  moveTargetX,
+                  moveTargetY,
+                  moveTargetElevation,
+                  player
+                );
+          const canAttemptInitialPush =
+            blockingActor !== -1 && isInitialStep && isPushableActor(blockingActor);
 
           if (
             !isInsideBoard(targetX, targetY) ||
-            (!canTraverseSlope && !canEnterHole && !canStandAtTarget && !canSlipOffIce)
+            (!canTraverseSlope &&
+              !canEnterHole &&
+              !canStandAtTarget &&
+              !canSlipOffIce &&
+              !canAttemptInitialPush)
           ) {
             if (isInsideBoard(targetX, targetY)) {
               const bouncePath = blockedIceSlopeBouncePathForEntry(
@@ -5239,16 +5255,6 @@
             break;
           }
 
-          const blockingActor = canSlipOffIce || canTraverseSlope
-            ? -1
-            : blockingActorAtElevation(
-                state,
-                moveTargetX,
-                moveTargetY,
-                moveTargetElevation,
-                player
-              );
-
           if (blockingActor !== -1) {
             let didMoveBlockingActor = false;
 
@@ -5293,20 +5299,41 @@
                     moveTargetElevation,
                     player
                   ) !== -1;
+                const canStandAtTargetAfterPush =
+                  !targetBlockedAfterPush &&
+                  canPlayerStandAtElevation(
+                    state,
+                    moveTargetX,
+                    moveTargetY,
+                    moveTargetElevation,
+                    raisedPlayerGates,
+                    orangeButtonsPressed,
+                    ignoredPostPushSupports
+                  );
+                const postPushSlipLanding =
+                  !targetBlockedAfterPush && !canEnterHole && !canStandAtTargetAfterPush
+                    ? playerIceSlipLanding(
+                        state,
+                        player,
+                        nextX,
+                        nextY,
+                        moveTargetX,
+                        moveTargetY,
+                        moveTargetElevation,
+                        occupied,
+                        raisedPlayerGates,
+                        orangeButtonsPressed
+                      )
+                    : null;
                 const canOccupyTargetAfterPush =
                   !targetBlockedAfterPush &&
-                  (canEnterHole ||
-                    canPlayerStandAtElevation(
-                      state,
-                      moveTargetX,
-                      moveTargetY,
-                      moveTargetElevation,
-                      raisedPlayerGates,
-                      orangeButtonsPressed,
-                      ignoredPostPushSupports
-                    ));
+                  (canEnterHole || canStandAtTargetAfterPush || postPushSlipLanding !== null);
 
                 if (canOccupyTargetAfterPush) {
+                  if (postPushSlipLanding) {
+                    slipLanding = postPushSlipLanding;
+                    canSlipOffIce = true;
+                  }
                   didMoveBlockingActor = true;
                 } else {
                   copyStateInto(state, attemptSnapshot);
