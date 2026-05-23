@@ -1,0 +1,16 @@
+. . . . . . . . i i i i i i .+I .+I+Sd
+. . . . . . i . i i i i i i .+I+Sr .+I+I+I
+. . . . . . . . i i i i i i .+I .+I+Su
+. . . . . . . . i i i i i i i .+I+I+Sd
+. . . . . . . . . . i i i .+I+Sr .+I+I+Sr .+I+I+I
+. . . . . . . i . . . i i .+I+Sr .+I+I .+I+I+Su
+. . . . . . . . . i . i i i .+I+I .+I+I
+. . . . . . i . . . .+I+Sr i++I+Sr i++I+Sl i++I .+I+I .+I+I+Sd
+. . . . . . . . . . . i i i .+I+I .+I+I+I
+. . . . . . . . . i . i i i+I+Sd .+I+I .+I+I+I
+. . . . . . . . i . i i i .+I+I .+I+I+Sr .+I+I+I
+. . . . . i . i . i i i i+I .+I+I+Sr .+I+I+I .+I+I+I+I
+. . . . . . . i i i i i .+Su .+I+I+Sr .+I+I+I .+I+I+I+Su
+. . . . . i i i i i i i i .+I+I .+I+I+Sr .+I+I+I
+. . . i . . i i i i i i i .+I .+I+Su .+I+I+Su
+. . . . . i i i i i i i i .+I .+I .+I+I
