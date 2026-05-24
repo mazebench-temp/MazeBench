@@ -324,6 +324,7 @@
       const raisedPlayerGates = computeRaisedPlayerGateSet();
       const raisedOrangeWalls = computeRaisedOrangeWallSet();
       const moveResult = engine.move(engineState, dx, dy, {
+        continuePunchSlide: options.continuePunchSlide === true,
         startOnCurrentSlope: options.startOnCurrentSlope === true
       });
       const moves = moveResult.moves.map(moveFromEngineRecord).filter(Boolean);

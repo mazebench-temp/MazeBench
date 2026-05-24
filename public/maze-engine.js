@@ -5086,6 +5086,7 @@
       const originalActorX = new Int16Array(state.actorX);
       const originalActorY = new Int16Array(state.actorY);
       const originalActorElevation = new Int16Array(state.actorElevation);
+      const continuePunchSlide = options.continuePunchSlide === true;
 
       orderedPlayers.forEach((player) => {
         const fromX = state.actorX[player];
@@ -5105,7 +5106,7 @@
         let levelExit = null;
         let stopAfterStartSlope = false;
 
-        if (options.startOnCurrentSlope === true) {
+        if (!continuePunchSlide && options.startOnCurrentSlope === true) {
           const startSlopeTraversal = resolveIceSlopeTraversal(
             state,
             nextX,
@@ -5152,6 +5153,42 @@
           const targetY = nextY + stepDy;
           const isInitialStep =
             travelPath.length === 1 && nextX === fromX && nextY === fromY;
+
+          if (continuePunchSlide) {
+            if (!isInsideBoard(targetX, targetY)) {
+              levelExit = {
+                dx: stepDx,
+                dy: stepDy,
+                elevation: travelElevation,
+                sourceType: "punch"
+              };
+              break;
+            }
+
+            if (
+              terrainBlocksElevation(
+                state,
+                targetX,
+                targetY,
+                travelElevation,
+                raisedPlayerGates,
+                orangeButtonsPressed
+              ) ||
+              blockingActorAtElevation(state, targetX, targetY, travelElevation, player) !== -1
+            ) {
+              break;
+            }
+
+            nextX = targetX;
+            nextY = targetY;
+            travelPath.push({
+              x: nextX,
+              y: nextY,
+              elevation: travelElevation
+            });
+            continue;
+          }
+
           const pushSlopeBlocker = (blocker, pushDx = stepDx, pushDy = stepDy) => {
             const attemptSnapshot = attemptSnapshotBuffer || cloneState(state);
             const occupiedSnapshot = occupiedSnapshotBuffer || new Set(occupied);
@@ -5510,7 +5547,7 @@
 
         let occupiedElevation = fromElevation;
 
-        if (nextX !== fromX || nextY !== fromY || travelElevation !== fromElevation) {
+        if (nextX !== fromX || nextY !== fromY || travelElevation !== fromElevation || levelExit) {
           state.actorX[player] = nextX;
           state.actorY[player] = nextY;
           let toElevation = fromElevation;
@@ -5524,7 +5561,9 @@
             orangeButtonsPressed
           );
 
-          if (playerLiftLayer) {
+          if (continuePunchSlide) {
+            toElevation = travelElevation;
+          } else if (playerLiftLayer) {
             const toRaised = !isRaisedPlayerLift(state, nextX, nextY);
             pendingLiftToggles.push({
               x: nextX,
@@ -5580,10 +5619,15 @@
 
           if (!searchMode) {
             moveRecord.iceSlide =
+              continuePunchSlide ||
               travelDistance > 1 ||
               iceSlipLanding !== null ||
               travelPath.length > 2 ||
               pathControlsElevation;
+
+            if (continuePunchSlide) {
+              moveRecord.punchSlide = true;
+            }
 
             if (levelExit) {
               moveRecord.levelExit = true;

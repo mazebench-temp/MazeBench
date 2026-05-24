@@ -1683,10 +1683,12 @@
       );
     }
 
-    function playerLevelExitMoveForContinuation(moveResult, dx, dy) {
+    function playerLevelExitMoveForContinuation(moveResult, dx = null, dy = null) {
       if (!moveResult?.moved || !Array.isArray(moveResult.moves)) {
         return null;
       }
+
+      const hasDirectionFilter = Number.isInteger(dx) && Number.isInteger(dy);
 
       return (
         moveResult.moves.find(
@@ -1694,11 +1696,88 @@
             move?.visualOnly !== true &&
             move?.toRemoved !== true &&
             move.levelExit === true &&
-            move.levelExitDx === dx &&
-            move.levelExitDy === dy &&
+            (!hasDirectionFilter ||
+              (move.levelExitDx === dx &&
+                move.levelExitDy === dy)) &&
             app.isPlayerActor(move.actor)
         ) || null
       );
+    }
+
+    function normalizedDirectionFromDelta(deltaX, deltaY) {
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        return { dx: Math.sign(deltaX), dy: 0 };
+      }
+
+      if (Math.abs(deltaY) > 0) {
+        return { dx: 0, dy: Math.sign(deltaY) };
+      }
+
+      return null;
+    }
+
+    function lastMovementDirectionForPath(path) {
+      if (!Array.isArray(path) || path.length < 2) {
+        return null;
+      }
+
+      for (let index = path.length - 1; index > 0; index -= 1) {
+        const from = path[index - 1];
+        const to = path[index];
+        const direction = normalizedDirectionFromDelta(
+          Number(to?.x) - Number(from?.x),
+          Number(to?.y) - Number(from?.y)
+        );
+
+        if (direction) {
+          return direction;
+        }
+      }
+
+      return null;
+    }
+
+    function playerMoveContinuationDirection(playerMove, fallbackDx, fallbackDy) {
+      if (!playerMove) {
+        return null;
+      }
+
+      if (Number.isInteger(playerMove.levelExitDx) || Number.isInteger(playerMove.levelExitDy)) {
+        return {
+          dx: Number(playerMove.levelExitDx) || 0,
+          dy: Number(playerMove.levelExitDy) || 0
+        };
+      }
+
+      const punchSegments = normalizedPunchSegments(playerMove);
+      const lastPunchSegment = punchSegments[punchSegments.length - 1];
+
+      if (lastPunchSegment) {
+        const direction = normalizedDirectionFromDelta(
+          lastPunchSegment.toX - lastPunchSegment.fromX,
+          lastPunchSegment.toY - lastPunchSegment.fromY
+        );
+
+        if (direction) {
+          return direction;
+        }
+      }
+
+      if (hasPunchStart(playerMove)) {
+        const direction = normalizedDirectionFromDelta(
+          playerMove.toX - playerMove.punchStartX,
+          playerMove.toY - playerMove.punchStartY
+        );
+
+        if (direction) {
+          return direction;
+        }
+      }
+
+      return lastMovementDirectionForPath(normalizedMovePath(playerMove)) || {
+        dx: fallbackDx,
+        dy: fallbackDy
+      };
     }
 
     function shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition) {
@@ -1715,8 +1794,25 @@
       return isSlideContinuationSurface(edgeTransition.sourceType);
     }
 
+    function withContinuationModeForPlayerMove(edgeTransition, playerMove) {
+      if (!edgeTransition || !playerMove) {
+        return edgeTransition;
+      }
+
+      if (playerMove.punchSlide !== true) {
+        return edgeTransition;
+      }
+
+      return {
+        ...edgeTransition,
+        continuePunchSlide: true,
+        sourceType: edgeTransition.sourceType || "punch",
+        targetElevation: edgeTransition.targetElevation ?? playerMove.toElevation ?? playerMove.fromElevation ?? 0
+      };
+    }
+
     function levelExitTransitionForMove(moveResult, dx, dy) {
-      const playerMove = playerLevelExitMoveForContinuation(moveResult, dx, dy);
+      const playerMove = playerLevelExitMoveForContinuation(moveResult);
 
       if (
         !playerMove ||
@@ -1726,25 +1822,33 @@
         return null;
       }
 
-      const nextLevelId = app.adjacentWorldLevelId(app.currentLevelId, dx, dy);
+      const direction = playerMoveContinuationDirection(playerMove, dx, dy);
+      const transitionDx = direction?.dx || 0;
+      const transitionDy = direction?.dy || 0;
+
+      if (!transitionDx && !transitionDy) {
+        return null;
+      }
+
+      const nextLevelId = app.adjacentWorldLevelId(app.currentLevelId, transitionDx, transitionDy);
 
       if (!nextLevelId) {
         return null;
       }
 
-      return {
+      return withContinuationModeForPlayerMove({
         player: playerMove.actor,
         nextLevelId,
-        sourceType: playerMove.levelExitSourceType || "ice_slope",
+        sourceType: playerMove.levelExitSourceType || (playerMove.punchSlide === true ? "punch" : "ice_slope"),
         sourceElevation: playerMove.levelExitElevation ?? playerMove.toElevation ?? 0,
         targetElevation: playerMove.levelExitElevation ?? playerMove.toElevation ?? 0,
-        dx,
-        dy,
-        targetX: dx < 0 ? state.width - 1 : dx > 0 ? 0 : playerMove.toX,
-        targetY: dy < 0 ? state.height - 1 : dy > 0 ? 0 : playerMove.toY,
+        dx: transitionDx,
+        dy: transitionDy,
+        targetX: transitionDx < 0 ? state.width - 1 : transitionDx > 0 ? 0 : playerMove.toX,
+        targetY: transitionDy < 0 ? state.height - 1 : transitionDy > 0 ? 0 : playerMove.toY,
         continueFromCurrentSlope: true,
         continueMove: true
-      };
+      }, playerMove);
     }
 
     function edgeTransitionForMoveResult(moveResult, dx, dy) {
@@ -1757,20 +1861,28 @@
         return null;
       }
 
+      const direction = playerMoveContinuationDirection(playerMove, dx, dy);
+      const transitionDx = direction?.dx || 0;
+      const transitionDy = direction?.dy || 0;
+
+      if (!transitionDx && !transitionDy) {
+        return null;
+      }
+
       const edgeTransition = app.edgeTransitionForPlayerMove(
         playerMove.actor,
         playerMove.toX,
         playerMove.toY,
         playerMove.toElevation ?? playerMove.fromElevation ?? playerMove.actor?.elevation ?? 0,
-        dx,
-        dy
+        transitionDx,
+        transitionDy
       );
 
       if (!shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition)) {
         return null;
       }
 
-      return edgeTransition;
+      return withContinuationModeForPlayerMove(edgeTransition, playerMove);
     }
 
     function continuationTransitionForMoveResult(moveResult, dx, dy) {
@@ -1826,10 +1938,9 @@
         return false;
       }
 
-      const levelExitTransition = levelExitTransitionForMove(moveResult, dx, dy);
-      const edgeTransition = levelExitTransition || app.edgeTransitionForMove(dx, dy);
+      const edgeTransition = continuationTransitionForMoveResult(moveResult, dx, dy);
 
-      if (!levelExitTransition && !shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition)) {
+      if (!edgeTransition || !shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition)) {
         return false;
       }
 
@@ -1979,8 +2090,149 @@
       });
     }
 
+    function worldActionActorKey(actor, x = actor?.x, y = actor?.y, elevation = actor?.elevation ?? 0) {
+      return [
+        actor?.type || "",
+        actor?.groupId || "",
+        actor?.direction || actor?.facing || "",
+        x,
+        y,
+        elevation ?? 0
+      ].join(":");
+    }
+
+    function worldActionPointFromLocal(point, roomOffset) {
+      return {
+        x: Number(point?.x) + roomOffset.x,
+        y: Number(point?.y) + roomOffset.y,
+        elevation: Number(point?.elevation)
+      };
+    }
+
+    function worldActionRoomKeyFromOffset(offset) {
+      return [
+        Math.round(Number(offset?.x || 0) * 1000),
+        Math.round(Number(offset?.y || 0) * 1000)
+      ].join(",");
+    }
+
+    function collectWorldPunchData(moveResult, playerMove, roomOffset, roomIndex, sequenceBase) {
+      const punchEvents = [];
+      const puncherVisuals = [];
+      let maxSequence = -1;
+
+      normalizedPunchSegments(playerMove).forEach((segment) => {
+        const sequence = sequenceBase + segment.sequence;
+        const eventPoint = worldActionPointFromLocal(
+          {
+            x: segment.fromX,
+            y: segment.fromY,
+            elevation: segment.fromElevation
+          },
+          roomOffset
+        );
+
+        maxSequence = Math.max(maxSequence, segment.sequence);
+        punchEvents.push({
+          point: eventPoint,
+          sequence
+        });
+      });
+
+      moveResult.moves
+        .filter(isPunchVisualMove)
+        .forEach((move) => {
+          const localFinalX = typeof move.finalX === "number" ? move.finalX : move.fromX;
+          const localFinalY = typeof move.finalY === "number" ? move.finalY : move.fromY;
+          const localFinalElevation =
+            typeof move.finalElevation === "number"
+              ? move.finalElevation
+              : move.fromElevation ?? move.actor?.elevation ?? 0;
+          const localSequence = punchSequenceForVisualMove(move);
+          const sequence = sequenceBase + localSequence;
+
+          maxSequence = Math.max(maxSequence, localSequence);
+          puncherVisuals.push({
+            actor: {
+              ...(move.actor || {}),
+              type: move.actor?.type || move.actorType || "puncher",
+              direction: move.actor?.direction || move.actor?.facing || move.direction || null,
+              facing: move.actor?.facing || move.actor?.direction || move.direction || null,
+              removed: false
+            },
+            actorKey: worldActionActorKey(
+              move.actor || { type: move.actorType || "puncher", direction: move.direction },
+              localFinalX,
+              localFinalY,
+              localFinalElevation
+            ),
+            finalElevation: localFinalElevation,
+            finalX: localFinalX + roomOffset.x,
+            finalY: localFinalY + roomOffset.y,
+            fromElevation: move.fromElevation ?? localFinalElevation,
+            fromX: move.fromX + roomOffset.x,
+            fromY: move.fromY + roomOffset.y,
+            roomIndex,
+            roomKey: worldActionRoomKeyFromOffset(roomOffset),
+            sequence,
+            toElevation: move.toElevation ?? localFinalElevation,
+            toX: move.toX + roomOffset.x,
+            toY: move.toY + roomOffset.y
+          });
+        });
+
+      return {
+        nextSequenceBase: sequenceBase + maxSequence + 1,
+        punchEvents,
+        puncherVisuals
+      };
+    }
+
     function playerMovePathForWorldAction(move) {
-      return normalizedMovePath(move);
+      const path = normalizedMovePath(move);
+      const punchSegments = normalizedPunchSegments(move);
+
+      if (!hasPunchStart(move) && punchSegments.length === 0) {
+        return path;
+      }
+
+      const punchPath = [
+        {
+          x: move.fromX,
+          y: move.fromY,
+          elevation: move.fromElevation ?? move.actor?.elevation ?? 0
+        }
+      ];
+
+      if (hasPunchStart(move)) {
+        punchPath.push({
+          x: move.punchStartX,
+          y: move.punchStartY,
+          elevation: move.punchStartElevation ?? punchPath[0].elevation
+        });
+      }
+
+      punchSegments.forEach((segment) => {
+        punchPath.push({
+          x: segment.fromX,
+          y: segment.fromY,
+          elevation: segment.fromElevation
+        });
+        punchPath.push({
+          x: segment.toX,
+          y: segment.toY,
+          elevation: segment.toElevation
+        });
+      });
+
+      const lastPunchPoint = punchPath[punchPath.length - 1];
+      const finalPoint = path[path.length - 1];
+
+      if (finalPoint && !pathPointMatches(lastPunchPoint, finalPoint)) {
+        punchPath.push(finalPoint);
+      }
+
+      return punchPath;
     }
 
     function supportsWorldActionMoveResult(moveResult) {
@@ -1990,7 +2242,7 @@
 
       return moveResult.moves.every((move) => {
         if (move.visualOnly === true) {
-          return app.isPlayerActor(move.actor);
+          return app.isPlayerActor(move.actor) || move.actor?.type === "puncher";
         }
 
         return app.isPlayerActor(move.actor);
@@ -2091,9 +2343,15 @@
         : null;
       const rooms = [];
       const worldPath = [];
+      const worldPunchEvents = [];
+      const worldPuncherVisuals = [];
       let roomOffset = { x: 0, y: 0 };
       let crossedLevel = false;
+      let moveDx = dx;
+      let moveDy = dy;
       let startOnCurrentSlope = options.startOnCurrentSlope === true;
+      let continuePunchSlide = options.continuePunchSlide === true;
+      let punchSequenceBase = 0;
 
       preloadForwardWorldActionLevels(dx, dy);
 
@@ -2110,8 +2368,9 @@
             levelState: roomState,
             offset: { ...roomOffset }
           });
-          const moveResult = movement.performPlayerMove(dx, dy, {
+          const moveResult = movement.performPlayerMove(moveDx, moveDy, {
             animate: false,
+            continuePunchSlide,
             recordHistory: false,
             startOnCurrentSlope
           });
@@ -2121,7 +2380,7 @@
           }
 
           const playerMove =
-            playerLevelExitMoveForContinuation(moveResult, dx, dy) ||
+            playerLevelExitMoveForContinuation(moveResult) ||
             playerSlideMoveForContinuation(moveResult);
 
           if (!playerMove) {
@@ -2133,12 +2392,22 @@
             playerMovePathForWorldAction(playerMove),
             roomOffset
           );
+          const punchData = collectWorldPunchData(
+            moveResult,
+            playerMove,
+            roomOffset,
+            rooms.length - 1,
+            punchSequenceBase
+          );
 
-          const levelExitTransition = levelExitTransitionForMove(moveResult, dx, dy);
-          const edgeTransition = levelExitTransition || app.edgeTransitionForMove?.(dx, dy);
+          worldPunchEvents.push(...punchData.punchEvents);
+          worldPuncherVisuals.push(...punchData.puncherVisuals);
+          punchSequenceBase = punchData.nextSequenceBase;
+
+          const edgeTransition = continuationTransitionForMoveResult(moveResult, moveDx, moveDy);
 
           if (
-            !levelExitTransition &&
+            !edgeTransition ||
             !shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition)
           ) {
             if (!crossedLevel) {
@@ -2153,7 +2422,9 @@
               rooms,
               startEntrySnapshot,
               startLevelState: startSnapshot,
-              path: worldPath
+              path: worldPath,
+              punchEvents: worldPunchEvents,
+              puncherVisuals: worldPuncherVisuals
             };
           }
 
@@ -2175,8 +2446,8 @@
               height: state.height
             },
             transfer.nextLevelState,
-            dx,
-            dy
+            edgeTransition.dx,
+            edgeTransition.dy
           );
           appendWorldPathPoints(
             worldPath,
@@ -2199,7 +2470,10 @@
           });
 
           roomOffset = nextOffset;
+          moveDx = edgeTransition.dx;
+          moveDy = edgeTransition.dy;
           startOnCurrentSlope = edgeTransition.continueFromCurrentSlope === true;
+          continuePunchSlide = edgeTransition.continuePunchSlide === true;
         }
       } finally {
         restorePlannedWorldActionStart(startSnapshot, startCollectedGemIds);
@@ -2212,23 +2486,195 @@
       return pointAlongPathDistance({ path }, traveledDistance);
     }
 
+    function worldActionDistanceToPoint(path, targetPoint) {
+      return pathDistanceToPoint({ path }, targetPoint);
+    }
+
+    function normalizedWorldPunchEvents(path, punchEvents) {
+      if (!Array.isArray(punchEvents) || punchEvents.length === 0) {
+        return [];
+      }
+
+      const eventsByDistance = new Map();
+
+      punchEvents.forEach((event) => {
+        const distance = worldActionDistanceToPoint(path, event.point);
+
+        if (distance === null) {
+          return;
+        }
+
+        const key = Math.round(distance * 10000) / 10000;
+        const existing = eventsByDistance.get(key) || {
+          distance,
+          point: event.point,
+          sequences: []
+        };
+
+        if (!existing.sequences.includes(event.sequence)) {
+          existing.sequences.push(event.sequence);
+        }
+
+        eventsByDistance.set(key, existing);
+      });
+
+      return Array.from(eventsByDistance.values())
+        .sort((left, right) => left.distance - right.distance)
+        .map((event) => ({
+          ...event,
+          sequences: event.sequences.sort((left, right) => left - right)
+        }));
+    }
+
+    function worldActionPunchLungeDuration() {
+      return Math.max(MOVE_DURATION_MS, segmentDuration(1, true));
+    }
+
+    function worldActionTimelineFor(path, punchEvents) {
+      const totalDistance = pathDistanceFor({ path });
+      const events = normalizedWorldPunchEvents(path, punchEvents);
+      const steps = [];
+      const eventTimings = new Map();
+      let cursorDistance = 0;
+      let cursorMs = 0;
+      let afterPunch = false;
+
+      if (events.length === 0) {
+        const duration = iceSlideDuration(totalDistance);
+
+        return {
+          durationMs: duration,
+          eventTimings,
+          steps: [
+            {
+              durationMs: duration,
+              endDistance: totalDistance,
+              endMs: duration,
+              kind: "path",
+              startDistance: 0,
+              startMs: 0
+            }
+          ],
+          totalDistance
+        };
+      }
+
+      function pushPathStep(endDistance) {
+        const distance = Math.max(0, endDistance - cursorDistance);
+
+        if (distance <= 0.0001) {
+          cursorDistance = endDistance;
+          return;
+        }
+
+        const duration = afterPunch
+          ? iceSlideDuration(distance)
+          : segmentDuration(distance, false);
+
+        steps.push({
+          durationMs: duration,
+          endDistance,
+          endMs: cursorMs + duration,
+          kind: "path",
+          startDistance: cursorDistance,
+          startMs: cursorMs
+        });
+        cursorDistance = endDistance;
+        cursorMs += duration;
+      }
+
+      events.forEach((event) => {
+        pushPathStep(event.distance);
+
+        const duration = worldActionPunchLungeDuration();
+        const timing = {
+          lungeEndMs: cursorMs + duration,
+          lungeStartMs: cursorMs,
+          retractEndMs: cursorMs + duration * 2,
+          retractStartMs: cursorMs + duration
+        };
+
+        event.sequences.forEach((sequence) => {
+          eventTimings.set(sequence, timing);
+        });
+
+        steps.push({
+          distance: event.distance,
+          durationMs: duration,
+          endMs: timing.lungeEndMs,
+          kind: "punch_lunge",
+          sequences: event.sequences,
+          startMs: timing.lungeStartMs
+        });
+        cursorMs = timing.lungeEndMs;
+        afterPunch = true;
+      });
+
+      pushPathStep(totalDistance);
+
+      const lastRetractEndMs = Array.from(eventTimings.values()).reduce(
+        (latest, timing) => Math.max(latest, timing.retractEndMs),
+        cursorMs
+      );
+
+      return {
+        durationMs: Math.max(cursorMs, lastRetractEndMs),
+        eventTimings,
+        steps,
+        totalDistance
+      };
+    }
+
+    function worldActionPointAtTime(action, elapsedMs) {
+      const timeline = action?.timeline;
+      const path = action?.path || [];
+
+      if (!timeline || !Array.isArray(timeline.steps) || timeline.steps.length === 0) {
+        return worldActionPointAt(path, (timeline?.totalDistance ?? pathDistanceFor({ path })) * (action?.progress || 0));
+      }
+
+      const clampedElapsed = Math.max(0, Math.min(timeline.durationMs, elapsedMs));
+
+      for (const step of timeline.steps) {
+        if (clampedElapsed > step.endMs && step !== timeline.steps[timeline.steps.length - 1]) {
+          continue;
+        }
+
+        if (step.kind === "punch_lunge") {
+          return worldActionPointAt(path, step.distance);
+        }
+
+        const progress = step.durationMs <= 0
+          ? 1
+          : linearMotionProgress(clampedElapsed - step.startMs, step.durationMs);
+        const distance = step.startDistance + (step.endDistance - step.startDistance) * progress;
+
+        return worldActionPointAt(path, distance);
+      }
+
+      return worldActionPointAt(path, timeline.totalDistance);
+    }
+
     function startContinuousWorldActionAnimation(plan) {
       if (!plan || !Array.isArray(plan.path) || plan.path.length < 2) {
         return false;
       }
 
-      const distance = pathDistanceFor({ path: plan.path });
-      const durationMs = iceSlideDuration(distance);
+      const timeline = worldActionTimelineFor(plan.path, plan.punchEvents);
+      const durationMs = timeline.durationMs;
       const elapsedForFrame = createAnimationElapsedTracker();
       const undoGroupId = beginMoveUndoGroup();
       app.worldActionAnimation = {
         currentPoint: plan.path[0],
+        elapsedMs: 0,
+        puncherVisuals: plan.puncherVisuals || [],
         progress: 0,
         path: plan.path,
         player: plan.player,
         rooms: plan.rooms,
         stableWidth: Math.max(1, plan.rooms[0]?.levelState?.width || state.width),
-        stableHeight: Math.max(1, plan.rooms[0]?.levelState?.height || state.height)
+        stableHeight: Math.max(1, plan.rooms[0]?.levelState?.height || state.height),
+        timeline
       };
       app.isAnimating = true;
       moveHistory.push({
@@ -2253,11 +2699,18 @@
       function step(now = performance.now()) {
         const elapsedMs = elapsedForFrame(now);
         const progress = linearMotionProgress(elapsedMs, durationMs);
+        app.worldActionAnimation.elapsedMs = elapsedMs;
         app.worldActionAnimation.progress = progress;
-        app.worldActionAnimation.currentPoint = worldActionPointAt(
-          plan.path,
-          distance * progress
+        app.worldActionAnimation.currentPoint = worldActionPointAtTime(
+          app.worldActionAnimation,
+          elapsedMs
         );
+        app.worldActionAnimation.visualSignature = [
+          Math.floor(elapsedMs / 16),
+          Math.round(app.worldActionAnimation.currentPoint.x * 1000),
+          Math.round(app.worldActionAnimation.currentPoint.y * 1000),
+          Math.round(app.worldActionAnimation.currentPoint.elevation * 1000)
+        ].join(":");
         app.render(now);
 
         if (progress >= 1) {
@@ -2291,6 +2744,7 @@
       try {
         const moveResult = movement.performPlayerMove(dx, dy, {
           animate: false,
+          continuePunchSlide: options.continuePunchSlide === true,
           recordHistory: false,
           startOnCurrentSlope: options.startOnCurrentSlope === true
         });
@@ -2299,13 +2753,9 @@
           return false;
         }
 
-        const levelExitTransition = levelExitTransitionForMove(moveResult, dx, dy);
-        const edgeTransition = levelExitTransition || app.edgeTransitionForMove?.(dx, dy);
+        const edgeTransition = continuationTransitionForMoveResult(moveResult, dx, dy);
 
-        return Boolean(
-          levelExitTransition ||
-            shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition)
-        );
+        return Boolean(edgeTransition && shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition));
       } finally {
         restorePlannedWorldActionStart(startSnapshot, startCollectedGemIds);
       }
@@ -2335,6 +2785,32 @@
       const boundaryY = dy < 0 ? 0 : dy > 0 ? state.height - 1 : player.y;
 
       return terrainCellHasContinuationSurface(state.terrain[boundaryY]?.[boundaryX]);
+    }
+
+    function initialPuncherContinuationCandidate(dx, dy) {
+      const player = currentPlayerForWorldAction();
+
+      if (!player) {
+        return false;
+      }
+
+      const targetX = player.x + dx;
+      const targetY = player.y + dy;
+      const elevation = player.elevation ?? 0;
+
+      if (targetX < 0 || targetX >= state.width || targetY < 0 || targetY >= state.height) {
+        return false;
+      }
+
+      return state.actors.some(
+        (actor) =>
+          actor &&
+          !actor.removed &&
+          actor.type === "puncher" &&
+          actor.x === targetX &&
+          actor.y === targetY &&
+          (actor.elevation ?? 0) === elevation
+      );
     }
 
     function playerOnlyCorridorCandidate(dx, dy) {
@@ -2379,11 +2855,12 @@
         return false;
       }
 
-      if (!boundaryContinuationSurfaceCandidate(dx, dy)) {
-        return false;
-      }
+      const canSlideAcrossBoundary =
+        boundaryContinuationSurfaceCandidate(dx, dy) &&
+        playerOnlyCorridorCandidate(dx, dy);
+      const canPunchAcrossBoundary = initialPuncherContinuationCandidate(dx, dy);
 
-      if (!playerOnlyCorridorCandidate(dx, dy)) {
+      if (!canSlideAcrossBoundary && !canPunchAcrossBoundary) {
         return false;
       }
 

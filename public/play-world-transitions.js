@@ -98,6 +98,31 @@
       return sourceType === targetType;
     }
 
+    function isAllowedPunchContinuationTarget(levelState, x, y, elevation) {
+      return !transitionTerrainBlocksElevation(
+        levelState,
+        x,
+        y,
+        elevation,
+        {
+          raisedPlayerGates: levelState.raisedPlayerGates
+            ? new Set(levelState.raisedPlayerGates)
+            : null,
+          raisedOrangeWalls: levelState.raisedOrangeWalls
+            ? new Set(levelState.raisedOrangeWalls)
+            : null
+        }
+      );
+    }
+
+    function isAllowedTransitionTarget(transition, sourceType, targetType, levelState, x, y, elevation) {
+      if (transition?.continuePunchSlide === true) {
+        return isAllowedPunchContinuationTarget(levelState, x, y, elevation);
+      }
+
+      return isAllowedEdgeTransition(sourceType, targetType);
+    }
+
     function continuationMoveController(transition, transitionData) {
       if (transition?.continueMove !== true || transition.entersHole === true) {
         return null;
@@ -137,6 +162,7 @@
 
         app.movePlayers(dx, dy, {
           allowDuringTransition: options.allowDuringTransition === true,
+          continuePunchSlide: transition.continuePunchSlide === true,
           startOnCurrentSlope: transition.continueFromCurrentSlope === true
         });
         return false;
@@ -898,7 +924,17 @@
       );
       const targetType = targetSurface?.type || targetHole?.type || targetSlopeEntry?.type || "empty";
 
-      if (!isAllowedEdgeTransition(sourceType, targetType)) {
+      if (
+        !isAllowedTransitionTarget(
+          transition,
+          sourceType,
+          targetType,
+          nextLevelState,
+          transition.targetX,
+          transition.targetY,
+          targetElevation
+        )
+      ) {
         return null;
       }
 
@@ -1009,7 +1045,17 @@
         );
         const targetType = targetSurface?.type || targetHole?.type || targetSlopeEntry?.type || "empty";
 
-        if (!isAllowedEdgeTransition(sourceType, targetType)) {
+        if (
+          !isAllowedTransitionTarget(
+            transition,
+            sourceType,
+            targetType,
+            nextLevelState,
+            transition.targetX,
+            transition.targetY,
+            targetElevation
+          )
+        ) {
           app.isTransitioningLevel = false;
           return false;
         }

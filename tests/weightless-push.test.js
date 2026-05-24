@@ -1820,6 +1820,72 @@ asyncTests.push(
   assert.equal(app.adjacentWorldLevelId("level_PxP", 0, 1), "level_PxA");
 }
 
+asyncTests.push((async () => {
+  const nextTerrain = createTerrain(4, 1);
+  nextTerrain[0][3] = { type: "wall" };
+  const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
+  const puncher = { type: "puncher", direction: "right", x: 1, y: 0, elevation: 0, removed: false };
+  const app = createGameplayApp([player, puncher], {
+    currentLevelId: "level_AxA",
+    height: 1,
+    loadLevelState: async (levelId) => ({
+      gameId: "maze",
+      levelId,
+      levelLabel: levelId,
+      width: 4,
+      height: 1,
+      terrain: nextTerrain,
+      actors: [{ type: "player", x: 0, y: 0, elevation: 0, removed: false }]
+    }),
+    moveDurationMs: 0,
+    width: 4
+  });
+
+  app.movePlayers(1, 0);
+  await flushAsyncTurns();
+
+  assert.equal(app.currentLevelId, "level_BxA");
+  assert.deepEqual(
+    app.state.actors
+      .filter((actor) => app.isPlayerActor(actor) && !actor.removed)
+      .map((actor) => [actor.x, actor.y, actor.elevation]),
+    [[2, 0, 0]]
+  );
+})());
+
+asyncTests.push((async () => {
+  const nextTerrain = createTerrain(4, 4);
+  nextTerrain[3][1] = { type: "wall" };
+  const player = { type: "player", x: 0, y: 1, elevation: 0, removed: false };
+  const puncher = { type: "puncher", direction: "down", x: 1, y: 1, elevation: 0, removed: false };
+  const app = createGameplayApp([player, puncher], {
+    currentLevelId: "level_AxA",
+    height: 4,
+    loadLevelState: async (levelId) => ({
+      gameId: "maze",
+      levelId,
+      levelLabel: levelId,
+      width: 4,
+      height: 4,
+      terrain: nextTerrain,
+      actors: [{ type: "player", x: 0, y: 0, elevation: 0, removed: false }]
+    }),
+    moveDurationMs: 0,
+    width: 4
+  });
+
+  app.movePlayers(1, 0);
+  await flushAsyncTurns();
+
+  assert.equal(app.currentLevelId, "level_AxB");
+  assert.deepEqual(
+    app.state.actors
+      .filter((actor) => app.isPlayerActor(actor) && !actor.removed)
+      .map((actor) => [actor.x, actor.y, actor.elevation]),
+    [[1, 2, 0]]
+  );
+})());
+
 Promise.all(asyncTests)
   .then(() => {
     console.log("weightless push regression tests passed");

@@ -81,6 +81,17 @@
       return activeRenderContext?.state || app.state;
     }
 
+    function renderActorContextKey(actor) {
+      return [
+        actor?.type || "",
+        actor?.groupId || "",
+        actor?.direction || actor?.facing || "",
+        actor?.x,
+        actor?.y,
+        actor?.elevation ?? 0
+      ].join(":");
+    }
+
     function invalidateSceneCache() {
       lastSceneSignature = "";
       lastSceneContentSignature = "";
@@ -6686,7 +6697,8 @@
               "world-action",
               Math.round((worldAction.currentPoint?.x || 0) * 1000),
               Math.round((worldAction.currentPoint?.y || 0) * 1000),
-              Math.round((worldAction.currentPoint?.elevation || 0) * 1000)
+              Math.round((worldAction.currentPoint?.elevation || 0) * 1000),
+              worldAction.visualSignature || ""
             ].join(":")
           : "no-world-action",
         `neighbors:${surroundingViews
@@ -6910,9 +6922,14 @@
     function renderActorsForCurrentContext(now = performance.now()) {
       const state = renderState();
       const renderedActors = addWeightlessActorGroups();
+      const hiddenActorKeys = activeRenderContext?.hiddenActorKeys;
 
       state.actors.forEach((actor) => {
         if (activeRenderContext?.hidePlayers && app.isPlayerActor?.(actor)) {
+          return;
+        }
+
+        if (hiddenActorKeys?.has?.(renderActorContextKey(actor))) {
           return;
         }
 
@@ -7441,6 +7458,78 @@
       return Array.from(viewsByOffset.values());
     }
 
+    function worldActionPuncherTiming(action, visual) {
+      const timings = action?.timeline?.eventTimings;
+
+      if (!timings || !Number.isFinite(Number(visual?.sequence))) {
+        return null;
+      }
+
+      if (timings instanceof Map) {
+        return timings.get(visual.sequence) || null;
+      }
+
+      return timings[visual.sequence] || null;
+    }
+
+    function worldActionActivePuncherVisuals(action) {
+      const elapsedMs = Number(action?.elapsedMs || 0);
+
+      return (action?.puncherVisuals || [])
+        .map((visual) => {
+          const timing = worldActionPuncherTiming(action, visual);
+
+          if (!timing || elapsedMs < timing.lungeStartMs || elapsedMs >= timing.retractEndMs) {
+            return null;
+          }
+
+          let progress = 0;
+          let renderX = visual.finalX;
+          let renderY = visual.finalY;
+
+          if (elapsedMs < timing.lungeEndMs) {
+            progress = localProgress(
+              elapsedMs,
+              timing.lungeStartMs,
+              Math.max(1, timing.lungeEndMs - timing.lungeStartMs)
+            );
+            renderX = lerp(visual.finalX, visual.toX, progress);
+            renderY = lerp(visual.finalY, visual.toY, progress);
+          } else {
+            progress = localProgress(
+              elapsedMs,
+              timing.retractStartMs,
+              Math.max(1, timing.retractEndMs - timing.retractStartMs)
+            );
+            renderX = lerp(visual.toX, visual.finalX, progress);
+            renderY = lerp(visual.toY, visual.finalY, progress);
+          }
+
+          return {
+            ...visual,
+            actor: {
+              ...(visual.actor || {}),
+              elevation: visual.finalElevation,
+              removed: false,
+              renderAlpha: 1,
+              renderElevation: visual.finalElevation,
+              renderInHole: false,
+              renderPunchBaseX: visual.finalX,
+              renderPunchBaseY: visual.finalY,
+              renderPunchEffect: true,
+              renderScale: 1,
+              renderSink: 0,
+              renderX,
+              renderY,
+              type: visual.actor?.type || "puncher",
+              x: visual.finalX,
+              y: visual.finalY
+            }
+          };
+        })
+        .filter(Boolean);
+    }
+
     function renderWorldActionAnimation(now) {
       const action = app.worldActionAnimation;
       const rooms = Array.isArray(action?.rooms) ? action.rooms : [];
@@ -7458,6 +7547,19 @@
         .map((room) => worldActionPathRoomView(room, cameraFrame))
         .filter(Boolean);
       const surroundingViews = worldActionSurroundingLevelViews(action, cameraFrame);
+      const activePuncherVisuals = worldActionActivePuncherVisuals(action);
+      const hiddenPuncherKeysByRoom = new Map();
+
+      activePuncherVisuals.forEach((visual) => {
+        if (!visual.roomKey || !visual.actorKey) {
+          return;
+        }
+
+        const hiddenKeys = hiddenPuncherKeysByRoom.get(visual.roomKey) || new Set();
+
+        hiddenKeys.add(visual.actorKey);
+        hiddenPuncherKeysByRoom.set(visual.roomKey, hiddenKeys);
+      });
 
       surroundingViews
         .slice()
@@ -7479,6 +7581,8 @@
         });
 
       pathRoomViews.forEach((view) => {
+        const roomKey = worldActionRoomKey({ offset: view.offset });
+
         renderLevelStateAt(
           view.levelState,
           {
@@ -7489,7 +7593,8 @@
             role: "neighbor",
             alpha: view.alpha,
             brightness: view.brightness,
-            hidePlayers: true
+            hidePlayers: true,
+            hiddenActorKeys: hiddenPuncherKeysByRoom.get(roomKey)
           },
           now
         );
@@ -7509,6 +7614,9 @@
       };
 
       withRenderContext({ state: renderState(), offsetX: 0, offsetZ: 0 }, () => {
+        activePuncherVisuals.forEach((visual) => {
+          addActor(visual.actor, now);
+        });
         addActor(actor, now);
       });
 
