@@ -2,7 +2,7 @@
 . . # . . . . . . . # # # # # #
 # i # . . . . . . . . i i # # #
 # i # . . . . . # # # i i # # #
-# i # i # # # # # h h i i h h #
+# i # i # # # # # + + i i + + #
 # i # i # # i i i i i i i i i #
 # i # i i i i i i i i i i i i #
 # i # # # # i i i i i i i i i #

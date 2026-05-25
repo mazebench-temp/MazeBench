@@ -24,6 +24,7 @@ const game = {
       wall: { token: "#" },
       ice: { token: "i" },
       orange_button: { token: "o", label: "Orange Button" },
+      weightless_box: { token: "M0" },
       block_asset_1: {
         token: "b1",
         label: "Block 1",
@@ -55,7 +56,7 @@ const game = {
 };
 
 fs.writeFileSync(path.join(levelDir, "test-empty.txt"), "+ . +++#\n", "utf8");
-fs.writeFileSync(path.join(levelDir, "legacy_hole.txt"), "h h+# #+h+#\n", "utf8");
+fs.writeFileSync(path.join(levelDir, "legacy_hole.txt"), "h h+# #+h+# h+M0 M0\n", "utf8");
 
 const service = createMazeLevelService({
   buildGameAssetUrl: () => "",
@@ -113,6 +114,10 @@ assert.deepEqual(
     ["wall", 2]
   ]
 );
+assert.equal(legacyHolePlayState.terrain[0][3].type, "empty");
+assert.equal(legacyHolePlayState.actors.find((actor) => actor.x === 3).elevation, 0);
+assert.equal(legacyHolePlayState.terrain[0][4].type, "floor");
+assert.equal(legacyHolePlayState.actors.find((actor) => actor.x === 4).elevation, 0);
 assert.equal(editorState.rawText, "+ . +++#");
 
 const sanitized = service.sanitizeEditorPayload(game, {

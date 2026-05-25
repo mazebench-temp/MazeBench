@@ -100,12 +100,21 @@
       const entries = [];
       let surfaceHeight = null;
       let previousSurfaceTerrain = false;
+      let consumedBaseVoid = false;
 
       tokens.forEach((token, index) => {
         if (token.length === 0) {
+          if (surfaceHeight === null && !consumedBaseVoid) {
+            entries.push({ elevation: 0, index, isAir: true, isBaseVoid: true, token });
+            consumedBaseVoid = true;
+            previousSurfaceTerrain = false;
+            return;
+          }
+
           const elevation = Math.max(0, surfaceHeight ?? 0);
           entries.push({ elevation, index, isAir: true, token });
           surfaceHeight = elevation + 1;
+          consumedBaseVoid = true;
           previousSurfaceTerrain = false;
           return;
         }
@@ -224,10 +233,6 @@
         tokens.push(normalizedToken);
       } else if (isAirToken(tokens[0])) {
         tokens[0] = normalizedToken;
-
-        if (tokens.some((candidate, index) => index > 0 && !isAirToken(candidate))) {
-          tokens.splice(1, 0, "");
-        }
       } else if (isBaseSurfaceToken(tokens[0])) {
         tokens[0] = normalizedToken;
       } else {
@@ -443,10 +448,21 @@
       const actors = [];
       let surfaceHeight = null;
       let previousSurfaceTerrain = false;
+      let hasAirEntry = false;
+      let consumedBaseVoid = false;
 
       entries.forEach((entry) => {
         if (entry?.isAir) {
+          hasAirEntry = true;
+
+          if (surfaceHeight === null && !consumedBaseVoid) {
+            consumedBaseVoid = true;
+            previousSurfaceTerrain = false;
+            return;
+          }
+
           surfaceHeight = Math.max(0, surfaceHeight ?? 0) + 1;
+          consumedBaseVoid = true;
           previousSurfaceTerrain = false;
           return;
         }
@@ -540,7 +556,7 @@
         };
       }
 
-      if (actors.some(({ tool }) => !isSurfaceAttachmentTool(tool))) {
+      if (!hasAirEntry && actors.some(({ tool }) => !isSurfaceAttachmentTool(tool))) {
         return {
           actors,
           terrain: buildTerrainCell("floor", floorTool, {

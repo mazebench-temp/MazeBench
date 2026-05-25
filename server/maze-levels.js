@@ -309,10 +309,21 @@ function createMazeLevelService({
     const actors = [];
     let surfaceHeight = null;
     let previousSurfaceTerrain = false;
+    let hasAirEntry = false;
+    let consumedBaseVoid = false;
 
     cellDefinitions.forEach((definition) => {
       if (definition?.isAir) {
+        hasAirEntry = true;
+
+        if (surfaceHeight === null && !consumedBaseVoid) {
+          consumedBaseVoid = true;
+          previousSurfaceTerrain = false;
+          return;
+        }
+
         surfaceHeight = Math.max(0, surfaceHeight ?? 0) + 1;
+        consumedBaseVoid = true;
         previousSurfaceTerrain = false;
         return;
       }
@@ -404,7 +415,7 @@ function createMazeLevelService({
       };
     }
 
-    if (actors.some(({ definition }) => !isSurfaceAttachmentDefinition(definition))) {
+    if (!hasAirEntry && actors.some(({ definition }) => !isSurfaceAttachmentDefinition(definition))) {
       return {
         actors,
         terrain: buildTerrainCell("floor", floorDefinition, {

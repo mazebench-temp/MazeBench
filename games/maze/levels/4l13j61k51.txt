@@ -9,8 +9,8 @@
 # . . . . . . . . . . . . . . #
 # i O O O O O O O O O O O O O #
 # i . . . . . . . . . . . . . #
-# i h h h h . . . . h . . M2 . #
-# i h h h h M1 M1 M1 M1 h . . . . #
-# i h h h h M1 M1 M1 M1 h . . . . #
-# i i i i i . . . . h h h h h #
-# h h h h h . . . . h h h h h #
+# i + + + + . . . . + . . M2 . #
+# i + + + + M1 M1 M1 M1 + . . . . #
+# i + + + + M1 M1 M1 M1 + . . . . #
+# i i i i i . . . . + + + + + #
+# + + + + + . . . . + + + + + #

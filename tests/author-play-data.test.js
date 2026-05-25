@@ -130,7 +130,7 @@ assert.equal(adapter.setCellElevationToken(".", "sh", 0, { preserveBaseSurface: 
 assert.equal(adapter.setCellElevationToken(".+W", "O", 0, { preserveBaseSurface: true }), ".+O");
 assert.equal(adapter.setCellElevationToken("+", ".", 0), ".");
 assert.equal(adapter.setCellElevationToken("+", "W", 0), "W");
-assert.equal(adapter.setCellElevationToken("++++W", ".", 0), ".+++++W");
+assert.equal(adapter.setCellElevationToken("++++W", ".", 0), ".++++W");
 assert.equal(adapter.setCellElevationToken(".", ".", 0, { stackBaseSurface: true }), ".");
 assert.equal(adapter.setCellElevationToken(".+.", ".", 1, { stackBaseSurface: true }), ".");
 assert.equal(adapter.setCellElevationToken("W", ".", 0), ".+W");
@@ -148,7 +148,7 @@ assert.equal(adapter.appendCellToken("W", "B"), "W+B");
 assert.equal(adapter.appendCellToken(".+W", "i"), "i+W");
 assert.equal(adapter.normalizeAuthoringCellValue(".+W+i"), "i+W");
 assert.equal(adapter.normalizeAuthoringCellValue("W"), "W");
-assert.equal(adapter.setCellElevationToken("", "W", 3), "+++W");
+assert.equal(adapter.setCellElevationToken("", "W", 3), "++++W");
 assert.equal(adapter.eraseCellElevationValue("W++W", 0), "++W");
 assert.equal(adapter.eraseCellElevationValue("W++W", 2), "W");
 assert.equal(adapter.eraseCellElevationValue(".++W", 0), "+W");
@@ -283,7 +283,7 @@ assert.deepEqual(
   elevatedBaseSurfacePlayData.terrain[0][0].layers.map((layer) => [layer.type, layer.elevation]),
   [
     ["floor", 0],
-    ["wall", 4]
+    ["wall", 3]
   ]
 );
 
@@ -301,6 +301,17 @@ assert.deepEqual(
     ["wall", 2]
   ]
 );
+
+const actorOverExplicitVoidPlayData = adapter.buildPlayData({
+  cells: [["+B", "B"]],
+  height: 1,
+  width: 2
+});
+
+assert.equal(actorOverExplicitVoidPlayData.terrain[0][0].type, "empty");
+assert.equal(actorOverExplicitVoidPlayData.actors[0].elevation, 0);
+assert.equal(actorOverExplicitVoidPlayData.terrain[0][1].type, "floor");
+assert.equal(actorOverExplicitVoidPlayData.actors[1].elevation, 0);
 
 const iceBlockPlayData = adapter.buildPlayData({
   cells: [["I+P", "I+I"]],
