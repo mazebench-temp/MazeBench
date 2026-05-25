@@ -355,6 +355,7 @@
         .then(() => {
           if (
             !app.isTransitioningLevel &&
+            !app.isPlanningWorldAction &&
             !app.worldActionAnimation &&
             typeof app.render === "function"
           ) {

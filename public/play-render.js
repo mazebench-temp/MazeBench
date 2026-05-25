@@ -164,6 +164,10 @@
     }
 
     function render(now = performance.now()) {
+      if (app.isPlanningWorldAction && !app.worldActionAnimation && !app.levelTransition) {
+        return;
+      }
+
       now = normalizeRenderNow(now);
       recordFrameTiming(now);
       syncCameraTarget();

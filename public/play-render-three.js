@@ -7289,14 +7289,19 @@
       const lastCenterZ =
         (Number(lastRoom?.offset?.y || 0) + Math.max(1, lastRoom?.levelState?.height || app.state.height) / 2) *
         unit;
-      const centerX = lerp(firstCenterX, lastCenterX, cameraProgress);
-      const centerZ = lerp(firstCenterZ, lastCenterZ, cameraProgress);
-      const firstWidth = Math.max(1, firstRoom?.levelState?.width || action?.stableWidth || app.state.width);
-      const firstHeight = Math.max(1, firstRoom?.levelState?.height || action?.stableHeight || app.state.height);
-      const lastWidth = Math.max(1, lastRoom?.levelState?.width || firstWidth);
-      const lastHeight = Math.max(1, lastRoom?.levelState?.height || firstHeight);
-      const focusWidth = lerp(firstWidth, lastWidth, cameraProgress) * unit;
-      const focusDepth = lerp(firstHeight, lastHeight, cameraProgress) * unit;
+      const cameraPoint = action?.cameraPoint;
+      const centerX =
+        Number.isFinite(Number(cameraPoint?.x))
+          ? Number(cameraPoint.x) * unit
+          : lerp(firstCenterX, lastCenterX, cameraProgress);
+      const centerZ =
+        Number.isFinite(Number(cameraPoint?.y))
+          ? Number(cameraPoint.y) * unit
+          : lerp(firstCenterZ, lastCenterZ, cameraProgress);
+      const stableWidth = Math.max(1, action?.stableWidth || firstRoom?.levelState?.width || app.state.width);
+      const stableHeight = Math.max(1, action?.stableHeight || firstRoom?.levelState?.height || app.state.height);
+      const focusWidth = stableWidth * unit;
+      const focusDepth = stableHeight * unit;
 
       return {
         centerX,
@@ -7600,6 +7605,24 @@
         );
       });
 
+      const terminalFallProgress =
+        action.terminalPlayerRemoved === true &&
+        Number.isFinite(Number(action.timeline?.pathEndMs))
+          ? clamp01(
+              (Number(action.elapsedMs || 0) - Number(action.timeline.pathEndMs)) /
+                Math.max(1, app.HOLE_FALL_DURATION_MS || 300)
+            )
+          : 0;
+      const terminalFallEase = app.easeInOutQuad
+        ? app.easeInOutQuad(terminalFallProgress)
+        : terminalFallProgress;
+      const terminalFadeProgress = terminalFallProgress <= 0.42
+        ? 0
+        : clamp01((terminalFallProgress - 0.42) / 0.58);
+      const terminalFadeEase = app.easeInOutQuad
+        ? app.easeInOutQuad(terminalFadeProgress)
+        : terminalFadeProgress;
+
       const actor = {
         ...(action.player || {}),
         type: action.player?.type || "player",
@@ -7608,9 +7631,9 @@
         renderY: point.y,
         renderElevation: point.elevation,
         renderScale: 1,
-        renderAlpha: 1,
-        renderSink: 0,
-        renderInHole: false
+        renderAlpha: 1 - terminalFadeEase,
+        renderSink: (app.HOLE_SINK_DISTANCE || app.TILE_SIZE * 3) * terminalFallEase,
+        renderInHole: terminalFallProgress > 0
       };
 
       withRenderContext({ state: renderState(), offsetX: 0, offsetZ: 0 }, () => {

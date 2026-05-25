@@ -1683,6 +1683,22 @@
       );
     }
 
+    function terminalPlayerMoveForWorldAction(moveResult) {
+      if (!moveResult?.moved || !Array.isArray(moveResult.moves)) {
+        return null;
+      }
+
+      return (
+        moveResult.moves.find(
+          (move) =>
+            move?.visualOnly !== true &&
+            move?.toRemoved === true &&
+            app.isPlayerActor(move.actor) &&
+            (move.iceSlide === true || move.punchSlide === true || move.levelExit === true)
+        ) || null
+      );
+    }
+
     function playerLevelExitMoveForContinuation(moveResult, dx = null, dy = null) {
       if (!moveResult?.moved || !Array.isArray(moveResult.moves)) {
         return null;
@@ -2058,6 +2074,32 @@
       return snapshot;
     }
 
+    function cloneWorldActionLevelState(levelState) {
+      if (!levelState) {
+        return null;
+      }
+
+      if (typeof app.cloneStoredLevelSnapshot === "function") {
+        return app.cloneStoredLevelSnapshot(levelState);
+      }
+
+      return JSON.parse(JSON.stringify(levelState));
+    }
+
+    function markWorldActionPlayerRemoved(levelState) {
+      if (!levelState || !Array.isArray(levelState.actors)) {
+        return levelState;
+      }
+
+      levelState.actors.forEach((actor) => {
+        if (app.isPlayerActor(actor)) {
+          actor.removed = true;
+        }
+      });
+
+      return levelState;
+    }
+
     function actionRoomOffsetAfterTransition(currentOffset, currentState, nextState, dx, dy) {
       return {
         x: dx < 0
@@ -2196,43 +2238,174 @@
         return path;
       }
 
-      const punchPath = [
-        {
-          x: move.fromX,
-          y: move.fromY,
-          elevation: move.fromElevation ?? move.actor?.elevation ?? 0
-        }
-      ];
+      const punchPath = [];
 
-      if (hasPunchStart(move)) {
-        punchPath.push({
-          x: move.punchStartX,
-          y: move.punchStartY,
-          elevation: move.punchStartElevation ?? punchPath[0].elevation
+      function appendLocalPathPoints(points) {
+        points.forEach((point) => {
+          const previous = punchPath[punchPath.length - 1];
+
+          if (previous && pathPointMatches(previous, point)) {
+            return;
+          }
+
+          punchPath.push(point);
         });
       }
 
+      function appendPathToPoint(targetPoint) {
+        const prefix = [];
+
+        for (const point of path) {
+          prefix.push(point);
+
+          if (pathPointMatches(point, targetPoint)) {
+            appendLocalPathPoints(prefix);
+            return;
+          }
+        }
+
+        appendLocalPathPoints([
+          path[0] || {
+            x: move.fromX,
+            y: move.fromY,
+            elevation: move.fromElevation ?? move.actor?.elevation ?? 0
+          }
+        ]);
+        appendLocalPathPoints([targetPoint]);
+      }
+
+      const firstPunchPoint = punchSegments[0]
+        ? {
+            x: punchSegments[0].fromX,
+            y: punchSegments[0].fromY,
+            elevation: punchSegments[0].fromElevation
+          }
+        : hasPunchStart(move)
+          ? {
+              x: move.punchStartX,
+              y: move.punchStartY,
+              elevation: move.punchStartElevation ?? path[0]?.elevation ?? move.fromElevation ?? 0
+            }
+          : null;
+
+      if (firstPunchPoint) {
+        appendPathToPoint(firstPunchPoint);
+      } else {
+        appendLocalPathPoints(path);
+      }
+
       punchSegments.forEach((segment) => {
-        punchPath.push({
+        appendLocalPathPoints([{
           x: segment.fromX,
           y: segment.fromY,
           elevation: segment.fromElevation
-        });
-        punchPath.push({
+        }]);
+        appendLocalPathPoints([{
           x: segment.toX,
           y: segment.toY,
           elevation: segment.toElevation
-        });
+        }]);
       });
 
       const lastPunchPoint = punchPath[punchPath.length - 1];
-      const finalPoint = path[path.length - 1];
+      const finalPoint = {
+        x: move.toX,
+        y: move.toY,
+        elevation: move.toElevation ?? path[path.length - 1]?.elevation ?? move.fromElevation ?? 0
+      };
 
       if (finalPoint && !pathPointMatches(lastPunchPoint, finalPoint)) {
         punchPath.push(finalPoint);
       }
 
       return punchPath;
+    }
+
+    function worldActionCameraPathForRooms(rooms) {
+      const cameraPath = [];
+
+      rooms.forEach((room) => {
+        const levelState = room?.levelState;
+
+        if (!levelState?.width || !levelState?.height) {
+          return;
+        }
+
+        const point = {
+          x: Number(room.offset?.x || 0) + levelState.width / 2,
+          y: Number(room.offset?.y || 0) + levelState.height / 2
+        };
+        const previous = cameraPath[cameraPath.length - 1];
+
+        if (
+          previous &&
+          Math.abs(previous.x - point.x) < 0.0001 &&
+          Math.abs(previous.y - point.y) < 0.0001
+        ) {
+          return;
+        }
+
+        cameraPath.push(point);
+      });
+
+      return cameraPath;
+    }
+
+    function cameraPathDistance(cameraPath) {
+      if (!Array.isArray(cameraPath) || cameraPath.length < 2) {
+        return 0;
+      }
+
+      let distance = 0;
+
+      for (let index = 1; index < cameraPath.length; index += 1) {
+        const from = cameraPath[index - 1];
+        const to = cameraPath[index];
+        distance += Math.hypot(to.x - from.x, to.y - from.y);
+      }
+
+      return distance;
+    }
+
+    function pointAlongCameraPath(cameraPath, progress) {
+      if (!Array.isArray(cameraPath) || cameraPath.length === 0) {
+        return null;
+      }
+
+      if (cameraPath.length === 1) {
+        return cameraPath[0];
+      }
+
+      const totalDistance = cameraPathDistance(cameraPath);
+
+      if (totalDistance <= 0) {
+        return cameraPath[cameraPath.length - 1];
+      }
+
+      let remainingDistance = totalDistance * Math.max(0, Math.min(1, progress));
+
+      for (let index = 1; index < cameraPath.length; index += 1) {
+        const from = cameraPath[index - 1];
+        const to = cameraPath[index];
+        const segmentDistanceValue = Math.hypot(to.x - from.x, to.y - from.y);
+
+        if (remainingDistance > segmentDistanceValue && index < cameraPath.length - 1) {
+          remainingDistance -= segmentDistanceValue;
+          continue;
+        }
+
+        const segmentProgress =
+          segmentDistanceValue <= 0
+            ? 1
+            : Math.max(0, Math.min(1, remainingDistance / segmentDistanceValue));
+
+        return {
+          x: from.x + (to.x - from.x) * segmentProgress,
+          y: from.y + (to.y - from.y) * segmentProgress
+        };
+      }
+
+      return cameraPath[cameraPath.length - 1];
     }
 
     function supportsWorldActionMoveResult(moveResult) {
@@ -2381,7 +2554,8 @@
 
           const playerMove =
             playerLevelExitMoveForContinuation(moveResult) ||
-            playerSlideMoveForContinuation(moveResult);
+            playerSlideMoveForContinuation(moveResult) ||
+            (crossedLevel ? terminalPlayerMoveForWorldAction(moveResult) : null);
 
           if (!playerMove) {
             return null;
@@ -2403,6 +2577,26 @@
           worldPunchEvents.push(...punchData.punchEvents);
           worldPuncherVisuals.push(...punchData.puncherVisuals);
           punchSequenceBase = punchData.nextSequenceBase;
+
+          if (playerMove.toRemoved === true) {
+            if (!crossedLevel) {
+              return null;
+            }
+
+            const finalSnapshot = app.cloneLevelSnapshot();
+            queueWorldActionNeighborhood(rooms);
+            return {
+              finalLevelState: finalSnapshot,
+              player: { ...playerMove.actor, removed: false },
+              rooms,
+              startEntrySnapshot,
+              startLevelState: startSnapshot,
+              path: worldPath,
+              punchEvents: worldPunchEvents,
+              puncherVisuals: worldPuncherVisuals,
+              terminalPlayerRemoved: true
+            };
+          }
 
           const edgeTransition = continuationTransitionForMoveResult(moveResult, moveDx, moveDy);
 
@@ -2433,7 +2627,7 @@
             continueMove: true
           });
 
-          if (!transfer?.nextLevelState || transfer.entersHole) {
+          if (!transfer?.nextLevelState) {
             return null;
           }
 
@@ -2460,6 +2654,30 @@
             ],
             nextOffset
           );
+
+          if (transfer.entersHole) {
+            const finalLevelState = markWorldActionPlayerRemoved(
+              cloneWorldActionLevelState(transfer.nextLevelState)
+            );
+
+            rooms.push({
+              levelId: finalLevelState?.levelId || transfer.nextLevelState.levelId,
+              levelState: finalLevelState || transfer.nextLevelState,
+              offset: { ...nextOffset }
+            });
+            queueWorldActionNeighborhood(rooms);
+            return {
+              finalLevelState,
+              player: { ...(transfer.transferredPlayer || {}), removed: false },
+              rooms,
+              startEntrySnapshot,
+              startLevelState: startSnapshot,
+              path: worldPath,
+              punchEvents: worldPunchEvents,
+              puncherVisuals: worldPuncherVisuals,
+              terminalPlayerRemoved: true
+            };
+          }
 
           applyLevelState(transfer.nextLevelState, {
             deferRender: true,
@@ -2530,7 +2748,7 @@
       return Math.max(MOVE_DURATION_MS, segmentDuration(1, true));
     }
 
-    function worldActionTimelineFor(path, punchEvents) {
+    function worldActionTimelineFor(path, punchEvents, options = {}) {
       const totalDistance = pathDistanceFor({ path });
       const events = normalizedWorldPunchEvents(path, punchEvents);
       const steps = [];
@@ -2541,10 +2759,14 @@
 
       if (events.length === 0) {
         const duration = iceSlideDuration(totalDistance);
+        const terminalFallDuration =
+          options.terminalPlayerRemoved === true ? HOLE_FALL_DURATION_MS : 0;
 
         return {
-          durationMs: duration,
+          cameraStartDistance: 0,
+          durationMs: duration + terminalFallDuration,
           eventTimings,
+          pathEndMs: duration,
           steps: [
             {
               durationMs: duration,
@@ -2611,15 +2833,20 @@
       });
 
       pushPathStep(totalDistance);
+      const pathEndMs = cursorMs;
 
       const lastRetractEndMs = Array.from(eventTimings.values()).reduce(
         (latest, timing) => Math.max(latest, timing.retractEndMs),
         cursorMs
       );
+      const terminalFallDuration =
+        options.terminalPlayerRemoved === true ? HOLE_FALL_DURATION_MS : 0;
 
       return {
-        durationMs: Math.max(cursorMs, lastRetractEndMs),
+        cameraStartDistance: events[0]?.distance ?? 0,
+        durationMs: Math.max(pathEndMs + terminalFallDuration, lastRetractEndMs),
         eventTimings,
+        pathEndMs,
         steps,
         totalDistance
       };
@@ -2655,16 +2882,72 @@
       return worldActionPointAt(path, timeline.totalDistance);
     }
 
+    function worldActionDistanceAtTime(action, elapsedMs) {
+      const timeline = action?.timeline;
+
+      if (!timeline || !Array.isArray(timeline.steps) || timeline.steps.length === 0) {
+        return (timeline?.totalDistance ?? pathDistanceFor({ path: action?.path || [] })) *
+          (action?.progress || 0);
+      }
+
+      const clampedElapsed = Math.max(0, Math.min(timeline.durationMs, elapsedMs));
+
+      for (const step of timeline.steps) {
+        if (clampedElapsed > step.endMs && step !== timeline.steps[timeline.steps.length - 1]) {
+          continue;
+        }
+
+        if (step.kind === "punch_lunge") {
+          return step.distance;
+        }
+
+        const progress = step.durationMs <= 0
+          ? 1
+          : linearMotionProgress(clampedElapsed - step.startMs, step.durationMs);
+
+        return step.startDistance + (step.endDistance - step.startDistance) * progress;
+      }
+
+      return timeline.totalDistance;
+    }
+
+    function worldActionCameraPointAtTime(action, elapsedMs) {
+      const cameraPath = action?.cameraPath || [];
+
+      if (cameraPath.length === 0) {
+        return null;
+      }
+
+      const totalDistance = Math.max(
+        0.0001,
+        action?.timeline?.totalDistance ?? pathDistanceFor({ path: action?.path || [] })
+      );
+      const cameraStartDistance = Math.max(
+        0,
+        Math.min(totalDistance, Number(action?.timeline?.cameraStartDistance || 0))
+      );
+      const traveledDistance = worldActionDistanceAtTime(action, elapsedMs);
+      const cameraDistance = Math.max(0, traveledDistance - cameraStartDistance);
+      const cameraTravelDistance = Math.max(0.0001, totalDistance - cameraStartDistance);
+
+      return pointAlongCameraPath(cameraPath, cameraDistance / cameraTravelDistance);
+    }
+
     function startContinuousWorldActionAnimation(plan) {
       if (!plan || !Array.isArray(plan.path) || plan.path.length < 2) {
         return false;
       }
 
-      const timeline = worldActionTimelineFor(plan.path, plan.punchEvents);
+      const timeline = worldActionTimelineFor(plan.path, plan.punchEvents, {
+        terminalPlayerRemoved: plan.terminalPlayerRemoved === true
+      });
       const durationMs = timeline.durationMs;
       const elapsedForFrame = createAnimationElapsedTracker();
       const undoGroupId = beginMoveUndoGroup();
+      const cameraPath = worldActionCameraPathForRooms(plan.rooms);
       app.worldActionAnimation = {
+        cameraPath,
+        cameraPoint: cameraPath[0] || null,
         currentPoint: plan.path[0],
         elapsedMs: 0,
         puncherVisuals: plan.puncherVisuals || [],
@@ -2674,6 +2957,7 @@
         rooms: plan.rooms,
         stableWidth: Math.max(1, plan.rooms[0]?.levelState?.width || state.width),
         stableHeight: Math.max(1, plan.rooms[0]?.levelState?.height || state.height),
+        terminalPlayerRemoved: plan.terminalPlayerRemoved === true,
         timeline
       };
       app.isAnimating = true;
@@ -2705,11 +2989,17 @@
           app.worldActionAnimation,
           elapsedMs
         );
+        app.worldActionAnimation.cameraPoint = worldActionCameraPointAtTime(
+          app.worldActionAnimation,
+          elapsedMs
+        );
         app.worldActionAnimation.visualSignature = [
           Math.floor(elapsedMs / 16),
           Math.round(app.worldActionAnimation.currentPoint.x * 1000),
           Math.round(app.worldActionAnimation.currentPoint.y * 1000),
-          Math.round(app.worldActionAnimation.currentPoint.elevation * 1000)
+          Math.round(app.worldActionAnimation.currentPoint.elevation * 1000),
+          Math.round((app.worldActionAnimation.cameraPoint?.x || 0) * 1000),
+          Math.round((app.worldActionAnimation.cameraPoint?.y || 0) * 1000)
         ].join(":");
         app.render(now);
 
