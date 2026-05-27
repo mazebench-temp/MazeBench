@@ -1904,13 +1904,27 @@
             continue;
           }
 
-          if (
-            players.some(
-              (actor) => Math.abs(actor.x - x) + Math.abs(actor.y - y) <= 1
-            )
-          ) {
-            raised.add(posKey(x, y));
-          }
+          terrainLayersOfType(x, y, "player_gate").forEach((gateLayer) => {
+            const gateElevation = gateLayer.elevation ?? 0;
+            const sameLevelBlockOnGate = activeActors.some(
+              (actor) =>
+                !isPlayerActor(actor) &&
+                !isNonBlockingActor(actor) &&
+                actorElevation(actor) === gateElevation &&
+                actor.x === x &&
+                actor.y === y
+            );
+
+            if (
+              players.some(
+                (actor) =>
+                  Math.abs(actor.x - x) + Math.abs(actor.y - y) <= 1 &&
+                  (actorElevation(actor) !== gateElevation || !sameLevelBlockOnGate)
+              )
+            ) {
+              raised.add(posKey(x, y));
+            }
+          });
         }
       }
 

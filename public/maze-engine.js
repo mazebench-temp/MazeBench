@@ -1675,14 +1675,33 @@
       playerGateCells.forEach((gateCell) => {
         const x = cellX(gateCell);
         const y = cellY(gateCell);
+        const gateLayers = terrainLayersForCell(state, gateCell).filter(
+          (layer) => layer.type === terrainTypes.player_gate
+        );
 
-        if (
-          players.some(
-            (player) =>
-              Math.abs(state.actorX[player] - x) + Math.abs(state.actorY[player] - y) <= 1
-          )
-        ) {
-          raised.add(gateCell);
+        for (const gateLayer of gateLayers) {
+          const gateElevation = gateLayer.elevation ?? 0;
+          const sameLevelBlockOnGate =
+            actorAt(
+              state,
+              x,
+              y,
+              (actor) =>
+                !isPlayerActor(actor) &&
+                !isNonBlockingActor(actor) &&
+                actorElevation(state, actor) === gateElevation
+            ) !== -1;
+
+          if (
+            players.some(
+              (player) =>
+                Math.abs(state.actorX[player] - x) + Math.abs(state.actorY[player] - y) <= 1 &&
+                (actorElevation(state, player) !== gateElevation || !sameLevelBlockOnGate)
+            )
+          ) {
+            raised.add(gateCell);
+            return;
+          }
         }
       });
 
@@ -5563,16 +5582,7 @@
                   player
                 );
           const supportActor = isInitialStep ? pushableSupportActorUnderPlayer(state, player) : -1;
-          const supportPushActor =
-            blockingActor === -1 &&
-            supportActor !== -1 &&
-            !canTraverseSlope &&
-            !canEnterHole &&
-            !canStandAtTarget &&
-            !canSlipOffIce
-              ? supportActor
-              : -1;
-          const actorToPush = blockingActor !== -1 ? blockingActor : supportPushActor;
+          const actorToPush = blockingActor;
           const canAttemptInitialPush =
             actorToPush !== -1 && isInitialStep && isPushableActor(actorToPush);
           let pushedFollowPath = null;
@@ -5656,7 +5666,7 @@
             break;
           }
 
-          if (blockingActor !== -1 || supportPushActor !== -1) {
+          if (blockingActor !== -1) {
             let didMoveBlockingActor = false;
 
             if (canAttemptInitialPush) {

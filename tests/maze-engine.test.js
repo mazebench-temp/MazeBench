@@ -1751,6 +1751,25 @@ function createState(playData) {
 }
 
 {
+  const terrain = [[{ type: "floor" }, playerGateLayer(0), { type: "floor" }]];
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 0, removed: false },
+      { type: "box", x: 1, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0], state.actorElevation[0]], [1, 0, 0]);
+  assert.deepEqual([state.actorX[1], state.actorY[1], state.actorElevation[1]], [2, 0, 0]);
+}
+
+{
   const terrain = [[
     wallStack(1),
     {
@@ -3001,9 +3020,9 @@ function createState(playData) {
 
   const result = engine.move(state, 1, 0);
 
-  assert.equal(result.moved, true);
-  assert.deepEqual([state.actorX[0], state.actorY[0], state.actorElevation[0]], [1, 0, 2]);
-  assert.deepEqual([state.actorX[1], state.actorY[1], state.actorElevation[1]], [1, 0, 1]);
+  assert.equal(result.moved, false);
+  assert.deepEqual([state.actorX[0], state.actorY[0], state.actorElevation[0]], [0, 0, 2]);
+  assert.deepEqual([state.actorX[1], state.actorY[1], state.actorElevation[1]], [0, 0, 1]);
 }
 
 {
