@@ -5073,45 +5073,111 @@
       });
     }
 
-    function syncDynamicActorElevationsAndFalls(state, moves) {
+    function syncDynamicActorElevationsAndFalls(
+      state,
+      moves,
+      previousGateState = computeRaisedPlayerGateSet(state),
+      previousOrangeButtonsPressed = areOrangeButtonsPressed(state)
+    ) {
       const moveByActor = new Map(moves.map((move) => [move.actorIndex, move]));
       const originalElevations = new Int16Array(state.actorElevation);
       let gateState = computeRaisedPlayerGateSet(state);
       let orangeButtonsPressed = areOrangeButtonsPressed(state);
 
-      for (let iteration = 0; iteration < 4; iteration += 1) {
+      function dynamicTerrainSurfaceTransitionsAt(x, y, nextGateState, nextOrangeButtonsPressed) {
+        if (!isInsideBoard(x, y)) {
+          return [];
+        }
+
+        const cell = cellIndex(x, y);
+        return terrainLayersForCell(state, cell)
+          .map((layer) => ({
+            from: terrainLayerSurfaceHeight(
+              state,
+              cell,
+              layer,
+              previousGateState,
+              previousOrangeButtonsPressed
+            ),
+            to: terrainLayerSurfaceHeight(
+              state,
+              cell,
+              layer,
+              nextGateState,
+              nextOrangeButtonsPressed
+            )
+          }))
+          .filter(
+            (transition) =>
+              transition.from !== null &&
+              transition.to !== null &&
+              transition.from !== transition.to
+          );
+      }
+
+      function dynamicTerrainRideElevation(index, nextGateState, nextOrangeButtonsPressed) {
+        const elevation = actorElevation(state, index);
+        const hasActorSupport = actorSupportsElevation(
+          state,
+          state.actorX[index],
+          state.actorY[index],
+          elevation,
+          new Set([index]),
+          true
+        );
+
+        if (hasActorSupport) {
+          return elevation;
+        }
+
+        const transitions = dynamicTerrainSurfaceTransitionsAt(
+          state.actorX[index],
+          state.actorY[index],
+          nextGateState,
+          nextOrangeButtonsPressed
+        );
+
+        for (const transition of transitions) {
+          if (transition.from === elevation) {
+            return transition.to;
+          }
+        }
+
+        return elevation;
+      }
+
+      const maxDynamicElevationIterations = Math.max(4, actorCount);
+
+      for (let iteration = 0; iteration < maxDynamicElevationIterations; iteration += 1) {
         gateState = computeRaisedPlayerGateSet(state);
         orangeButtonsPressed = areOrangeButtonsPressed(state);
         let changed = false;
+        const iterationStartElevations = new Int16Array(state.actorElevation);
+        const changedSupportActors = new Set();
 
-        if (orangeWallCells.length > 0) {
-          for (let index = 0; index < actorCount; index += 1) {
-            if (!isPlayerActor(index) || state.actorRemoved[index]) {
-              continue;
-            }
-
-            const x = state.actorX[index];
-            const y = state.actorY[index];
-
-            if (!isOrangeWall(x, y)) {
-              continue;
-            }
-
-            const toElevation =
-              playerSurfaceHeightAt(
-                state,
-                x,
-                y,
-                gateState,
-                orangeButtonsPressed,
-                actorElevation(state, index)
-              ) ?? 0;
-
-            if (state.actorElevation[index] !== toElevation) {
-              state.actorElevation[index] = toElevation;
-              changed = true;
-            }
+        function setDynamicElevation(index, toElevation) {
+          if (state.actorElevation[index] === toElevation) {
+            return;
           }
+
+          state.actorElevation[index] = toElevation;
+          changed = true;
+
+          if (isSupportActorType(actorTypes[index])) {
+            changedSupportActors.add(index);
+          }
+        }
+
+        for (let index = 0; index < actorCount; index += 1) {
+          if (
+            state.actorRemoved[index] ||
+            actorTypes[index] === "weightless_box" ||
+            !isSupportActorType(actorTypes[index])
+          ) {
+            continue;
+          }
+
+          setDynamicElevation(index, dynamicTerrainRideElevation(index, gateState, orangeButtonsPressed));
         }
 
         const handledWeightlessGroups = new Set();
@@ -5145,11 +5211,36 @@
               (component.groupBaseOffsets.get(actorGroupIds[member]) ?? 0) +
               (weightlessRelativeElevations[member] || 0);
 
-            if (state.actorElevation[member] !== toElevation) {
-              state.actorElevation[member] = toElevation;
-              changed = true;
-            }
+            setDynamicElevation(member, toElevation);
           });
+        }
+
+        const propagationQueue = Array.from(changedSupportActors);
+        for (let queueIndex = 0; queueIndex < propagationQueue.length; queueIndex += 1) {
+          const lower = propagationQueue[queueIndex];
+          const lowerFromElevation = iterationStartElevations[lower] || 0;
+          const lowerToElevation = actorElevation(state, lower);
+
+          if (lowerFromElevation === lowerToElevation) {
+            continue;
+          }
+
+          for (let upper = 0; upper < actorCount; upper += 1) {
+            if (
+              upper === lower ||
+              state.actorRemoved[upper] ||
+              !isSupportActorType(actorTypes[upper]) ||
+              actorTypes[upper] === "weightless_box" ||
+              state.actorX[upper] !== state.actorX[lower] ||
+              state.actorY[upper] !== state.actorY[lower] ||
+              (iterationStartElevations[upper] || 0) !== lowerFromElevation + 1
+            ) {
+              continue;
+            }
+
+            setDynamicElevation(upper, lowerToElevation + 1);
+            propagationQueue.push(upper);
+          }
         }
 
         if (!changed) {
@@ -5188,33 +5279,20 @@
       }
 
       for (let index = 0; index < actorCount; index += 1) {
-        if (!isPlayerActor(index) || state.actorRemoved[index]) {
+        if (
+          state.actorRemoved[index] ||
+          actorTypes[index] === "weightless_box" ||
+          !isSupportActorType(actorTypes[index])
+        ) {
           continue;
         }
 
-        const x = state.actorX[index];
-        const y = state.actorY[index];
-
-        if (!isOrangeWall(x, y)) {
-          continue;
-        }
-
-        const toElevation =
-          playerSurfaceHeightAt(
-            state,
-            x,
-            y,
-            gateState,
-            orangeButtonsPressed,
-            actorElevation(state, index)
-          ) ?? 0;
-
+        const toElevation = actorElevation(state, index);
         if ((originalElevations[index] || 0) === toElevation) {
           continue;
         }
 
         ensureDynamicMove(index, toElevation);
-        state.actorElevation[index] = toElevation;
       }
 
       const handledWeightlessGroups = new Set();
@@ -6115,7 +6193,7 @@
           setPlayerLiftRaised(state, x, y, raised);
         });
         applyMoveFinalState(state, moves);
-        syncDynamicActorElevationsAndFalls(state, moves);
+        syncDynamicActorElevationsAndFalls(state, moves, raisedPlayerGates, orangeButtonsPressed);
         syncAttachedPunchersForMoves(
           state,
           moves,

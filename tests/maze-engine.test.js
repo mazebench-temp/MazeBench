@@ -1613,6 +1613,62 @@ function createState(playData) {
 }
 
 {
+  const terrain = floorTerrain(2, 2);
+  terrain[0][0] = { type: "orange_button" };
+  terrain[0][1] = { type: "orange_wall" };
+  const { engine, state } = createState({
+    width: 2,
+    height: 2,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, removed: false },
+      { type: "player", x: 1, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 0, 1);
+  const boxMove = result.moves.find((move) => move.actorIndex === 1);
+  const riderMove = result.moves.find((move) => move.actorIndex === 2);
+
+  assert.equal(result.moved, true);
+  assert.equal(state.actorElevation[1], 1);
+  assert.equal(state.actorElevation[2], 2);
+  assert.equal(boxMove.fromElevation, 0);
+  assert.equal(boxMove.toElevation, 1);
+  assert.equal(riderMove.fromElevation, 1);
+  assert.equal(riderMove.toElevation, 2);
+}
+
+{
+  const terrain = floorTerrain(2, 2);
+  terrain[0][1] = { type: "orange_wall" };
+  const { engine, state } = createState({
+    width: 2,
+    height: 2,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "orange_button", x: 0, y: 1, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 1, removed: false },
+      { type: "player", x: 1, y: 0, elevation: 2, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 0, 1);
+  const boxMove = result.moves.find((move) => move.actorIndex === 2);
+  const riderMove = result.moves.find((move) => move.actorIndex === 3);
+
+  assert.equal(result.moved, true);
+  assert.equal(state.actorElevation[2], 0);
+  assert.equal(state.actorElevation[3], 1);
+  assert.equal(boxMove.fromElevation, 1);
+  assert.equal(boxMove.toElevation, 0);
+  assert.equal(riderMove.fromElevation, 2);
+  assert.equal(riderMove.toElevation, 1);
+}
+
+{
   const terrain = floorTerrain(4, 1);
   terrain[0][0] = { type: "orange_wall" };
   terrain[0][1] = { type: "orange_wall" };
@@ -1781,6 +1837,62 @@ function createState(playData) {
   });
 
   assert.equal(engine.computeRaisedPlayerGateSet(state).has(engine.cellIndex(0, 0)), false);
+}
+
+{
+  const terrain = [[wallStack(1), wallStack(1), playerGateLayer(0)]];
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 0, removed: false },
+      { type: "box", x: 2, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const lowerMove = result.moves.find((move) => move.actorIndex === 1);
+  const riderMove = result.moves.find((move) => move.actorIndex === 2);
+
+  assert.equal(result.moved, true);
+  assert.equal(engine.computeRaisedPlayerGateSet(state).has(engine.cellIndex(2, 0)), true);
+  assert.equal(state.actorElevation[1], 1);
+  assert.equal(state.actorElevation[2], 2);
+  assert.equal(lowerMove.fromElevation, 0);
+  assert.equal(lowerMove.toElevation, 1);
+  assert.equal(riderMove.fromElevation, 1);
+  assert.equal(riderMove.toElevation, 2);
+}
+
+{
+  const terrain = [[wallStack(1), wallStack(1), playerGateLayer(0)]];
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 1, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 1, removed: false },
+      { type: "box", x: 2, y: 0, elevation: 2, removed: false }
+    ]
+  });
+
+  assert.equal(engine.computeRaisedPlayerGateSet(state).has(engine.cellIndex(2, 0)), true);
+
+  const result = engine.move(state, -1, 0);
+  const lowerMove = result.moves.find((move) => move.actorIndex === 1);
+  const riderMove = result.moves.find((move) => move.actorIndex === 2);
+
+  assert.equal(result.moved, true);
+  assert.equal(engine.computeRaisedPlayerGateSet(state).has(engine.cellIndex(2, 0)), false);
+  assert.equal(state.actorElevation[1], 0);
+  assert.equal(state.actorElevation[2], 1);
+  assert.equal(lowerMove.fromElevation, 1);
+  assert.equal(lowerMove.toElevation, 0);
+  assert.equal(riderMove.fromElevation, 2);
+  assert.equal(riderMove.toElevation, 1);
 }
 
 {
