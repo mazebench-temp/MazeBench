@@ -1,7 +1,7 @@
-# # # # # # . . . . # # # # # #
-# . . . . . . . p . g g g g g #
-# . . . . . . . . . g g g g g #
-# . . M0 . M1 . . . . g g g g g #
+#+sh #+sh # #+sh # # . . . . # # # # # #+sh
+#+sh . . . . . . . p . g g g g g #+sh
+# . . . . . . . . . g g g g g #+sh
+#+sh . . M0 . M1 . . . . g g g g g #
 # . . . . . . . . . g g g g g #
 # g g g g g g g g g g g g # # #
 # g g g g g g g g g g g g # . .
@@ -10,7 +10,7 @@
 # g g g g g g g g g g g g g . .
 # g g g g g g g g g g g g # # #
 # . . . . . . . . . g g g g g #
+# . . . . . . . . . g g g g g #+sh
 # . . . . . . . . . g g g g g #
 # . . . . . . . . . g g g g g #
-# . . . . . . . . . g g g g g #
-# # # # # # . . . . # # # # # #
+# # # #+sh # # . . . . # # # #+sh # #
