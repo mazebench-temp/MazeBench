@@ -185,6 +185,7 @@
       : "Fresh level. Paint something good.",
     messageTone: authorData.initialLevel.exists ? "success" : "warning",
     lastPaintTargetKey: null,
+    eraseGestureMode: null,
     hillClimbResults: [],
     hillClimbResultIndex: -1,
     paintDragPlane: null,
@@ -1472,6 +1473,47 @@
     );
   }
 
+  function eraseResultForTarget(target) {
+    if (!isInsideEditorCell(target.sourceX, target.sourceY)) {
+      return null;
+    }
+
+    const currentValue = state.cells[target.sourceY][target.sourceX];
+    const beforeTokens = getCellTokens(currentValue);
+    const nextValue =
+      target.sourceLayer === null || target.sourceLayer === undefined
+        ? eraseTopCellValue(currentValue)
+        : eraseCellElevationValue(currentValue, target.sourceLayer);
+
+    if (nextValue === currentValue) {
+      return null;
+    }
+
+    const afterTokens = getCellTokens(nextValue);
+    const changedIndex = beforeTokens.findIndex((token, index) => token !== afterTokens[index]);
+    const erasedToken = beforeTokens[
+      changedIndex >= 0 ? changedIndex : Math.max(0, beforeTokens.length - 1)
+    ];
+
+    return {
+      erasedToken,
+      mode: isBaseSurfaceToken(erasedToken) ? "base" : "nonBase",
+      nextValue
+    };
+  }
+
+  function canEraseInCurrentGesture(mode) {
+    if (!mode) {
+      return false;
+    }
+
+    if (!state.eraseGestureMode) {
+      return true;
+    }
+
+    return state.eraseGestureMode === "base" && mode === "base";
+  }
+
   function paintCell(x, y, value) {
     if (value === noopToken) {
       selectCell(x, y);
@@ -1774,17 +1816,14 @@
     }
 
     if (state.selectedToken === eraserToken) {
-      if (!isInsideEditorCell(target.sourceX, target.sourceY)) {
+      const eraseResult = eraseResultForTarget(target);
+
+      if (!eraseResult || !canEraseInCurrentGesture(eraseResult.mode)) {
         return false;
       }
 
-      updateCellValue(
-        target.sourceX,
-        target.sourceY,
-        target.sourceLayer === null || target.sourceLayer === undefined
-          ? eraseTopCellValue(state.cells[target.sourceY][target.sourceX])
-          : eraseCellElevationValue(state.cells[target.sourceY][target.sourceX], target.sourceLayer)
-      );
+      state.eraseGestureMode = eraseResult.mode;
+      updateCellValue(target.sourceX, target.sourceY, eraseResult.nextValue);
       return true;
     }
 
@@ -1886,7 +1925,17 @@
       return false;
     }
 
-    return paintGestureLayerForTarget(target) === state.paintDragPlane.layer;
+    const layer = paintGestureLayerForTarget(target);
+
+    if (layer !== state.paintDragPlane.layer) {
+      return false;
+    }
+
+    if (state.selectedToken === eraserToken) {
+      return canDragEraseFromTarget(target, layer);
+    }
+
+    return true;
   }
 
   function resizeLevel() {
@@ -3205,6 +3254,7 @@
 
     state.paintPointerId = event.pointerId;
     state.lastPaintTargetKey = null;
+    state.eraseGestureMode = null;
     state.paintDragPlane = paintDragPlaneForTarget(target);
     try {
       elements.grid.setPointerCapture?.(event.pointerId);
@@ -3230,6 +3280,7 @@
     if (state.paintPointerId === event.pointerId) {
       state.paintPointerId = null;
       state.lastPaintTargetKey = null;
+      state.eraseGestureMode = null;
       state.paintDragPlane = null;
       try {
         if (elements.grid.hasPointerCapture?.(event.pointerId)) {
