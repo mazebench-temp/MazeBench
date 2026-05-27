@@ -1917,9 +1917,17 @@
 
             if (
               players.some(
-                (actor) =>
-                  Math.abs(actor.x - x) + Math.abs(actor.y - y) <= 1 &&
-                  (actorElevation(actor) !== gateElevation || !sameLevelBlockOnGate)
+                (actor) => {
+                  const playerElevation = actorElevation(actor);
+                  const xyDistance = Math.abs(actor.x - x) + Math.abs(actor.y - y);
+                  const standingOnGate = xyDistance === 0 && playerElevation === gateElevation;
+
+                  return (
+                    xyDistance <= 1 &&
+                    !standingOnGate &&
+                    (playerElevation !== gateElevation || !sameLevelBlockOnGate)
+                  );
+                }
               )
             ) {
               raised.add(posKey(x, y));

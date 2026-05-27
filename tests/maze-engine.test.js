@@ -1770,6 +1770,20 @@ function createState(playData) {
 }
 
 {
+  const terrain = [[playerGateLayer(0)]];
+  const { engine, state } = createState({
+    width: 1,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  assert.equal(engine.computeRaisedPlayerGateSet(state).has(engine.cellIndex(0, 0)), false);
+}
+
+{
   const terrain = [[
     wallStack(1),
     {

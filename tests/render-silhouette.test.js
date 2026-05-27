@@ -173,6 +173,15 @@ function createRenderApp({ terrain, actors, playData = {}, collectedGemIds = [] 
 {
   const app = createRenderApp({
     terrain: buildPlayerGateTerrain(3, 3, 1, 1, 4),
+    actors: [{ type: "player", x: 1, y: 1, elevation: 4, removed: false }]
+  });
+
+  assert.equal(app.computeRaisedPlayerGateSet().has("1,1"), false);
+}
+
+{
+  const app = createRenderApp({
+    terrain: buildPlayerGateTerrain(3, 3, 1, 1, 4),
     actors: [{ type: "player", x: 0, y: 1, elevation: 9, removed: false }]
   });
 

@@ -1694,9 +1694,17 @@
 
           if (
             players.some(
-              (player) =>
-                Math.abs(state.actorX[player] - x) + Math.abs(state.actorY[player] - y) <= 1 &&
-                (actorElevation(state, player) !== gateElevation || !sameLevelBlockOnGate)
+              (player) => {
+                const playerElevation = actorElevation(state, player);
+                const xyDistance = Math.abs(state.actorX[player] - x) + Math.abs(state.actorY[player] - y);
+                const standingOnGate = xyDistance === 0 && playerElevation === gateElevation;
+
+                return (
+                  xyDistance <= 1 &&
+                  !standingOnGate &&
+                  (playerElevation !== gateElevation || !sameLevelBlockOnGate)
+                );
+              }
             )
           ) {
             raised.add(gateCell);
@@ -6289,6 +6297,7 @@
       cellCount,
       cellIndex,
       cloneState,
+      computeRaisedPlayerGateSet,
       copyStateInto,
       createStateBuffer,
       height,
