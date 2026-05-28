@@ -47,6 +47,7 @@ const authorData = {
       token: "b1",
       type: "block_asset"
     },
+    { imageUrl: null, label: "Player Gate", name: "player_gate", token: "g", type: "player_gate" },
     { imageUrl: null, initialRaised: false, label: "Player Lift l", name: "player_lift", token: "l", type: "player_lift" },
     { imageUrl: null, initialRaised: true, label: "Raised Player Lift", name: "player_lift", token: "L", type: "player_lift" },
     { imageUrl: null, label: "Orange Wall", name: "orange_wall", token: "O", type: "orange_wall" },
@@ -157,7 +158,11 @@ assert.equal(adapter.eraseCellElevationValue(".+++++W", 0), "+++++W");
 assert.equal(adapter.eraseCellElevationValue(".+W", 0), ".");
 assert.equal(adapter.eraseCellElevationValue(".", 0), "+");
 assert.equal(adapter.eraseCellElevationValue("B++B", 0), "++B");
-assert.equal(adapter.eraseCellElevationValue(".+l", 1), ".");
+assert.equal(adapter.eraseCellElevationValue(".+W+G+W", 1), ".+W++W");
+assert.equal(adapter.eraseCellElevationValue(".+W+l+W", 1), ".+W++W");
+assert.equal(adapter.eraseCellElevationValue(".+W+o+W", 1), ".+W++W");
+assert.equal(adapter.eraseCellElevationValue(".+W+g+W", 1), ".+W++W");
+assert.equal(adapter.eraseCellElevationValue(".+l", 0), ".");
 assert.equal(adapter.eraseCellElevationValue("W+l", 1), "W");
 assert.equal(adapter.eraseCellElevationValue(".+L", 0), ".");
 
@@ -190,9 +195,73 @@ assert.deepEqual(
   orangePlayData.actors.map((actor) => [actor.type, actor.x, actor.y, actor.elevation]),
   [
     ["orange_button", 1, 0, 0],
-    ["weightless_box", 1, 0, 0],
+    ["weightless_box", 1, 0, 1],
     ["orange_button", 2, 0, 0],
     ["orange_button", 3, 0, 1]
+  ]
+);
+
+const layerSeparatorSpecialTokenPlayData = adapter.buildPlayData({
+  cells: [[".+W+G+W", ".+W+l+W", ".+W+o+W", ".+W+g+W", ".+l", ".+o", ".+G", ".+g"]],
+  height: 1,
+  width: 8
+});
+
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.terrain[0][0].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.terrain[0][1].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["player_lift", 1],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.terrain[0][2].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.terrain[0][3].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["player_gate", 1],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.actors.map((actor) => [actor.type, actor.x, actor.elevation]),
+  [
+    ["gem", 0, 1],
+    ["orange_button", 2, 1],
+    ["orange_button", 5, 0],
+    ["gem", 6, 0]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.terrain[0][4].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["player_lift", 0]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorSpecialTokenPlayData.terrain[0][7].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["player_gate", 0]
   ]
 );
 

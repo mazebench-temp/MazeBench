@@ -286,6 +286,22 @@ function createMazeLevelService({
     return definitionType(definition) === "tree" ? 3 : isRaisedTerrainDefinition(definition) ? 1 : 0;
   }
 
+  // In maze level text, "+" is a layer separator. It advances the logical stack
+  // even for thin/non-blocking objects so later tokens do not share their layer.
+  function actorDefinitionLayerSlotHeight(definition) {
+    return isActorDefinition(definition) ? 1 : 0;
+  }
+
+  function terrainDefinitionLayerSlotHeight(definition) {
+    const type = definitionType(definition);
+
+    if (type === "floor" || type === "ice") {
+      return 0;
+    }
+
+    return Math.max(1, terrainDefinitionStackHeight(definition));
+  }
+
   function isSurfaceAttachmentDefinition(definition) {
     return definitionType(definition) === "orange_button";
   }
@@ -336,10 +352,8 @@ function createMazeLevelService({
           elevation
         });
 
-        if (isSupportActorDefinition(definition)) {
-          surfaceHeight = elevation + 1;
-          previousSurfaceTerrain = false;
-        }
+        surfaceHeight = elevation + actorDefinitionLayerSlotHeight(definition);
+        previousSurfaceTerrain = false;
 
         return;
       }
@@ -349,16 +363,17 @@ function createMazeLevelService({
       }
 
       const isRaisedTerrain = isRaisedTerrainDefinition(definition);
-      const stackHeight = terrainDefinitionStackHeight(definition);
+      const isBaseSurface = definitionType(definition) === "floor" || definitionType(definition) === "ice";
+      const stackHeight = terrainDefinitionLayerSlotHeight(definition);
       let elevation = Math.max(0, surfaceHeight ?? 0);
 
-      if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+      if (isBaseSurface && !isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
         elevation = surfaceHeight + 1;
       }
 
       terrainLayers.push(buildTerrainLayer(definition, elevation));
       surfaceHeight = elevation + stackHeight;
-      previousSurfaceTerrain = !isRaisedTerrain;
+      previousSurfaceTerrain = isBaseSurface;
     });
 
     const wallLayer = terrainLayers.find((layer) => layer.type === "wall") || null;

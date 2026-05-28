@@ -1,5 +1,5 @@
-+ + Sr I Sr I I I I+Su I Sl + + Sr I I
-+ + + + + Sr Sl Su + + + + + + + Su
++ + i+Sr i+I i+Sr i+I i+I i+I i+I+Su i+I i+Sl + + i+Sr i+I i+I
++ + + + + i+Sr i+Sl i+Su + + + + + + + i+Su
 + + .+# .+I .+I .+I .+I .+I .+I .+I .+I .+I .+Sl . . .+#
 + + .+I .++# .+I+I .+I+I .+I+I .+I+I .+I+I .+I+I .+I+I .+I+I .+#+# . .+p .
 + + .+I .++# .++I+# .++I+# .++I+# .++I+# .+I+I+I .+I+I+I .+I+I+I .+I+I+# .+I+I . . .
@@ -12,5 +12,5 @@
 + + .+I .++# .+I+I+Sr .+I+I+I .+I+I+I .+I+I+I .++I+# .++I+# .++I+# .++I+# .+I+Su . . .
 + + .+# .+I .+I .+I .+I .+I .+I .+I .+I .+I .+# . . .
 + + + + + + + + + + + + + + + +
-+ + + i i Sd I i+Sl i i i + + + + +
-+ i i Sr I+Sr I+I I I+Sr I+I i+I i+Sl i i + + +
++ + + i i i+Sd i+I i+Sl i i i + + + + +
++ i i i+Sr i+I+Sr i+I+I i+I i+I+Sr i+I+I i+I i+Sl i i + + +

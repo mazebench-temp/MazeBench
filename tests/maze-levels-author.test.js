@@ -23,6 +23,9 @@ const game = {
       floor: { token: "." },
       wall: { token: "#" },
       ice: { token: "i" },
+      gem: { token: "G" },
+      player_gate: { token: "g" },
+      player_lift: { token: "l" },
       orange_button: { token: "o", label: "Orange Button" },
       weightless_box: { token: "M0" },
       block_asset_1: {
@@ -185,6 +188,68 @@ assert.deepEqual(
     ["orange_button", 0, 0, 0],
     ["orange_button", 1, 0, 1],
     ["orange_button", 2, 0, 0]
+  ]
+);
+
+fs.writeFileSync(path.join(levelDir, "test-empty.txt"), ".+#+G+# .+#+l+# .+#+o+# .+#+g+# .+l .+o .+G .+g\n", "utf8");
+
+const layerSeparatorPlayState = service.getLevelState(game, game.worldMap.byPosition.get("level_AxA"));
+
+assert.deepEqual(
+  layerSeparatorPlayState.terrain[0][0].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorPlayState.terrain[0][1].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["player_lift", 1],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorPlayState.terrain[0][2].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorPlayState.terrain[0][3].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["wall", 0],
+    ["player_gate", 1],
+    ["wall", 2]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorPlayState.actors.map((actor) => [actor.type, actor.x, actor.elevation]),
+  [
+    ["gem", 0, 1],
+    ["orange_button", 2, 1],
+    ["orange_button", 5, 0],
+    ["gem", 6, 0]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorPlayState.terrain[0][4].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["player_lift", 0]
+  ]
+);
+assert.deepEqual(
+  layerSeparatorPlayState.terrain[0][7].layers.map((layer) => [layer.type, layer.elevation]),
+  [
+    ["floor", 0],
+    ["player_gate", 0]
   ]
 );
 

@@ -96,6 +96,20 @@
         .filter(Boolean);
     }
 
+    // In maze level text, "+" is a layer separator. Even thin or non-blocking
+    // tokens still reserve their written layer so later tokens stack above them.
+    function actorToolLayerSlotHeight(tool) {
+      return isActorTool(tool) ? 1 : 0;
+    }
+
+    function terrainToolLayerSlotHeight(tool) {
+      if (isBaseSurfaceTool(tool)) {
+        return 0;
+      }
+
+      return Math.max(1, terrainToolStackHeight(tool));
+    }
+
     function cellStackMetadata(tokens) {
       const entries = [];
       let surfaceHeight = null;
@@ -129,25 +143,24 @@
           const elevation = Math.max(0, surfaceHeight ?? 0);
           entries.push({ elevation, index, isAir: false, token, tool });
 
-          if (isSupportActorTool(tool)) {
-            surfaceHeight = elevation + 1;
-            previousSurfaceTerrain = false;
-          }
+          surfaceHeight = elevation + actorToolLayerSlotHeight(tool);
+          previousSurfaceTerrain = false;
 
           return;
         }
 
         const isRaisedTerrain = isRaisedTerrainTool(tool);
-        const stackHeight = terrainToolStackHeight(tool);
+        const isBaseSurface = isBaseSurfaceTool(tool);
+        const stackHeight = terrainToolLayerSlotHeight(tool);
         let elevation = Math.max(0, surfaceHeight ?? 0);
 
-        if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+        if (isBaseSurface && !isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
           elevation = surfaceHeight + 1;
         }
 
         entries.push({ elevation, index, isAir: false, token, tool });
         surfaceHeight = elevation + stackHeight;
-        previousSurfaceTerrain = !isRaisedTerrain;
+        previousSurfaceTerrain = isBaseSurface;
       });
 
       return {
@@ -162,8 +175,8 @@
       }
 
       return isActorTool(entry.tool)
-        ? isSupportActorTool(entry.tool)
-        : isRaisedTerrainTool(entry.tool);
+        ? actorToolLayerSlotHeight(entry.tool) > 0
+        : terrainToolLayerSlotHeight(entry.tool) > 0;
     }
 
     function trimTrailingAirTokens(tokens) {
@@ -385,14 +398,21 @@
             previousSurfaceTerrain = false;
           }
 
+          surfaceHeight = Math.max(
+            surfaceHeight ?? actorElevation,
+            actorElevation + actorToolLayerSlotHeight(tool)
+          );
+          previousSurfaceTerrain = false;
+
           continue;
         }
 
         const isRaisedTerrain = isRaisedTerrainTool(tool);
-        const stackHeight = terrainToolStackHeight(tool);
+        const isBaseSurface = isBaseSurfaceTool(tool);
+        const stackHeight = terrainToolLayerSlotHeight(tool);
         let terrainElevation = Math.max(0, surfaceHeight ?? 0);
 
-        if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+        if (isBaseSurface && !isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
           terrainElevation = surfaceHeight + 1;
         }
 
@@ -403,7 +423,7 @@
         }
 
         surfaceHeight = supportHeight;
-        previousSurfaceTerrain = !isRaisedTerrain;
+        previousSurfaceTerrain = isBaseSurface;
       }
 
       if (insertionIndex === -1) {
@@ -477,25 +497,24 @@
             tool
           });
 
-          if (isSupportActorTool(tool)) {
-            surfaceHeight = elevation + 1;
-            previousSurfaceTerrain = false;
-          }
+          surfaceHeight = elevation + actorToolLayerSlotHeight(tool);
+          previousSurfaceTerrain = false;
 
           return;
         }
 
         const isRaisedTerrain = isRaisedTerrainTool(tool);
-        const stackHeight = terrainToolStackHeight(tool);
+        const isBaseSurface = isBaseSurfaceTool(tool);
+        const stackHeight = terrainToolLayerSlotHeight(tool);
         let elevation = Math.max(0, surfaceHeight ?? 0);
 
-        if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+        if (isBaseSurface && !isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
           elevation = surfaceHeight + 1;
         }
 
         terrainLayers.push(buildTerrainLayer(tool, elevation));
         surfaceHeight = elevation + stackHeight;
-        previousSurfaceTerrain = !isRaisedTerrain;
+        previousSurfaceTerrain = isBaseSurface;
       });
 
       const wallLayer = terrainLayers.find((layer) => layer.type === "wall") || null;
