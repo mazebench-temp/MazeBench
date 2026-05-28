@@ -670,7 +670,10 @@
         (entry) => !entry.isAir && entry.index > matchingEntry.index
       );
 
-      if (hasNonAirAbove && stackEntryCreatesElevationSlot(matchingEntry)) {
+      if (
+        hasNonAirAbove &&
+        (stackEntryCreatesElevationSlot(matchingEntry) || isBaseSurfaceTool(matchingEntry.tool))
+      ) {
         tokens[matchingEntry.index] = "";
       } else {
         tokens.splice(matchingEntry.index, 1);
