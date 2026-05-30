@@ -3620,6 +3620,51 @@ function createState(playData) {
 }
 
 {
+  const terrain = [[{ type: "floor" }, { type: "hole" }, { type: "hole" }]];
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 0, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const playerMove = result.moves.find((move) => move.actorIndex === 0);
+
+  assert.equal(result.moved, true);
+  assert.equal(state.actorRemoved[0], 1);
+  assert.equal(playerMove.toRemoved, true);
+}
+
+{
+  const terrain = [[{ type: "floor" }, { type: "floor" }, { type: "hole" }, { type: "hole" }]];
+  const { engine, state } = createState({
+    width: 4,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: 0, removed: false },
+      { type: "puncher", direction: "right", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 0, removed: false },
+      { type: "box", x: 2, y: 0, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+  const riderMove = result.moves.find((move) => move.actorIndex === 3);
+
+  assert.equal(result.moved, true);
+  assert.equal(state.actorRemoved[3], 1);
+  assert.equal(riderMove.fromElevation, 1);
+  assert.equal(riderMove.toElevation, 0);
+  assert.equal(riderMove.toRemoved, true);
+}
+
+{
   const terrain = floorTerrain(4, 1);
   terrain[0][2] = { type: "hole" };
   const { engine, state } = createState({
