@@ -10,7 +10,7 @@ i . . .+ .+Sr .+I+Sr .+I+I+Sr .+I+I+I .+++I .+++I .+I+I+I . .+ .+#+# + +
 I i+I+Sr i+I+I I I i+#+Sr i+#+Sl .+# .+ .+ .+#+# #+# #+# #+# i+I+Sl i+Sl
 I i+Sl i+Su I Sl + i+Su .+# .+ .+ .+#+# # # # Sl I
 I+I i+Sd + I Sd + + .+# .+ .+ .+#+# # #+G # Sl i+
-I+Su i+I # # # i+Sl + .+# .+ .+ .+#+# # # # Sl i+
-I i+Su # #+G # i+Sl + .+#+Sd .+ .+ .+#+# # I Su I I
-Su i+Sr # # # i+Sl + .+#+Su .+ .+ .+#+# #++Sr I+I+Sl I I i+
-I+Sd + i+Su i+Su i+Su + + .+# .+ .+ .+#+# # Su i+ i+ I
+I+Su i+I # # # i+Sl + .+# .+ .+ .+#+#+Sd # # # Sl i+
+I i+Su # #+G # i+Sl + .+#+Sd .+ .+ .+#+#+# # I Su I I
+Su i+Sr # # # i+Sl + .+#+Su .+ .+ .+#+#+# #++Sr I+I+Sl I I i+
+I+Sd + i+Su i+Su i+Su + + .+# .+ .+ .+#+#+# # Su i+ i+ I
