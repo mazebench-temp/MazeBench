@@ -282,7 +282,9 @@
               state.actorX[index],
               state.actorY[index],
               gateState,
-              orangeButtonsPressed
+              orangeButtonsPressed,
+              null,
+              new Set([index])
             ) ?? 0;
         }
       }
@@ -1464,7 +1466,7 @@
           continue;
         }
 
-        if (!includePlayers && isPlayerActor(index)) {
+        if (!includePlayers && isMainPlayerActor(index)) {
           continue;
         }
 
@@ -1742,7 +1744,8 @@
       y,
       gateState,
       orangeButtonsPressed = areOrangeButtonsPressed(state),
-      currentElevation = null
+      currentElevation = null,
+      ignoredActors = null
     ) {
       if (
         Number.isInteger(currentElevation) &&
@@ -1759,7 +1762,7 @@
       }
 
       const heights = terrainSurfaceHeightsAt(state, x, y, gateState, orangeButtonsPressed).concat(
-        actorSupportSurfaceHeightsAt(state, x, y, null, false)
+        actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, false)
       );
 
       return heights.length > 0 ? Math.max(...heights) : null;
@@ -3058,6 +3061,44 @@
       return true;
     }
 
+    function clusterHasSupportedMemberAfterStep(
+      state,
+      members,
+      step,
+      gateState,
+      orangeButtonsPressed,
+      predictedSupports = null
+    ) {
+      const memberSet = new Set(members);
+
+      return members.some((member) => {
+        const targetX = state.actorX[member] + step.dx;
+        const targetY = state.actorY[member] + step.dy;
+        const targetElevation = actorElevation(state, member) + step.elevation;
+
+        return (
+          terrainSupportsElevation(
+            state,
+            targetX,
+            targetY,
+            targetElevation,
+            gateState,
+            orangeButtonsPressed
+          ) ||
+          actorSupportSurfaceHeightsAt(state, targetX, targetY, memberSet, true).includes(
+            targetElevation
+          ) ||
+          predictedSupportsElevation(
+            predictedSupports,
+            targetX,
+            targetY,
+            targetElevation,
+            memberSet
+          )
+        );
+      });
+    }
+
     function weightlessClusterStep(
       state,
       members,
@@ -3675,6 +3716,20 @@
             occupiedSnapshot.forEach((key) => occupied.add(key));
             moves.length = moveCount;
           }
+          break;
+        }
+
+        if (
+          actorType === "clone" &&
+          !clusterHasSupportedMemberAfterStep(
+            state,
+            members,
+            step,
+            gateState,
+            orangeButtonsPressed,
+            predictedSupports
+          )
+        ) {
           break;
         }
 
@@ -5735,6 +5790,16 @@
 
     function sortPlayersForMove(state, dx, dy) {
       const players = [];
+      const moveOrderElevation = (actorIndex) => {
+        if (!isCloneActor(actorIndex)) {
+          return actorElevation(state, actorIndex);
+        }
+
+        return cloneGroupMembers(state, actorGroupIds[actorIndex]).reduce(
+          (lowest, member) => Math.min(lowest, actorElevation(state, member)),
+          Infinity
+        );
+      };
 
       for (let index = 0; index < actorCount; index += 1) {
         if (isPlayerActor(index) && !state.actorRemoved[index]) {
@@ -5744,15 +5809,31 @@
 
       const sortedPlayers = players.sort((left, right) => {
         if (dx > 0) {
-          return state.actorX[right] - state.actorX[left] || state.actorY[left] - state.actorY[right];
+          return (
+            state.actorX[right] - state.actorX[left] ||
+            state.actorY[left] - state.actorY[right] ||
+            moveOrderElevation(left) - moveOrderElevation(right)
+          );
         }
         if (dx < 0) {
-          return state.actorX[left] - state.actorX[right] || state.actorY[left] - state.actorY[right];
+          return (
+            state.actorX[left] - state.actorX[right] ||
+            state.actorY[left] - state.actorY[right] ||
+            moveOrderElevation(left) - moveOrderElevation(right)
+          );
         }
         if (dy > 0) {
-          return state.actorY[right] - state.actorY[left] || state.actorX[left] - state.actorX[right];
+          return (
+            state.actorY[right] - state.actorY[left] ||
+            state.actorX[left] - state.actorX[right] ||
+            moveOrderElevation(left) - moveOrderElevation(right)
+          );
         }
-        return state.actorY[left] - state.actorY[right] || state.actorX[left] - state.actorX[right];
+        return (
+          state.actorY[left] - state.actorY[right] ||
+          state.actorX[left] - state.actorX[right] ||
+          moveOrderElevation(left) - moveOrderElevation(right)
+        );
       });
       const seenCloneGroups = new Set();
 

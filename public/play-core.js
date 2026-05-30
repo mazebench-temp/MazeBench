@@ -1932,7 +1932,7 @@
         y,
         (actor) =>
           !ignoredActors?.has(actor) &&
-          (includePlayers || !isPlayerActor(actor)) &&
+          (includePlayers || !isMainPlayerActor(actor)) &&
           (actor.type === "box" ||
             actor.type === "floating_floor" ||
             actor.type === "weightless_box" ||
@@ -1954,10 +1954,11 @@
       x,
       y,
       gateState = app.liveRaisedPlayerGates,
-      orangeWallState = app.liveRaisedOrangeWalls
+      orangeWallState = app.liveRaisedOrangeWalls,
+      ignoredActors = null
     ) {
       const heights = terrainSurfaceHeightsAt(x, y, gateState, orangeWallState).concat(
-        actorSupportSurfaceHeightsAt(x, y, null, false)
+        actorSupportSurfaceHeightsAt(x, y, ignoredActors, false)
       );
 
       return heights.length > 0 ? Math.max(...heights) : null;
@@ -2727,7 +2728,9 @@
           return;
         }
 
-        const elevation = playerSurfaceHeightAt(actor.x, actor.y, gateState, orangeWallState) ?? 0;
+        const elevation =
+          playerSurfaceHeightAt(actor.x, actor.y, gateState, orangeWallState, new Set([actor])) ??
+          0;
         actor.elevation = elevation;
         actor.renderElevation = elevation;
       });
