@@ -2763,7 +2763,15 @@
       const cameraDirection = new THREE.Vector3();
       camera.getWorldDirection(cameraDirection);
       const depthRange = Math.max(0, Number(camera.far || 0) - Number(camera.near || 0));
-      const depthScaledBias = Math.min(unit * 0.11, depthRange * 0.00022);
+      const maxScaledBias =
+        app.isFlyoverMode && app.flyoverWholeWorld === true
+          ? unit * 0.028
+          : unit * 0.11;
+      const depthScale =
+        app.isFlyoverMode && app.flyoverWholeWorld === true
+          ? 0.00002
+          : 0.00022;
+      const depthScaledBias = Math.min(maxScaledBias, depthRange * depthScale);
       const edgeBias = Math.max(edgeDepthBias, depthScaledBias);
 
       edgeScene.children.forEach((child) => {
@@ -7355,7 +7363,6 @@
           app.boardRect.width,
           app.boardRect.height,
           edgeOutlinesEnabled() ? "edges:on" : "edges:off",
-          `big-play:${app.bigPlayMode === true ? 1 : 0}`,
           animationSignature(now),
           flyoverFadeAnimationSignature(now),
           transition ? "transition" : "no-transition",
@@ -7376,9 +7383,7 @@
         animationSignature(now),
         floatingFloorAnimationSignature(now),
         flyoverFadeAnimationSignature(now),
-        app.isFlyoverMode
-          ? `big-play:${app.bigPlayMode === true ? 1 : 0}`
-          : "no-flyover-selection",
+        app.isFlyoverMode ? "flyover-selection" : "no-flyover-selection",
         transition
           ? [
               transition.kind,
@@ -7938,26 +7943,21 @@
     }
 
     function flyoverFocusedFitOptions(focusedFrame, bounds, roomWidth, roomHeight) {
-      const focusPaddingMultiplier = app.bigPlayMode === true ? 1.2 : 0.85;
-      const distanceMultiplier = app.bigPlayMode === true ? 3.25 : 2.35;
+      const focusPaddingMultiplier = 0.85;
+      const distanceMultiplier = 2.35;
       const paddingX = roomWidth * focusPaddingMultiplier;
       const paddingZ = roomHeight * focusPaddingMultiplier;
       const focusWidth = focusedFrame.maxX - focusedFrame.minX + paddingX * 2;
       const focusHeight = focusedFrame.maxZ - focusedFrame.minZ + paddingZ * 2;
       const focusSpan = Math.max(focusWidth, focusHeight, oneLayerCameraWorldHeight(), unit);
-      const worldCenterX = (bounds.minX + bounds.maxX) / 2;
-      const worldCenterZ = (bounds.minZ + bounds.maxZ) / 2;
-      const bigPlayWorldBlend = app.bigPlayMode === true ? 0.34 : 0;
-      const centerX = lerp(focusedFrame.centerX, worldCenterX, bigPlayWorldBlend);
-      const centerZ = lerp(focusedFrame.centerZ, worldCenterZ, bigPlayWorldBlend);
 
       return {
         minX: focusedFrame.minX - paddingX,
         maxX: focusedFrame.maxX + paddingX,
         minZ: focusedFrame.minZ - paddingZ,
         maxZ: focusedFrame.maxZ + paddingZ,
-        centerX,
-        centerZ,
+        centerX: focusedFrame.centerX,
+        centerZ: focusedFrame.centerZ,
         centerY: 0,
         stableHeight: oneLayerCameraWorldHeight(),
         fixedCameraDistance: focusSpan * distanceMultiplier + unit * 3
@@ -7998,9 +7998,24 @@
       ].join(":");
     }
 
-    function interpolateFlyoverFitOptions(fromOptions, toOptions, progress) {
+    function interpolateFlyoverFitOptions(fromOptions, toOptions, progress, options = {}) {
       const eased = smootherStep(progress);
       const lerpField = (field) => lerp(Number(fromOptions[field]) || 0, Number(toOptions[field]) || 0, eased);
+      const positiveNumber = (value, fallback) => {
+        const number = Number(value);
+
+        return Number.isFinite(number) && number > 0 ? number : fallback;
+      };
+      const fixedCameraDistance =
+        options.easeEffectiveScale === true
+          ? lerp(
+              positiveNumber(fromOptions.fixedCameraDistance, 0) /
+                positiveNumber(options.fromZoom, 1),
+              positiveNumber(toOptions.fixedCameraDistance, 0) /
+                positiveNumber(options.toZoom, 1),
+              eased
+            ) * positiveNumber(debugCameraZoom, 1)
+          : lerpField("fixedCameraDistance");
 
       return {
         minX: lerpField("minX"),
@@ -8011,7 +8026,7 @@
         centerY: lerpField("centerY"),
         centerZ: lerpField("centerZ"),
         stableHeight: lerpField("stableHeight"),
-        fixedCameraDistance: lerpField("fixedCameraDistance")
+        fixedCameraDistance
       };
     }
 
@@ -8031,7 +8046,11 @@
         ? flyoverFocusedFitOptions(toFrame, bounds, roomWidth, roomHeight)
         : defaultOptions;
 
-      return interpolateFlyoverFitOptions(fromOptions, toOptions, active.progress);
+      return interpolateFlyoverFitOptions(fromOptions, toOptions, active.progress, {
+        easeEffectiveScale: app.flyoverFocusTransitionEasesScale === true,
+        fromZoom: active.transition.fromZoom,
+        toZoom: active.transition.toZoom
+      });
     }
 
     function flyoverLevelFrame(levelId) {
@@ -9237,7 +9256,7 @@
             offsetZ: 0,
             role: "flyover-current",
             brightness: flyoverCurrentLevelBrightness(),
-            hidePlayers: app.bigPlayMode === true ? false : true
+            hidePlayers: true
           }, () => {
             addTerrainRegions(now);
             renderActorsForCurrentContext(now);

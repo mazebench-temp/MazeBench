@@ -61,6 +61,8 @@
   const zoomStep = 1.18;
   const minZoom = 0.55;
   const maxZoom = 10;
+  const selectionCameraTilt = Math.PI / 3;
+  const selectionCameraZoom = 3;
   const cameraHoldRampMs = 200;
   const cameraEaseSeconds = 0.12;
   const cameraMaxRates = {
@@ -91,6 +93,7 @@
   app.horizontalNeighborLoadConcurrency = 12;
   app.flyoverWholeWorld = true;
   app.flyoverWholeWorldReady = false;
+  app.flyoverFocusTransitionEasesScale = true;
   app.flyoverSceneVersion = 0;
   app.flyoverSelectedLevelId = "";
   app.flyoverFocusedLevelId = "";
@@ -99,6 +102,8 @@
   app.flyoverRenderableFlushId = 0;
   let selectionPanel = null;
   let selectionPreviousForwardEnabled = null;
+  let selectionPreviousCameraTilt = null;
+  let selectionPreviousCameraZoom = null;
   const selectionOrbit = {
     pausedUntilMs: 0,
     radiansPerSecond: (Math.PI * 2) / 20
@@ -198,21 +203,37 @@
     }
 
     if (control === "tilt-up") {
+      if (isSelectionCameraControlLocked(control)) {
+        return false;
+      }
+
       camera.tilt = Math.max(minTilt, camera.tilt - tiltStep * stepScale);
       return true;
     }
 
     if (control === "tilt-down") {
+      if (isSelectionCameraControlLocked(control)) {
+        return false;
+      }
+
       camera.tilt = Math.min(maxTilt, camera.tilt + tiltStep * stepScale);
       return true;
     }
 
     if (control === "zoom-in") {
+      if (isSelectionCameraControlLocked(control)) {
+        return false;
+      }
+
       camera.zoom = Math.min(maxZoom, camera.zoom * Math.pow(zoomStep, stepScale));
       return true;
     }
 
     if (control === "zoom-out") {
+      if (isSelectionCameraControlLocked(control)) {
+        return false;
+      }
+
       camera.zoom = Math.max(minZoom, camera.zoom / Math.pow(zoomStep, stepScale));
       return true;
     }
@@ -221,6 +242,11 @@
   }
 
   function applyHeldCameraControls(elapsedSeconds, now) {
+    if (isSelectionCameraLocked()) {
+      stopHeldSelectionFixedControls();
+      camera.tilt = selectionCameraTilt;
+    }
+
     const targetVelocity = {
       yaw: 0,
       tilt: 0,
@@ -370,7 +396,12 @@
     }
 
     function step(animate = true, scale = 1) {
-      nudgeCameraControl(control, scale);
+      const changed = nudgeCameraControl(control, scale);
+
+      if (!changed) {
+        return;
+      }
+
       applyCamera(animate);
       app.render();
     }
@@ -385,6 +416,12 @@
     });
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) {
+        return;
+      }
+
+      if (isSelectionCameraControlLocked(control)) {
+        event.preventDefault();
+        stop();
         return;
       }
 
@@ -589,7 +626,7 @@
 
     if (playButton) {
       playButton.onclick = () => {
-        window.location.href = `/big-play/${encodeURIComponent(playData.gameId)}/${encodeURIComponent(levelId)}`;
+        window.location.href = `/play/${encodeURIComponent(playData.gameId)}/${encodeURIComponent(levelId)}`;
       };
     }
 
@@ -598,13 +635,46 @@
     }
   }
 
-  function startFocusTransition(toLevelId, durationMs = 900) {
+  function startFocusTransition(toLevelId, durationMs = 900, options = {}) {
     app.flyoverFocusTransition = {
       fromLevelId: app.flyoverFocusedLevelId || "",
       toLevelId: toLevelId || "",
       startMs: performance.now(),
       durationMs
     };
+
+    if (Number.isFinite(options.fromZoom)) {
+      app.flyoverFocusTransition.fromZoom = options.fromZoom;
+    }
+
+    if (Number.isFinite(options.toZoom)) {
+      app.flyoverFocusTransition.toZoom = options.toZoom;
+    }
+  }
+
+  function isZoomCameraControl(control) {
+    return control === "zoom-in" || control === "zoom-out";
+  }
+
+  function isTiltCameraControl(control) {
+    return control === "tilt-up" || control === "tilt-down";
+  }
+
+  function isSelectionCameraLocked() {
+    return Boolean(app.flyoverSelectedLevelId);
+  }
+
+  function isSelectionCameraControlLocked(control) {
+    return isSelectionCameraLocked() && (isZoomCameraControl(control) || isTiltCameraControl(control));
+  }
+
+  function stopHeldSelectionFixedControls() {
+    heldCameraControls.delete("tilt-up");
+    heldCameraControls.delete("tilt-down");
+    heldCameraControls.delete("zoom-in");
+    heldCameraControls.delete("zoom-out");
+    cameraVelocity.tilt = 0;
+    cameraVelocity.zoom = 0;
   }
 
   function clearFlyoverSelection(options = {}) {
@@ -612,7 +682,19 @@
       return;
     }
 
-    startFocusTransition("", 620);
+    const targetTilt =
+      selectionPreviousCameraTilt !== null
+        ? Math.max(minTilt, Math.min(maxTilt, selectionPreviousCameraTilt))
+        : camera.tilt;
+    const targetZoom =
+      selectionPreviousCameraZoom !== null
+        ? Math.max(minZoom, Math.min(maxZoom, selectionPreviousCameraZoom))
+        : camera.zoom;
+
+    startFocusTransition("", 620, {
+      fromZoom: camera.zoom,
+      toZoom: targetZoom
+    });
     app.flyoverSelectedLevelId = "";
     app.flyoverFocusedLevelId = "";
     selectionOrbit.pausedUntilMs = 0;
@@ -624,8 +706,18 @@
       selectionPreviousForwardEnabled = null;
     }
 
+    if (selectionPreviousCameraTilt !== null) {
+      camera.tilt = targetTilt;
+      selectionPreviousCameraTilt = null;
+    }
+
+    if (selectionPreviousCameraZoom !== null) {
+      camera.zoom = targetZoom;
+      selectionPreviousCameraZoom = null;
+    }
+
     if (options.animate !== false) {
-      applyCamera(true, 420);
+      applyCamera(true, 620);
     }
 
     app.render();
@@ -636,22 +728,36 @@
       return;
     }
 
+    const wasSelectionActive = Boolean(app.flyoverSelectedLevelId);
+
     if (selectionPreviousForwardEnabled === null) {
       selectionPreviousForwardEnabled = flight.forwardEnabled;
+    }
+
+    if (selectionPreviousCameraZoom === null) {
+      selectionPreviousCameraZoom = camera.zoom;
+    }
+
+    if (selectionPreviousCameraTilt === null) {
+      selectionPreviousCameraTilt = camera.tilt;
     }
 
     flight.forwardEnabled = false;
     flightVelocity.xRoomsPerSecond = 0;
     flightVelocity.zRoomsPerSecond = 0;
     heldFlightControls.clear();
+    stopHeldSelectionFixedControls();
     app.flyoverSelectedLevelId = pick.levelId;
-    startFocusTransition(pick.levelId, 920);
+    startFocusTransition(pick.levelId, 920, {
+      fromZoom: wasSelectionActive ? camera.zoom : selectionPreviousCameraZoom ?? camera.zoom,
+      toZoom: selectionCameraZoom
+    });
     app.flyoverFocusedLevelId = pick.levelId;
     selectionOrbit.pausedUntilMs = performance.now() + 920;
-    camera.tilt = Math.min(maxTilt, Math.max(camera.tilt, Math.PI * 0.14));
-    camera.zoom = Math.max(minZoom, Math.min(maxZoom, camera.zoom));
+    camera.tilt = selectionCameraTilt;
+    camera.zoom = selectionCameraZoom;
     updateSelectionPanel(pick);
-    applyCamera(true, 680);
+    applyCamera(true, 920);
     app.render();
   }
 
@@ -1443,6 +1549,12 @@
     const control = cameraControlForKey(key);
 
     if (!control) {
+      return;
+    }
+
+    if (isSelectionCameraControlLocked(control)) {
+      event.preventDefault();
+      stopHeldSelectionFixedControls();
       return;
     }
 

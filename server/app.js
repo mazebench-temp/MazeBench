@@ -25,7 +25,6 @@ const PUBLIC_FILE_ROUTES = new Map(
   [
     "/styles.css",
     "/play.js",
-    "/big-play.js",
     "/play-rules.js",
     "/play-core.js",
     "/play-render-effects.js",
@@ -251,7 +250,6 @@ function sendFile(response, filePath, contentType) {
 
 const {
   renderAuthorPage,
-  renderBigPlayPage,
   renderFlyoverPage,
   renderGamePage,
   renderHomePage,
@@ -288,7 +286,6 @@ const { handleRequest } = createRequestRouter({
   publicFileRoutes: PUBLIC_FILE_ROUTES,
   readJsonBody,
   renderAuthorPage,
-  renderBigPlayPage,
   renderFlyoverPage,
   renderGamePage,
   renderHomePage,
