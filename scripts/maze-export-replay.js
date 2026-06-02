@@ -36,6 +36,7 @@ Options:
   --height <px>        Output video height. Default: 1080.
   --fps <n>            Video frames per second. Default: 60.
   --fast               Capture only settled states, not animation tweens.
+  --draft              Lower replay DPR and disable effects for faster capture.
   --move-speed <n>     Movement animation speed multiplier. Default: 5.
   --camera-speed <n>   Camera animation speed multiplier. Default: 2.
   --speed <n>          Uniform speed multiplier for movement and camera.
@@ -87,6 +88,10 @@ function parseCli(argv) {
       options.fast = true;
     } else if (arg === "--no-fast") {
       options.fast = false;
+    } else if (arg === "--draft" || arg === "--draft-render") {
+      options.draft = true;
+    } else if (arg === "--no-draft") {
+      options.draft = false;
     } else if (arg === "--speed") {
       const speed = Number(next());
       options.cameraSpeed = speed;
@@ -135,6 +140,7 @@ function defaultReplayOptions() {
     cameraZoom: 1,
     cameraSpeed: 2,
     crf: 21,
+    draft: false,
     fps: 60,
     fast: false,
     format: "mp4",
@@ -975,13 +981,26 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options) {
         }
       `
     });
-    await page.evaluate(async ({ fast, fps, motionScale, moveSpeed }) => {
+    await page.evaluate(async ({ draft, fast, fps, height, motionScale, moveSpeed, width }) => {
       const app = window.__PIXEL_GAME_APP__;
+
+      if (draft) {
+        const replayScale = Math.max(
+          0.1,
+          Math.min(1, width / app.viewportRect.width, height / app.viewportRect.height)
+        );
+        Object.defineProperty(window, "devicePixelRatio", {
+          configurable: true,
+          get: () => replayScale
+        });
+      }
+
       window.dispatchEvent(new Event("resize"));
       app.syncPlayLayout?.();
       app.setupCanvas?.();
       app.replayAnimationFrameStepMs = 1000 / fps;
-      app.state.effects.fuzzyEnabled = true;
+      app.state.effects.fuzzyEnabled = !draft;
+      app.state.effects.edgeOutlinesEnabled = !draft;
       app.state.effects.noisePhase = 0;
 
       if (app.noiseFrameId !== null) {
@@ -990,6 +1009,7 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options) {
       }
 
       app.syncFuzzyToggle?.();
+      app.syncEdgeToggle?.();
 
       [
         "MOVE_DURATION_MS",
@@ -1015,10 +1035,13 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options) {
       app.syncCameraTarget?.(true);
       app.render?.();
     }, {
+      draft: Boolean(options.draft),
       fast: Boolean(options.fast),
       fps: options.fps,
+      height: options.height,
       motionScale: options.motionScale,
-      moveSpeed: options.moveSpeed
+      moveSpeed: options.moveSpeed,
+      width: options.width
     });
 
     function writeFrameDataUrl(dataUrl) {

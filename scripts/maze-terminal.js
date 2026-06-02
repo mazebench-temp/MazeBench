@@ -101,6 +101,7 @@ function parseArgs(argv) {
     maxExpandedStates: 1000000,
     moves: "",
     pitch: 1,
+    replayDraft: false,
     replayFast: false,
     recordReplay: null,
     replayOutDir: "",
@@ -153,6 +154,10 @@ function parseArgs(argv) {
       options.replayFast = true;
     } else if (arg === "--no-fast") {
       options.replayFast = false;
+    } else if (arg === "--draft" || arg === "--draft-video" || arg === "--draft-render") {
+      options.replayDraft = true;
+    } else if (arg === "--no-draft") {
+      options.replayDraft = false;
     } else if (arg === "--fps" || arg === "--replay-fps") {
       options.replayFps = Number(next());
     } else if (arg === "--width" || arg === "--replay-width") {
@@ -194,6 +199,7 @@ Options:
   --video            Render maze_replay.mp4 for non-interactive runs.
   --no-video         Do not ask/render video for interactive runs.
   --fast             Render only settled states, not animation tweens.
+  --draft            Lower replay DPR and disable effects for faster capture.
   --fps <n>          Replay video FPS when rendering without the prompt.
   --width <px>       Replay video width when rendering without the prompt.
   --height <px>      Replay video height when rendering without the prompt.
@@ -2326,6 +2332,10 @@ function replayVideoOverrides(options = {}) {
     overrides.height = options.replayHeight;
   }
 
+  if (options.replayDraft) {
+    overrides.draft = true;
+  }
+
   if (options.replayFast) {
     overrides.fast = true;
   }
@@ -2387,12 +2397,18 @@ async function promptReplayVideoOptions(options = {}) {
     const fastAnswer = String(await askQuestion(rl, "Fast mode? [y/N] "))
       .trim()
       .toLowerCase();
+    const draftAnswer = String(
+      await askQuestion(rl, "Draft speed mode (DPR-scaled + effects off)? [y/N] ")
+    )
+      .trim()
+      .toLowerCase();
     const dimensions = parseDimensions(dimensionsAnswer, {
       height: defaults.height,
       width: defaults.width
     });
 
     return {
+      draft: draftAnswer === "y" || draftAnswer === "yes",
       fast: fastAnswer === "y" || fastAnswer === "yes",
       fps: parsePositiveInteger(fpsAnswer, defaults.fps),
       height: dimensions.height,

@@ -30,10 +30,11 @@ whether to render a video; if you say yes, it asks for FPS and dimensions. Use
 `--replay-out-dir <path>` to choose a directory, `--no-video` to skip the video
 prompt, or `--no-replay` to disable artifacts for an interactive run. The video
 prompt also asks for fast mode, which captures only the settled result of each
-action instead of animation tweens. Video rendering reports capture/encode
-progress with ETA and a rough expected MP4 size. For non-interactive runs, opt in with
-`--record-replay`; add `--video --fast --fps <n> --width <px> --height <px>`
-when you want a faster MP4:
+action instead of animation tweens, and draft speed mode, which lowers replay
+DPR and disables fuzzy/edge effects for faster capture. Video rendering reports
+capture/encode progress with ETA and a rough expected MP4 size. For
+non-interactive runs, opt in with `--record-replay`; add `--video --fast
+--draft --fps <n> --width <px> --height <px>` when you want a faster MP4:
 
 ```bash
 npm run maze:terminal -- --level level_HxI --view top-diagonal --moves U --once --record-replay
