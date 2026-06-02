@@ -93,8 +93,7 @@ function playerPosition(context) {
   for (let index = 0; index < context.engine.actorCount; index += 1) {
     if (
       !context.state.actorRemoved[index] &&
-      (context.engine.actorTypes[index] === "player" ||
-        context.engine.actorTypes[index] === "circle_player")
+      context.engine.actorTypes[index] === "player"
     ) {
       return {
         elevation: context.state.actorElevation[index],
@@ -303,9 +302,144 @@ function syntheticFloor(width, height) {
     width: 1
   });
 
-  assert.match(body(output), /I/);
-  assert.match(body(output), /i/);
+  assert.match(body(output), /K/);
+  assert.match(body(output), /k/);
   assert.match(body(output), /w/);
+}
+
+{
+  const row = [1, 2, 3, 4].map((variant) => ({
+    type: "block_asset",
+    layers: [
+      {
+        type: "block_asset",
+        elevation: 0,
+        label: `Block ${variant}`,
+        modelUrl: `/assets/maze/assets_3d/b${variant}.glb`
+      }
+    ]
+  }));
+  const playData = {
+    actors: [],
+    gameId: "maze",
+    height: 1,
+    levelId: "block_variant_glyphs",
+    levelLabel: "Block Variant Glyphs",
+    terrain: [row],
+    width: 4
+  };
+  const output = renderSynthetic(playData, { pitch: 0 });
+  const sideOutput = renderSynthetic(playData, { pitch: 4 });
+
+  assert.match(body(output), /!!!!@@@@####\$\$\$\$/);
+  assert.match(body(sideOutput), /1111222233334444/);
+}
+
+{
+  const row = ["right", "left", "up", "down"].map((direction) => ({
+    type: "ice_slope",
+    layers: [{ type: "ice_slope", elevation: 0, direction }]
+  }));
+  const playData = {
+    actors: [],
+    gameId: "maze",
+    height: 1,
+    levelId: "ice_slope_direction_glyphs",
+    levelLabel: "Ice Slope Direction Glyphs",
+    terrain: [row],
+    width: 4
+  };
+  const output = renderSynthetic(playData, { pitch: 0 });
+  const sideOutput = renderSynthetic(playData, { pitch: 4 });
+
+  assert.match(body(output), /RRRR<<<<\^\^\^\^VVVV/);
+  assert.match(body(sideOutput), /rrrr,,,,6666vvvv/);
+}
+
+{
+  const playData = {
+    actors: [
+      { type: "clone", groupId: "c0", x: 0, y: 0, removed: false, elevation: 0 },
+      { type: "clone", groupId: "c1", x: 1, y: 0, removed: false, elevation: 0 },
+      { type: "clone", groupId: "c2", x: 2, y: 0, removed: false, elevation: 0 }
+    ],
+    gameId: "maze",
+    height: 1,
+    levelId: "clone_variant_glyphs",
+    levelLabel: "Clone Variant Glyphs",
+    terrain: syntheticFloor(3, 1),
+    width: 3
+  };
+  const output = renderSynthetic(playData, { pitch: 0 });
+  const sideOutput = renderSynthetic(playData, { pitch: 4 });
+
+  assert.match(body(output), /CCCCDDDDJJJJ/);
+  assert.match(body(sideOutput), /ccccddddjjjj/);
+}
+
+{
+  const playData = {
+    actors: [0, 1, 2, 3, 4].map((variant, x) => ({
+      type: "weightless_box",
+      groupId: `M${variant}`,
+      x,
+      y: 0,
+      removed: false,
+      elevation: 0
+    })),
+    gameId: "maze",
+    height: 1,
+    levelId: "weightless_box_variant_glyphs",
+    levelLabel: "Weightless Box Variant Glyphs",
+    terrain: syntheticFloor(5, 1),
+    width: 5
+  };
+  const output = renderSynthetic(playData, { pitch: 0 });
+  const sideOutput = renderSynthetic(playData, { pitch: 4 });
+
+  assert.match(body(output), /UUUU0000\(\(\(\(\+\+\+\+\.\.\.\./);
+  assert.match(body(sideOutput), /uuuu9999\)\)\)\)====::::/);
+}
+
+{
+  const playData = {
+    actors: ["right", "left", "up", "down"].map((direction, x) => ({
+      type: "puncher",
+      direction,
+      x,
+      y: 0,
+      removed: false,
+      elevation: 0
+    })),
+    gameId: "maze",
+    height: 1,
+    levelId: "puncher_direction_glyphs",
+    levelLabel: "Puncher Direction Glyphs",
+    terrain: syntheticFloor(4, 1),
+    width: 4
+  };
+  const output = renderSynthetic(playData, { pitch: 0 });
+  const sideOutput = renderSynthetic(playData, { pitch: 4 });
+
+  assert.match(body(output), /QQQQXXXXZZZZ%%%%/);
+  assert.match(body(sideOutput), /qqqqxxxxzzzz5555/);
+}
+
+{
+  const playData = {
+    actors: [{ type: "orange_button", x: 0, y: 0, removed: false, elevation: 0 }],
+    gameId: "maze",
+    height: 1,
+    levelId: "orange_button_actor_glyphs",
+    levelLabel: "Orange Button Actor Glyphs",
+    terrain: syntheticFloor(1, 1),
+    width: 1
+  };
+  const output = renderSynthetic(playData, { pitch: 0 });
+  const sideOutput = renderSynthetic(playData, { pitch: 4 });
+
+  assert.match(body(output), /\*\*\*\*/);
+  assert.match(body(sideOutput), /8888/);
 }
 
 {

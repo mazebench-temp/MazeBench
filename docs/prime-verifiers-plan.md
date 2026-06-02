@@ -87,7 +87,11 @@ side-diagonal:1 top row,  3 side rows
 side:         0 top rows, 4 side rows
 ```
 
-Top surfaces use uppercase letters and side surfaces use lowercase letters for the same object. For example, a tile with letter `A` renders from top-down through side view as:
+Objects use explicit `top/side` glyph pairs, so the ASCII renderer can keep
+every visible object distinct even when the set is larger than the alphabet.
+The repo-local terminal runner and packaged mazebench runtime use the same
+glyph contract.
+For example, floor uses `A/a` and renders from top-down through side view as:
 
 ```text
 AAAA

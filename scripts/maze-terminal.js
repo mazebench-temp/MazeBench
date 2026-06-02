@@ -62,35 +62,109 @@ const MOVE_ACTIONS = new Map([
   ["L", { dx: -1, dy: 0, label: "Left" }],
   ["R", { dx: 1, dy: 0, label: "Right" }]
 ]);
-const TERRAIN_LETTERS = {
-  block_asset: "K",
-  empty: " ",
-  exit: "E",
-  floor: "A",
-  hole: "H",
-  ice: "I",
-  ice_block: "I",
-  ice_slope: "V",
-  orange_button: "N",
-  orange_wall: "O",
-  player_gate: "Y",
-  player_lift: "L",
-  shrub: "S",
-  tree: "T",
-  wall: "W"
+function glyphPair(top, side) {
+  return { side, top };
+}
+
+const TERRAIN_GLYPHS = {
+  block_asset: glyphPair("&", "7"),
+  empty: glyphPair(" ", " "),
+  exit: glyphPair("E", "e"),
+  floor: glyphPair("A", "a"),
+  hole: glyphPair("H", "h"),
+  ice: glyphPair("I", "i"),
+  ice_block: glyphPair("K", "k"),
+  ice_slope: glyphPair("~", "-"),
+  orange_button: glyphPair("N", "n"),
+  orange_wall: glyphPair("O", "o"),
+  player_gate: glyphPair("Y", "y"),
+  player_lift: glyphPair("L", "l"),
+  shrub: glyphPair("S", "s"),
+  tree: glyphPair("T", "t"),
+  wall: glyphPair("W", "w")
 };
-const ACTOR_LETTERS = {
-  box: "B",
-  circle_player: "C",
-  floating_floor: "F",
-  gem: "G",
-  orange_button: "N",
-  player: "P",
-  puncher: "Q",
-  weightless_box: "M"
+const BLOCK_ASSET_GLYPHS = {
+  1: glyphPair("!", "1"),
+  2: glyphPair("@", "2"),
+  3: glyphPair("#", "3"),
+  4: glyphPair("$", "4")
+};
+const ICE_SLOPE_DIRECTION_GLYPHS = {
+  down: glyphPair("V", "v"),
+  left: glyphPair("<", ","),
+  right: glyphPair("R", "r"),
+  up: glyphPair("^", "6")
+};
+const ACTOR_GLYPHS = {
+  box: glyphPair("B", "b"),
+  clone: glyphPair("{", "["),
+  floating_floor: glyphPair("F", "f"),
+  gem: glyphPair("G", "g"),
+  orange_button: glyphPair("*", "8"),
+  player: glyphPair("P", "p"),
+  puncher: glyphPair("}", "]"),
+  weightless_box: glyphPair(";", "_")
+};
+const CLONE_GLYPHS = {
+  c0: glyphPair("C", "c"),
+  c1: glyphPair("D", "d"),
+  c2: glyphPair("J", "j")
+};
+const WEIGHTLESS_BOX_GLYPHS = {
+  M0: glyphPair("U", "u"),
+  M1: glyphPair("0", "9"),
+  M2: glyphPair("(", ")"),
+  M3: glyphPair("+", "="),
+  M4: glyphPair(".", ":")
+};
+const PUNCHER_DIRECTION_GLYPHS = {
+  down: glyphPair("%", "5"),
+  left: glyphPair("X", "x"),
+  right: glyphPair("Q", "q"),
+  up: glyphPair("Z", "z")
+};
+const UNKNOWN_GLYPHS = {
+  actor: glyphPair("|", "\\"),
+  terrain: glyphPair("`", "'")
 };
 const DEFAULT_WORLD_AXIS = Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
 const WORLD_LEVEL_PATTERN = /^level_([A-Z])x([A-Z])$/;
+
+function assertUniqueGlyphPairs(groups) {
+  const used = new Map();
+
+  Object.entries(groups).forEach(([groupName, group]) => {
+    Object.entries(group).forEach(([name, pair]) => {
+      Object.entries(pair).forEach(([role, symbol]) => {
+        if (symbol === " ") {
+          return;
+        }
+
+        if (String(symbol).length !== 1) {
+          throw new Error(`${groupName}.${name}.${role} must be one character`);
+        }
+
+        const previous = used.get(symbol);
+        if (previous) {
+          throw new Error(`Duplicate ASCII glyph ${JSON.stringify(symbol)} in ${previous} and ${groupName}.${name}.${role}`);
+        }
+
+        used.set(symbol, `${groupName}.${name}.${role}`);
+      });
+    });
+  });
+}
+
+assertUniqueGlyphPairs({
+  ACTOR_GLYPHS,
+  BLOCK_ASSET_GLYPHS,
+  CLONE_GLYPHS,
+  ICE_SLOPE_DIRECTION_GLYPHS,
+  PUNCHER_DIRECTION_GLYPHS,
+  TERRAIN_GLYPHS,
+  UNKNOWN_GLYPHS,
+  WEIGHTLESS_BOX_GLYPHS
+});
 
 function parseArgs(argv) {
   const options = {
@@ -321,7 +395,7 @@ function adjacentWorldLevelId(levelId, dx, dy, worldColumns = DEFAULT_WORLD_AXIS
 }
 
 function isPlayerActorType(type) {
-  return type === "player" || type === "circle_player";
+  return type === "player";
 }
 
 function loadBrowserScript(relativePath) {
@@ -748,12 +822,126 @@ function terrainLayersAt(playData, state, typeNames, x, y) {
   return type && type !== "empty" ? [{ elevation: 0, type }] : [];
 }
 
-function terrainLetter(type) {
-  return TERRAIN_LETTERS[type] || String(type || "?").charAt(0).toUpperCase() || "?";
+function normalizeDirection(value) {
+  const direction = String(value || "").toLowerCase();
+  return ["down", "left", "right", "up"].includes(direction) ? direction : "";
 }
 
-function actorLetter(type) {
-  return ACTOR_LETTERS[type] || String(type || "?").charAt(0).toUpperCase() || "?";
+function blockAssetVariant(layer) {
+  const values = [layer?.modelUrl, layer?.label, layer?.name, layer?.token];
+
+  for (const value of values) {
+    const text = String(value || "");
+    const match =
+      text.match(/(?:^|[^a-z0-9])b([1-4])(?:\.glb|[^a-z0-9]|$)/i) ||
+      text.match(/\bblock\s*([1-4])\b/i) ||
+      text.match(/\bblock_asset[_-]?([1-4])\b/i);
+
+    if (match) {
+      return match[1];
+    }
+  }
+
+  return "";
+}
+
+function cloneVariant(actor) {
+  const values = [actor?.groupId, actor?.label, actor?.name, actor?.token];
+
+  for (const value of values) {
+    const text = String(value || "").toLowerCase();
+    const match = text.match(/\bc([0-2])\b/) || text.match(/\bclone\s*([0-2])\b/);
+
+    if (match) {
+      return `c${match[1]}`;
+    }
+  }
+
+  return "";
+}
+
+function weightlessBoxVariant(actor) {
+  const values = [actor?.groupId, actor?.label, actor?.name, actor?.token];
+
+  for (const value of values) {
+    const text = String(value || "");
+    const match =
+      text.match(/\bM([0-4])\b/) ||
+      text.match(/\bweightless(?:_|\s*)box\s*([0-4])\b/i);
+
+    if (match) {
+      return `M${match[1]}`;
+    }
+  }
+
+  return "";
+}
+
+function normalizeGlyph(value) {
+  if (value && typeof value === "object" && typeof value.top === "string") {
+    return value;
+  }
+
+  if (!value) {
+    return UNKNOWN_GLYPHS.actor;
+  }
+
+  const top = String(value).charAt(0) || UNKNOWN_GLYPHS.actor.top;
+  return glyphPair(top, top.toLowerCase());
+}
+
+function terrainGlyph(layerOrType) {
+  const layer =
+    typeof layerOrType === "object" && layerOrType !== null
+      ? layerOrType
+      : { type: layerOrType };
+  const type = layer.type || "";
+
+  if (type === "block_asset") {
+    return BLOCK_ASSET_GLYPHS[blockAssetVariant(layer)] || TERRAIN_GLYPHS.block_asset;
+  }
+
+  if (type === "ice_slope") {
+    return (
+      ICE_SLOPE_DIRECTION_GLYPHS[normalizeDirection(layer.direction)] ||
+      TERRAIN_GLYPHS.ice_slope
+    );
+  }
+
+  return TERRAIN_GLYPHS[type] || UNKNOWN_GLYPHS.terrain;
+}
+
+function terrainLetter(layerOrType) {
+  return terrainGlyph(layerOrType).top;
+}
+
+function actorGlyph(actorOrType) {
+  const actor =
+    typeof actorOrType === "object" && actorOrType !== null
+      ? actorOrType
+      : { type: actorOrType };
+  const type = actor.type || "";
+
+  if (type === "clone") {
+    return CLONE_GLYPHS[cloneVariant(actor)] || ACTOR_GLYPHS.clone;
+  }
+
+  if (type === "puncher") {
+    return (
+      PUNCHER_DIRECTION_GLYPHS[normalizeDirection(actor.direction)] ||
+      ACTOR_GLYPHS.puncher
+    );
+  }
+
+  if (type === "weightless_box") {
+    return WEIGHTLESS_BOX_GLYPHS[weightlessBoxVariant(actor)] || ACTOR_GLYPHS.weightless_box;
+  }
+
+  return ACTOR_GLYPHS[type] || UNKNOWN_GLYPHS.actor;
+}
+
+function actorLetter(actorOrType) {
+  return actorGlyph(actorOrType).top;
 }
 
 function rotatePoint(x, y, yaw) {
@@ -812,7 +1000,7 @@ function addFace(faces, points, letter, kind, options = {}) {
     kind,
     letter,
     layer: options.layer || 0,
-    topLetter: options.topLetter || letter.toUpperCase(),
+    topLetter: options.topLetter || letter,
     points
   });
 }
@@ -832,14 +1020,17 @@ function boxCorners(box) {
   ];
 }
 
-function addActorSolidFace(faces, box, letter) {
-  addFace(faces, boxCorners(box), letter.toLowerCase(), "actor_solid", {
+function addActorSolidFace(faces, box, glyphOrLetter) {
+  const glyph = normalizeGlyph(glyphOrLetter);
+
+  addFace(faces, boxCorners(box), glyph.side, "actor_solid", {
     layer: 20,
-    topLetter: letter.toUpperCase()
+    topLetter: glyph.top
   });
 }
 
-function addBoxFaces(faces, box, letter, options = {}) {
+function addBoxFaces(faces, box, glyphOrLetter, options = {}) {
+  const glyph = normalizeGlyph(glyphOrLetter);
   const { x0, x1, y0, y1, z0, z1 } = box;
   const layer = options.layer || 0;
   const sides = options.sides || {
@@ -861,16 +1052,16 @@ function addBoxFaces(faces, box, letter, options = {}) {
       { x: x1, y: y1, z: z1 },
       { x: x0, y: y1, z: z1 }
     ],
-    letter.toUpperCase(),
+    glyph.top,
     "top",
-    { layer }
+    { layer, topLetter: glyph.top }
   );
 
   if (Math.abs(z1 - z0) < 0.001) {
     return;
   }
 
-  const sideLetter = letter.toLowerCase();
+  const sideLetter = glyph.side;
 
   if (sides.south < z1) {
     addFace(
@@ -1000,7 +1191,7 @@ function buildSceneFaces(playData, engine, state) {
         const box = terrainBoxForLayer(playData, state, layer, x, y);
 
         if (box) {
-          addBoxFaces(faces, box, terrainLetter(layer.type), {
+          addBoxFaces(faces, box, terrainGlyph(layer), {
             layer: 0,
             sides: exposedTerrainSides(playData, state, typeNames, box, x, y)
           });
@@ -1018,6 +1209,7 @@ function buildSceneFaces(playData, engine, state) {
     const type = engine.actorTypes[index] || actor.type || "";
 
     if (type === "gem") {
+      const glyph = actorGlyph({ ...actor, type });
       const z0 = (state.actorElevation[index] || 0) + 0.18;
       const box = {
         x0: state.actorX[index] + 0.3,
@@ -1031,13 +1223,14 @@ function buildSceneFaces(playData, engine, state) {
       addBoxFaces(
         faces,
         box,
-        actorLetter(type),
+        glyph,
         { layer: 10 }
       );
-      addActorSolidFace(faces, box, actorLetter(type));
+      addActorSolidFace(faces, box, glyph);
       continue;
     }
 
+    const glyph = actorGlyph({ ...actor, type });
     const z0 = state.actorElevation[index] || 0;
     const box = {
       x0: state.actorX[index] + ACTOR_INSET,
@@ -1051,10 +1244,10 @@ function buildSceneFaces(playData, engine, state) {
     addBoxFaces(
       faces,
       box,
-      actorLetter(type),
+      glyph,
       { layer: 10 }
     );
-    addActorSolidFace(faces, box, actorLetter(type));
+    addActorSolidFace(faces, box, glyph);
   }
 
   return faces;
@@ -1284,10 +1477,12 @@ function terrainBlocksAt(playData, state, typeNames, x, y) {
       const index = cellIndex(playData, x, y);
       const bottom = layer.elevation ?? 0;
       const top = Math.max(bottom, terrainLayerHeight(layer, state, index, type));
+      const glyph = terrainGlyph(layer);
 
       return {
         bottom,
-        letter: terrainLetter(type),
+        letter: glyph.top,
+        sideLetter: glyph.side,
         top,
         type
       };
@@ -1319,6 +1514,8 @@ function actorRows(playData, engine, state, yaw) {
     }
 
     const type = engine.actorTypes[index] || playData.actors[index]?.type || "";
+    const actor = playData.actors[index] || {};
+    const glyph = actorGlyph({ ...actor, type });
     const display = displayCoordinatesForWorld(
       playData,
       yaw,
@@ -1329,7 +1526,8 @@ function actorRows(playData, engine, state, yaw) {
       displayX: display.x,
       displayY: display.y,
       elevation: state.actorElevation[index] || 0,
-      letter: actorLetter(type)
+      letter: glyph.top,
+      sideLetter: glyph.side
     };
 
     if (!rows.has(display.y)) {
@@ -1402,7 +1600,7 @@ function drawTerrainSideForLevel(canvas, block, screenX, baseY, topRows, sideRow
       baseY - (level + 1) * sideRows + topRows,
       TILE_GRANULARITY,
       (level + 1 - exposedBottom) * sideRows,
-      block.letter.toLowerCase()
+      block.sideLetter
     );
     return;
   }
@@ -1418,7 +1616,7 @@ function drawTerrainSideForLevel(canvas, block, screenX, baseY, topRows, sideRow
     baseY - block.top * sideRows + topRows,
     TILE_GRANULARITY,
     (block.top - exposedBottom) * sideRows,
-    block.letter.toLowerCase()
+    block.sideLetter
   );
 }
 
@@ -1431,6 +1629,8 @@ function actorCells(playData, engine, state, yaw) {
     }
 
     const type = engine.actorTypes[index] || playData.actors[index]?.type || "";
+    const actor = playData.actors[index] || {};
+    const glyph = actorGlyph({ ...actor, type });
     const display = displayCoordinatesForWorld(
       playData,
       yaw,
@@ -1442,7 +1642,8 @@ function actorCells(playData, engine, state, yaw) {
       displayX: display.x,
       displayY: display.y,
       elevation: state.actorElevation[index] || 0,
-      letter: actorLetter(type)
+      letter: glyph.top,
+      sideLetter: glyph.side
     };
 
     if (!cells.has(key)) {
@@ -1480,7 +1681,7 @@ function renderAsciiSide(playData, engine, state, options) {
       const blocks = terrainBlocksAt(playData, state, typeNames, x, y);
 
       blocks.forEach((block) => {
-        const letter = block.letter.toLowerCase();
+        const letter = block.sideLetter;
 
         if (block.top > block.bottom) {
           drawRectIfBlank(
@@ -1506,7 +1707,7 @@ function renderAsciiSide(playData, engine, state, options) {
             baseline - (actor.elevation + 1) * TILE_GRANULARITY,
             TILE_GRANULARITY,
             TILE_GRANULARITY,
-            actor.letter.toLowerCase()
+            actor.sideLetter
           );
         });
     }
@@ -1590,7 +1791,7 @@ function renderAsciiLayered(playData, engine, state, options) {
           }
 
           if (actor.elevation === level) {
-            drawRect(canvas, screenX, topY + topRows, TILE_GRANULARITY, sideRows, actor.letter.toLowerCase());
+            drawRect(canvas, screenX, topY + topRows, TILE_GRANULARITY, sideRows, actor.sideLetter);
           }
         });
     }
