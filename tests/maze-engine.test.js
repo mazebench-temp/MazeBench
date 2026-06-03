@@ -3995,6 +3995,43 @@ function createState(playData) {
   assert.equal(state.actorRemoved[0], 0);
 }
 
+{
+  const terrain = [[
+    { type: "hole" },
+    { type: "hole" },
+    { type: "hole" },
+    { type: "hole" },
+    { type: "floor" },
+    { type: "floor" }
+  ]];
+  const { engine, state } = createState({
+    width: 6,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "player", x: 0, y: 0, elevation: -1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 0, y: 0, elevation: -2, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: -1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 4, y: 0, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[0], state.actorY[0], state.actorElevation[0]], [1, 0, -1]);
+  assert.deepEqual(
+    Array.from(state.actorX).slice(1).map((x, index) => [x, state.actorElevation[index + 1]]),
+    [
+      [1, -2],
+      [2, -1],
+      [5, 0]
+    ]
+  );
+  assert.equal(state.actorRemoved[0], 0);
+  assert.equal(result.moves.filter((move) => move.actorType === "weightless_box").length, 3);
+}
+
 [
   {
     actor: { type: "box", x: 2, y: 0, elevation: 1, removed: false },

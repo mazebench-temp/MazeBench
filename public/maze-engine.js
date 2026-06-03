@@ -2939,10 +2939,24 @@
       );
     }
 
-    function pushableSupportActorUnderPlayer(state, player) {
+    function pushableSupportActorUnderPlayer(
+      state,
+      player,
+      gateState,
+      orangeButtonsPressed
+    ) {
       const playerElevation = actorElevation(state, player);
 
-      if (playerElevation <= 0) {
+      if (
+        terrainSupportsElevation(
+          state,
+          state.actorX[player],
+          state.actorY[player],
+          playerElevation,
+          gateState,
+          orangeButtonsPressed
+        )
+      ) {
         return -1;
       }
 
@@ -7339,7 +7353,14 @@
                   moveTargetElevation,
                   player
                 );
-          const supportActor = isInitialStep ? pushableSupportActorUnderPlayer(state, player) : -1;
+          const supportActor = isInitialStep
+            ? pushableSupportActorUnderPlayer(
+                state,
+                player,
+                raisedPlayerGates,
+                orangeButtonsPressed
+              )
+            : -1;
           const actorToPush = blockingActor;
           const canAttemptInitialPush =
             actorToPush !== -1 && isInitialStep && isPushableActor(actorToPush);
