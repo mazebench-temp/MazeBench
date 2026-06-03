@@ -62,6 +62,26 @@ const MOVE_ACTIONS = new Map([
   ["L", { dx: -1, dy: 0, label: "Left" }],
   ["R", { dx: 1, dy: 0, label: "Right" }]
 ]);
+const DEATH_MESSAGE = "The player died, you must now undo or reset or go to a level.";
+const ALIVE_ALLOWED_COMMANDS = Object.freeze([
+  "up",
+  "down",
+  "left",
+  "right",
+  "rotate camera up",
+  "rotate camera down",
+  "rotate camera left",
+  "rotate camera right",
+  "undo",
+  "reset",
+  "go to level X Y",
+  "quit"
+]);
+const DEAD_ALLOWED_COMMANDS = Object.freeze([
+  "undo",
+  "reset",
+  "go to level X Y"
+]);
 function glyphPair(top, side) {
   return { side, top };
 }
@@ -1872,6 +1892,16 @@ function activePlayerEntry(context) {
   return activePlayerEntries(context)[0] || null;
 }
 
+function isPlayerDead(context) {
+  return !activePlayerEntry(context);
+}
+
+function allowedCommandsForContext(context) {
+  return isPlayerDead(context)
+    ? Array.from(DEAD_ALLOWED_COMMANDS)
+    : Array.from(ALIVE_ALLOWED_COMMANDS);
+}
+
 function playerTileKey(context, player, includeElevation = false) {
   if (!context?.level?.id || !player) {
     return null;
@@ -2162,6 +2192,10 @@ function applyMove(context, move) {
     return null;
   }
 
+  if (isPlayerDead(context)) {
+    return { moved: false, playerDead: true };
+  }
+
   const command = moveCommand(move);
 
   applyCollectedGemsToContext(context);
@@ -2246,6 +2280,10 @@ function rotateCamera(context, direction) {
   const normalized = String(direction || "").toLowerCase();
   const stats = context?.stats;
 
+  if (isPlayerDead(context)) {
+    return false;
+  }
+
   if (normalized === "up") {
     context.options.pitch = clampPitch(context.options.pitch - 1);
     if (stats) {
@@ -2309,13 +2347,19 @@ function renderScreen(context) {
 
 async function buildJsonPayload(context) {
   applyCollectedGemsToContext(context);
+  const player = activePlayerEntry(context);
+  const playerDead = !player;
   const observation = renderAscii(context.playData, context.engine, context.state, context.options);
   const payload = {
+    allowedCommands: allowedCommandsForContext(context),
+    deathMessage: playerDead ? DEATH_MESSAGE : "",
     gameId: context.playData.gameId,
     height: context.playData.height,
     inputMoves: context.options.moves || "",
     levelId: context.level.id,
     pitch: context.options.pitch,
+    player,
+    playerDead,
     solved: context.engine.isSolved(context.state),
     view: VIEW_NAMES[context.options.pitch],
     width: context.playData.width,
@@ -2685,9 +2729,17 @@ function printScreen(context, clear = false) {
   console.log(renderScreen(context));
 }
 
+function interactiveHelpText(context) {
+  if (isPlayerDead(context)) {
+    return `\n${DEATH_MESSAGE}\nz/u undo. r resets.`;
+  }
+
+  return "\nArrows move in screen direction. i/k pitch camera. j/l yaw camera. z/u undo. r resets. q quits with scorecard.";
+}
+
 function startInteractive(context) {
   printScreen(context, true);
-  console.log("\nArrows move in screen direction. i/k pitch camera. j/l yaw camera. z/u undo. r resets. q quits with scorecard.");
+  console.log(interactiveHelpText(context));
 
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
@@ -2742,8 +2794,22 @@ function startInteractive(context) {
 
   process.stdin.on("keypress", (_text, key = {}) => {
     let shouldRender = true;
+    const dead = isPlayerDead(context);
+    const blockedDeadKey = dead && (
+      key.name === "up" ||
+      key.name === "down" ||
+      key.name === "left" ||
+      key.name === "right" ||
+      key.name === "i" ||
+      key.name === "k" ||
+      key.name === "j" ||
+      key.name === "l"
+    );
 
-    if (key.name === "q" || (key.ctrl && key.name === "c")) {
+    if (blockedDeadKey) {
+      console.log(`\n${DEATH_MESSAGE}`);
+      shouldRender = false;
+    } else if (key.name === "q" || (key.ctrl && key.name === "c")) {
       void endRun("quit");
       return;
     } else if (key.name === "up") {
@@ -2776,7 +2842,7 @@ function startInteractive(context) {
         void endRun("game_won");
         return;
       }
-      console.log("\nArrows move in screen direction. i/k pitch camera. j/l yaw camera. z/u undo. r resets. q quits with scorecard.");
+      console.log(interactiveHelpText(context));
     }
   });
 }
@@ -2824,6 +2890,7 @@ module.exports = {
   buildScorecard,
   createTerminalContext,
   GAME_WON_GEM_COUNT,
+  isPlayerDead,
   isGameWon,
   loadMazeEngine,
   loadMazeSolver,

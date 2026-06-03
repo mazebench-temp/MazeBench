@@ -32,9 +32,9 @@ Options:
   --out-dir <path>     Directory for exported artifacts. Default: eval results dir.
   --video              Render maze_replay.mp4. Enabled by default.
   --no-video           Only write maze_scorecard.json and maze_actions.txt.
-  --width <px>         Output video width. Default: 1920.
-  --height <px>        Output video height. Default: 1080.
-  --fps <n>            Video frames per second. Default: 60.
+  --width <px>         Output video width. Default: 400.
+  --height <px>        Output video height. Default: 400.
+  --fps <n>            Video frames per second. Default: 20.
   --fast               Capture only settled states, not animation tweens.
   --draft              Lower replay DPR and disable effects for faster capture.
   --move-speed <n>     Movement animation speed multiplier. Default: 5.
@@ -141,10 +141,10 @@ function defaultReplayOptions() {
     cameraSpeed: 2,
     crf: 21,
     draft: false,
-    fps: 60,
+    fps: 20,
     fast: false,
     format: "mp4",
-    height: 1080,
+    height: 400,
     index: 0,
     keepFrames: false,
     moveSpeed: 5,
@@ -155,7 +155,7 @@ function defaultReplayOptions() {
     videoBitrate: 24000000,
     motionScale: 4,
     tailSeconds: 0.45,
-    width: 1920
+    width: 400
   };
 }
 

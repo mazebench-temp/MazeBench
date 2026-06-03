@@ -11,6 +11,26 @@ const promptDir = path.join(ROOT_DIR, "environments", "mazebench", "mazebench", 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
 const DIRECTION_VALUES = new Set(["up", "down", "left", "right"]);
 const LEVEL_PATTERN = /^(?:level_)?([A-Z])x([A-Z])$/i;
+const DEATH_MESSAGE = "The player died, you must now undo or reset or go to a level.";
+const ALIVE_ALLOWED_COMMANDS = Object.freeze([
+  "up",
+  "down",
+  "left",
+  "right",
+  "rotate camera up",
+  "rotate camera down",
+  "rotate camera left",
+  "rotate camera right",
+  "undo",
+  "reset",
+  "go to level X Y",
+  "quit"
+]);
+const DEAD_ALLOWED_COMMANDS = Object.freeze([
+  "undo",
+  "reset",
+  "go to level X Y"
+]);
 
 function normalizeGameWonGemCount(value) {
   const count = Number(value);
@@ -213,6 +233,9 @@ function actionResultText(status) {
   if (Array.isArray(status.collected_this_action) && status.collected_this_action.length > 0) {
     details.push(`Collected gems: ${status.collected_this_action.join(", ")}.`);
   }
+  if (status.player_dead) {
+    details.push(status.death_message || DEATH_MESSAGE);
+  }
   if ((status.quit || status.game_lost || status.game_won) && status.scorecard) {
     details.push(`Final scorecard:\n${JSON.stringify(status.scorecard, null, 2)}`);
   }
@@ -220,18 +243,42 @@ function actionResultText(status) {
   return details.join(" ");
 }
 
+function allowedCommandsForSnapshot(snapshot) {
+  if (Array.isArray(snapshot.allowed_commands) && snapshot.allowed_commands.length > 0) {
+    return snapshot.allowed_commands.map(String);
+  }
+  return snapshot.player_dead
+    ? Array.from(DEAD_ALLOWED_COMMANDS)
+    : Array.from(ALIVE_ALLOWED_COMMANDS);
+}
+
+function allowedCommandsText(snapshot) {
+  return allowedCommandsForSnapshot(snapshot).map((command) => `- ${command}`).join("\n");
+}
+
+function responseInstruction(snapshot) {
+  if (snapshot.player_dead) {
+    return "Respond with exactly one command line: `undo`, `reset`, or `go to level H I`.";
+  }
+  return "Respond with exactly one command line, such as `up`, `down`, `rotate camera left`, `go to level H I`, or `quit`.";
+}
+
 function renderUserMessage(snapshot, options, resultText = "Start of run.") {
   const player = snapshot.player || {};
   return renderTemplate(readPrompt("multiturn_user.txt"), {
+    allowed_commands: allowedCommandsText(snapshot),
     current_room: snapshot.current_room,
     current_view: snapshot.current_view,
+    death_text: snapshot.player_dead ? (snapshot.death_message || DEATH_MESSAGE) : "",
     gem_count: snapshot.gem_count ?? 0,
     level: snapshot.level || screenFromSnapshot(snapshot).split("\n").slice(1).join("\n"),
     player_elevation: player.elevation ?? "?",
     player_x: player.x ?? "?",
     player_y: player.y ?? "?",
+    response_instruction: responseInstruction(snapshot),
     result_text: resultText,
     target_text: targetText(options.targetGems),
+    terminal_note: snapshot.player_dead ? "" : "Typing quit ends the run as a loss.",
     visited_rooms: Array.isArray(snapshot.visited_levels) && snapshot.visited_levels.length > 0
       ? snapshot.visited_levels.join(", ")
       : "(none)",

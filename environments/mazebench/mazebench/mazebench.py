@@ -35,6 +35,27 @@ ROOM_EXPLORATION_REWARD_WEIGHT = 0.1
 REPO_ROOT_ENV = "MAZEBENCH_REPO_ROOT"
 INFO_KEY = "mazebench"
 
+DEATH_MESSAGE = "The player died, you must now undo or reset or go to a level."
+ALIVE_ALLOWED_COMMANDS = (
+    "up",
+    "down",
+    "left",
+    "right",
+    "rotate camera up",
+    "rotate camera down",
+    "rotate camera left",
+    "rotate camera right",
+    "undo",
+    "reset",
+    "go to level X Y",
+    "quit",
+)
+DEAD_ALLOWED_COMMANDS = (
+    "undo",
+    "reset",
+    "go to level X Y",
+)
+
 PROMPT_DIR = "prompts"
 MULTITURN_SYSTEM_PROMPT_FILE = "multiturn_system.txt"
 MULTITURN_USER_PROMPT_FILE = "multiturn_user.txt"
@@ -341,6 +362,38 @@ def player_fields(player: dict[str, Any] | None) -> dict[str, object]:
     }
 
 
+def status_player_dead(status: dict[str, Any]) -> bool:
+    return bool(status.get("player_dead"))
+
+
+def allowed_commands_for_status(status: dict[str, Any]) -> tuple[str, ...]:
+    raw_commands = status.get("allowed_commands")
+    if isinstance(raw_commands, list) and raw_commands:
+        return tuple(str(command) for command in raw_commands)
+    return DEAD_ALLOWED_COMMANDS if status_player_dead(status) else ALIVE_ALLOWED_COMMANDS
+
+
+def allowed_commands_text(status: dict[str, Any]) -> str:
+    return "\n".join(f"- {command}" for command in allowed_commands_for_status(status))
+
+
+def death_text(status: dict[str, Any]) -> str:
+    return DEATH_MESSAGE if status_player_dead(status) else ""
+
+
+def terminal_note_text(status: dict[str, Any]) -> str:
+    return "" if status_player_dead(status) else "Typing quit ends the run as a loss."
+
+
+def response_instruction(status: dict[str, Any]) -> str:
+    if status_player_dead(status):
+        return "Respond with exactly one command line: `undo`, `reset`, or `go to level H I`."
+    return (
+        "Respond with exactly one command line, such as `up`, `down`, "
+        "`rotate camera left`, `go to level H I`, or `quit`."
+    )
+
+
 def render_multiturn_user_prompt(
     *,
     status: dict[str, Any],
@@ -350,12 +403,16 @@ def render_multiturn_user_prompt(
     visited_rooms = status.get("visited_levels") or []
     return render_prompt_file(
         MULTITURN_USER_PROMPT_FILE,
+        allowed_commands=allowed_commands_text(status),
         current_room=status.get("current_room") or status.get("level_id") or "?",
         current_view=status.get("current_view") or status.get("view") or "?",
+        death_text=death_text(status),
         gem_count=status.get("gem_count", 0),
         level=status.get("level") or status.get("observation") or "",
+        response_instruction=response_instruction(status),
         result_text=result_text,
         target_text=target_text,
+        terminal_note=terminal_note_text(status),
         visited_rooms=", ".join(str(room) for room in visited_rooms) or "(none)",
         yaw=status.get("yaw", 0),
         **player_fields(status.get("player")),
@@ -1041,6 +1098,8 @@ def action_result_text(
             + ", ".join(str(gem) for gem in status["collected_this_action"])
             + "."
         )
+    if status_player_dead(status):
+        details.append(DEATH_MESSAGE)
     is_terminal = status.get("quit") or status.get("game_lost") or status.get("game_won")
     if is_terminal and status.get("scorecard"):
         details.append("Final scorecard:\n" + scorecard_text(status))
@@ -1067,16 +1126,19 @@ def slim_status(status: dict[str, Any] | None) -> dict[str, Any]:
     keys = (
         "action",
         "action_count",
+        "allowed_commands",
         "collected_gems",
         "collected_this_action",
         "current_room",
         "current_view",
+        "death_message",
         "destination_room",
         "game_lost",
         "game_won",
         "gem_count",
         "moved",
         "player",
+        "player_dead",
         "quit",
         "room_changed",
         "solved",

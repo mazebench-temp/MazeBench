@@ -130,6 +130,35 @@ function isPlayerActorType(type) {
   return type === "player" || type === "circle_player";
 }
 
+const DEATH_MESSAGE = "The player died, you must now undo or reset or go to a level.";
+const ALIVE_ALLOWED_COMMANDS = Object.freeze([
+  "up",
+  "down",
+  "left",
+  "right",
+  "rotate camera up",
+  "rotate camera down",
+  "rotate camera left",
+  "rotate camera right",
+  "undo",
+  "reset",
+  "go to level X Y",
+  "quit"
+]);
+const DEAD_ALLOWED_COMMANDS = Object.freeze([
+  "undo",
+  "reset",
+  "go to level X Y"
+]);
+const DEAD_INTERNAL_COMMANDS = new Set([
+  "close",
+  "goto_level",
+  "observe",
+  "reset_level",
+  "scorecard",
+  "undo"
+]);
+
 function actorId(context, index) {
   const actor = context.playData.actors[index] || {};
   const type = context.engine.actorTypes[index] || actor.type || "actor";
@@ -168,6 +197,16 @@ function activePlayer(context) {
   }
 
   return null;
+}
+
+function isPlayerDead(context) {
+  return !activePlayer(context);
+}
+
+function allowedCommandsForContext(context) {
+  return isPlayerDead(context)
+    ? Array.from(DEAD_ALLOWED_COMMANDS)
+    : Array.from(ALIVE_ALLOWED_COMMANDS);
 }
 
 function recordSessionVisit(session) {
@@ -264,6 +303,8 @@ function sessionSnapshot(session, extra = {}) {
   const gameWonGemCount = normalizeGameWonGemCount(context.options?.gameWonGemCount);
   const gameWon = session.collectedGemIds.size === gameWonGemCount;
   const terminalExtra = { ...extra };
+  const player = activePlayer(context);
+  const playerDead = !player;
 
   if (gameWon && !terminalExtra.scorecard) {
     terminalExtra.game_won = true;
@@ -273,12 +314,15 @@ function sessionSnapshot(session, extra = {}) {
   return {
     ok: true,
     action_count: session.actionCount,
+    allowed_commands: allowedCommandsForContext(context),
     collected_gems: Array.from(session.collectedGemIds),
     current_room: context.level.id,
     current_view: currentView,
+    death_message: playerDead ? DEATH_MESSAGE : "",
     gem_count: session.collectedGemIds.size,
     level: rendered.level,
-    player: activePlayer(context),
+    player,
+    player_dead: playerDead,
     solved: context.engine.isSolved(context.state),
     visited_levels: Array.from(session.visitedLevels),
     yaw: context.options.yaw,
@@ -327,6 +371,10 @@ function handleCommand(session, message) {
 
   if (command === "observe") {
     return sessionSnapshot(session, { action: "observe" });
+  }
+
+  if (isPlayerDead(session.context) && !DEAD_INTERNAL_COMMANDS.has(command)) {
+    throw new Error(DEATH_MESSAGE);
   }
 
   if (command === "move") {

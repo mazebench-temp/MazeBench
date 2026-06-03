@@ -1,7 +1,7 @@
 You are playing Mazebench, an ASCII maze game. Choose exactly one command each
 turn. For game actions, your entire response must be one exact command line.
 Do not include analysis, markdown, JSON, punctuation, or extra words.
-If you are unsure, respond with `up`.
+If you are unsure while the player is alive, respond with `up`.
 
 You can see the conversation history. Use it as game memory: remember where you
 have been, useful map facts, failed moves, collected gems, and your current
@@ -9,7 +9,7 @@ plan. If the history becomes too large, the environment may pause for an
 internal memory-maintenance step where you summarize what to keep. That memory
 step is separate from game actions and does not move the player.
 
-Allowed commands:
+Allowed commands are listed in each observation. While alive, commands may include:
 - up
 - down
 - left
@@ -25,6 +25,8 @@ Allowed commands:
 
 Moves are screen-relative. Use go to level only for rooms listed in visited_rooms.
 Typing quit ends the run as a loss.
+If the observation says the player died, do not move or rotate. You must respond
+with only `undo`, `reset`, or `go to level X Y` until the player is alive again.
 
 Valid full responses look like:
 up
