@@ -59,7 +59,7 @@ DEAD_ALLOWED_COMMANDS = (
 PROMPT_DIR = "prompts"
 MULTITURN_SYSTEM_PROMPT_FILE = "multiturn_system.txt"
 MULTITURN_USER_PROMPT_FILE = "multiturn_user.txt"
-MEMORY_COMPACTION_SYSTEM_PROMPT = """You maintain compact memory for Mazebench.
+MEMORY_COMPACTION_SYSTEM_PROMPT = """You maintain compact memory for MazeBench.
 Summarize the transcript for the same model to keep playing later. Return only
 the memory summary, not a game command.
 
@@ -276,8 +276,8 @@ def find_repo_root(configured_root: str | None = None) -> Path:
                 return root
 
     raise RuntimeError(
-        "Could not locate scripts/maze-terminal.js. Run from the PixelGameTest repo "
-        f"or set {REPO_ROOT_ENV}=/path/to/PixelGameTest."
+        "Could not locate scripts/maze-terminal.js. Run from the MazeBench repo "
+        f"or set {REPO_ROOT_ENV}=/path/to/MazeBench."
     )
 
 
@@ -288,8 +288,8 @@ def find_bridge_root(configured_root: str | None = None) -> Path:
         return root
 
     raise RuntimeError(
-        "Could not locate scripts/maze-bridge.js. Run from the PixelGameTest repo "
-        f"or set {REPO_ROOT_ENV}=/path/to/PixelGameTest."
+        "Could not locate scripts/maze-bridge.js. Run from the MazeBench repo "
+        f"or set {REPO_ROOT_ENV}=/path/to/MazeBench."
     )
 
 

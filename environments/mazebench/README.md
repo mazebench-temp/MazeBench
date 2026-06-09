@@ -1,4 +1,4 @@
-# mazebench
+# MazeBench (`mazebench`)
 
 ### Overview
 - **Environment ID**: `mazebench`
@@ -6,7 +6,7 @@
 - **Tags**: maze, game, ascii, reasoning, train, eval
 
 ### Datasets
-- **Primary dataset(s)**: local world-map levels from the PixelGameTest maze game.
+- **Primary dataset(s)**: local world-map levels from the MazeBench maze game.
 - **Default starter level**: `level_HxI`.
 - **Source links**: `games/maze/levels`, `games/maze/world_map.json`, `scripts/maze-terminal.js`, and `scripts/maze-bridge.js`.
 - **Split sizes**: configurable; defaults to 1 train / 1 eval task.
@@ -74,8 +74,8 @@ npm run maze:model -- --level level_HxI --view top-diagonal --target-gems 1
 ```
 
 Notes:
-- Local runs prefer the live PixelGameTest repo when you run from its root. Built wheels also include the required JS runtime files so clean installs can load without a background server.
-- Set `MAZEBENCH_REPO_ROOT=/path/to/PixelGameTest` when you want an installed package to use a specific checkout instead of its bundled runtime.
+- Local runs prefer the live MazeBench repo when you run from its root. Built wheels also include the required JS runtime files so clean installs can load without a background server.
+- Set `MAZEBENCH_REPO_ROOT=/path/to/MazeBench` when you want an installed package to use a specific checkout instead of its bundled runtime.
 - The JS bridge tracks visited rooms and globally unique collected gem IDs. `go to level X Y` is only allowed for rooms already present in `visited_levels`.
 
 ### Command Contract
@@ -104,9 +104,9 @@ Accepted text forms include `up`, `rotate camera left`, `undo`, `reset`, `go to 
 | `memory_compaction` | bool | `true` | Enable automatic model-authored memory compaction before prompts grow too large. |
 | `memory_compaction_token_ratio` | float | `0.9` | Fraction of the model's inferred context limit that triggers automatic compaction. |
 | `memory_compaction_max_tokens` | int | `1024` | Minimum output budget used for the internal memory summary call. |
-| `model_context_tokens` | int/null | `None` | Optional explicit context limit override. By default Mazebench infers common model family limits from the selected model name. |
+| `model_context_tokens` | int/null | `None` | Optional explicit context limit override. By default MazeBench infers common model family limits from the selected model name. |
 | `target_gems` | int | `0` | Optional gem-reward/prompt target for smoke runs. `0` uses the `game_won_gem_count` objective. The semantic `game_won` condition remains `game_won_gem_count`. |
-| `repo_root` | str/null | `None` | PixelGameTest repo root. Falls back to `MAZEBENCH_REPO_ROOT` or current working directory. |
+| `repo_root` | str/null | `None` | MazeBench repo root. Falls back to `MAZEBENCH_REPO_ROOT` or current working directory. |
 | `node_bin` | str | `node` | Node executable used to run the JS benchmark bridge. |
 | `timeout_seconds` | int | `20` | Subprocess timeout for JS observation/scoring calls. |
 | `system_prompt` | str | built in | Optional instruction override. |

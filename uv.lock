@@ -1496,7 +1496,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pixelgametest"
+name = "maze-bench"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

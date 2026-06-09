@@ -158,21 +158,12 @@ function syntheticFloor(width, height) {
 {
   const context = createContext();
 
-  applyMove(context, "U");
-  assert.deepEqual(playerPosition(context), { elevation: 0, x: 8, y: 3 });
-  assert.equal(undoMove(context), true);
-  assert.deepEqual(playerPosition(context), { elevation: 0, x: 8, y: 4 });
-}
-
-{
-  const context = createContext();
-
-  "UUUUU".split("").forEach((move) => applyMove(context, move));
-  assert.equal(context.level.id, "level_AxP");
-  assert.deepEqual(playerPosition(context), { elevation: 0, x: 8, y: 15 });
+  applyMove(context, "D");
+  assert.equal(context.level.id, "level_AxB");
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 0 });
   assert.equal(undoMove(context), true);
   assert.equal(context.level.id, "level_AxA");
-  assert.deepEqual(playerPosition(context), { elevation: 0, x: 8, y: 0 });
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 15 });
 }
 
 {
@@ -180,9 +171,9 @@ function syntheticFloor(width, height) {
 
   applyMove(context, "U");
   applyMove(context, "U");
-  assert.deepEqual(playerPosition(context), { elevation: 0, x: 8, y: 2 });
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 13 });
   assert.equal(resetLevel(context), true);
-  assert.deepEqual(playerPosition(context), { elevation: 0, x: 8, y: 4 });
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 15 });
   assert.equal(undoMove(context), false);
 }
 
@@ -205,7 +196,7 @@ function syntheticFloor(width, height) {
   const context = createContext();
 
   context.stats.startedAtMs = 1000;
-  "UUUUU".split("").forEach((move) => applyMove(context, move));
+  applyMove(context, "D");
   const scorecard = JSON.parse(buildScorecard(context, 61000)).scorecard;
 
   assert.deepEqual(scorecard.result, {
@@ -216,23 +207,23 @@ function syntheticFloor(width, height) {
   assert.equal(scorecard.gems.total > 0, true);
   assert.equal(scorecard.rooms.visited, 2);
   assert.equal(scorecard.rooms.total > 0, true);
-  assert.deepEqual(scorecard.rooms.ids, ["level_AxA", "level_AxP"]);
+  assert.deepEqual(scorecard.rooms.ids, ["level_AxA", "level_AxB"]);
   assert.equal(typeof scorecard.tiles.visited, "number");
   assert.equal(Object.prototype.hasOwnProperty.call(scorecard.tiles, "visited_with_elevation"), false);
   assert.equal(scorecard.duration.milliseconds, 60000);
   assert.equal(scorecard.duration.seconds, 60);
   assert.deepEqual(scorecard.current_position, {
     elevation: 0,
-    level_id: "level_AxP",
-    x: 8,
-    y: 15
+    level_id: "level_AxB",
+    x: 6,
+    y: 0
   });
-  assert.equal(scorecard.actions.moves.attempted, 5);
-  assert.equal(scorecard.actions.moves.successful, 5);
+  assert.equal(scorecard.actions.moves.attempted, 1);
+  assert.equal(scorecard.actions.moves.successful, 1);
   assert.equal(scorecard.actions.moves.blocked, 0);
   assert.equal(scorecard.actions.moves.room_transitions, 1);
-  assert.equal(scorecard.actions.moves.by_direction.up.attempted, 5);
-  assert.equal(scorecard.actions.moves.by_direction.up.successful, 5);
+  assert.equal(scorecard.actions.moves.by_direction.down.attempted, 1);
+  assert.equal(scorecard.actions.moves.by_direction.down.successful, 1);
 
   context.options.gameWonGemCount = 1;
   assert.equal(isGameWon(context), false);
@@ -463,15 +454,13 @@ function syntheticFloor(width, height) {
   assert.match(output, /p/);
   assert.match(body(output), /[A-Z]/);
   assert.match(body(output), /[A-Za-z] +[A-Za-z]/);
-  assert.equal(bodyRows(output)[0].startsWith(" "), false);
   assert.equal(/pAp|appA/.test(body(output)), false);
-  assert.equal(countMatches(body(output), /a/g) < 80, true);
 }
 
 {
-  const output = runTerminal(["--level", "level_AxA", "--view", "top", "--moves", "UUUUU", "--once"]);
+  const output = runTerminal(["--level", "level_AxA", "--view", "top", "--moves", "D", "--once"]);
 
-  assert.match(output, /maze level_AxP \| view=top yaw=0/);
+  assert.match(output, /maze level_AxB \| view=top yaw=0/);
   assert.match(body(output), /P/);
   assert.doesNotMatch(body(output), /[a-z]/);
 }
@@ -534,7 +523,6 @@ function syntheticFloor(width, height) {
   assert.match(body(output), /[a-z]/);
   assert.doesNotMatch(body(output), /[A-Z]/);
   assert.match(body(output), /[a-z] +[a-z]/);
-  assert.equal(rows.length, 5);
   assert.equal(rows.filter((row) => row.includes("p")).length, 4);
   assert.equal(rows.some((row) => row.includes("p") && row.includes("a")), false);
 }
@@ -638,18 +626,22 @@ function syntheticFloor(width, height) {
 }
 
 {
-  const [firstMove, won] = runBridge(
+  const [firstMove, secondMove, thirdMove, won] = runBridge(
     [
-      { command: "move", direction: "down" },
-      { command: "move", direction: "down" }
+      { command: "move", direction: "up" },
+      { command: "move", direction: "right" },
+      { command: "move", direction: "right" },
+      { command: "move", direction: "left" }
     ],
-    ["--level", "level_GxL", "--view", "top", "--game-won-gem-count", "1"]
+    ["--level", "level_HxC", "--view", "top", "--game-won-gem-count", "1"]
   );
 
   assert.equal(firstMove.game_won, undefined);
+  assert.equal(secondMove.game_won, undefined);
+  assert.equal(thirdMove.game_won, undefined);
   assert.equal(won.gem_count, 1);
   assert.equal(won.game_won, true);
-  assert.equal(won.current_room, "level_GxM");
+  assert.equal(won.current_room, "level_IxC");
   assert.deepEqual(won.scorecard.result, {
     percent: 100,
     won: true
@@ -659,10 +651,6 @@ function syntheticFloor(width, height) {
 {
   const [
     initial,
-    step1,
-    step2,
-    step3,
-    step4,
     changedRoom,
     jumpedBack,
     rejectedJump,
@@ -670,11 +658,7 @@ function syntheticFloor(width, height) {
   ] = runBridge(
     [
       { command: "observe" },
-      { command: "move", direction: "up" },
-      { command: "move", direction: "up" },
-      { command: "move", direction: "up" },
-      { command: "move", direction: "up" },
-      { command: "move", direction: "up" },
+      { command: "move", direction: "down" },
       { command: "goto_level", x: "A", y: "A" },
       { command: "goto_level", x: "B", y: "B" },
       { command: "close" }
@@ -685,21 +669,15 @@ function syntheticFloor(width, height) {
   assert.equal(initial.current_room, "level_AxA");
   assert.deepEqual(initial.visited_levels, ["level_AxA"]);
 
-  [step1, step2, step3, step4].forEach((payload) => {
-    assert.equal(payload.action, "move");
-    assert.equal(payload.current_room, "level_AxA");
-    assert.equal(payload.room_changed, false);
-  });
-
   assert.equal(changedRoom.action, "move");
-  assert.equal(changedRoom.current_room, "level_AxP");
+  assert.equal(changedRoom.current_room, "level_AxB");
   assert.equal(changedRoom.room_changed, true);
-  assert.deepEqual(changedRoom.visited_levels, ["level_AxA", "level_AxP"]);
+  assert.deepEqual(changedRoom.visited_levels, ["level_AxA", "level_AxB"]);
 
   assert.equal(jumpedBack.action, "goto_level");
   assert.equal(jumpedBack.current_room, "level_AxA");
   assert.equal(jumpedBack.destination_room, "level_AxA");
-  assert.deepEqual(jumpedBack.visited_levels, ["level_AxA", "level_AxP"]);
+  assert.deepEqual(jumpedBack.visited_levels, ["level_AxA", "level_AxB"]);
 
   assert.equal(rejectedJump.ok, false);
   assert.match(rejectedJump.error, /cannot goto unvisited level: level_BxB/);

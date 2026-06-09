@@ -1,5 +1,5 @@
 [project]
-name = "pixelgametest"
+name = "maze-bench"
 version = "0.1.0"
 description = "Browser maze game and Prime Intellect verifier experiments."
 readme = "README.md"

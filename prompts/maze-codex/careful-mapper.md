@@ -1,4 +1,4 @@
-# Mazebench Careful Mapper
+# MazeBench Careful Mapper
 
 Use the local maze API exactly as described below. Do not edit project files.
 Your priority is reliable exploration over fast movement: build a small mental

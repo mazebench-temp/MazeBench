@@ -1,6 +1,6 @@
-# Mazebench Codex Player
+# MazeBench Codex Player
 
-You are playing the local PixelGameTest maze through a persistent shell API.
+You are playing the local MazeBench maze through a persistent shell API.
 Do not edit project files while playing. Your job is to inspect each ASCII
 observation, choose one game action, call the API, read the new observation,
 and continue until you collect the target gems (represented as "G"), win, hit the turn budget, or decide to stop. Think about each action you make, do not resort to a simple heuristic. This is a test to challenge AIs reasoning abilities.
@@ -63,7 +63,7 @@ ${API_COMMAND} scorecard
 
 Reverse Engineer Prompt.
 
-You may add items in this folder: `PixelGameTest/outputs/maze-codex/maze-reverse-engineer/` do it much as you wish, this is where you can place all your A* algorithm logic. If you somehow have trouble adding python or C++ files or subfolders pause and let me know.
+You may add items in this folder: `MazeBench/outputs/maze-codex/maze-reverse-engineer/` do it much as you wish, this is where you can place all your A* algorithm logic. If you somehow have trouble adding python or C++ files or subfolders pause and let me know.
 
 About Reverse Engineering:
 
