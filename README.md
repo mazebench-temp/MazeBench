@@ -24,7 +24,7 @@ http://localhost:3000
 Start an interactive terminal game:
 
 ```bash
-npm run maze:terminal -- --level level_HxI --view top-diagonal
+npm run maze:terminal
 ```
 
 Controls:
@@ -42,7 +42,7 @@ When the run ends, answer the video prompt to save `maze_replay.mp4`.
 For a non-interactive run that saves the scorecard and video:
 
 ```bash
-npm run maze:terminal -- --level level_HxI --view top-diagonal --moves UDLR --once --record-replay --video --fast --draft --fps 20 --width 400 --height 400
+npm run maze:terminal -- --moves UDLR --once --record-replay --video --fast --draft --fps 20 --width 400 --height 400
 ```
 
 The output folder contains:
@@ -54,6 +54,18 @@ The output folder contains:
 - `maze_replay.mp4` when video is enabled
 
 ## 3. Run with Prime Intellect Verifiers and see results
+
+Install `uv` if you do not already have it:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+On macOS, Homebrew also works:
+
+```bash
+brew install uv
+```
 
 Install the local environment from `./environments/mazebench`:
 

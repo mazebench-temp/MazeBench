@@ -191,7 +191,7 @@ function parseArgs(argv) {
     gameId: "maze",
     gameWonGemCount: GAME_WON_GEM_COUNT,
     json: false,
-    levelId: "",
+    levelId: "level_HxI",
     maxExpandedStates: 1000000,
     moves: "",
     pitch: 1,
@@ -273,9 +273,10 @@ function printHelp() {
   console.log(`Usage: npm run maze:terminal -- [options]
 
 Options:
-  --level <id>       Maze world level id, for example level_HxI.
+  --level <id>       Maze world level id. Defaults to level_HxI.
   --moves <UDLR>     Apply moves and print the resulting board once.
   --view <name>      top, top-diagonal, diagonal, side-diagonal, or side.
+                     Defaults to top-diagonal.
   --pitch <0-4>      Camera pitch; 0 is top-down, 4 is side.
   --yaw <0-3>        Camera yaw rotation.
   --json             Print machine-readable state instead of terminal text.
