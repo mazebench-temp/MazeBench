@@ -7,16 +7,15 @@ import select
 import signal
 import shlex
 import subprocess
-from functools import lru_cache
+import atexit
 from importlib.resources import files
 from pathlib import Path
 from string import Template
 from typing import Any
 
-from datasets import Dataset
+from pydantic import Field
 
-import verifiers as vf
-from verifiers.utils.message_utils import concat_messages, normalize_messages
+import verifiers.v1 as vf
 
 
 DEFAULT_GAME_ID = "maze"
@@ -27,9 +26,6 @@ DEFAULT_NODE_BIN = "node"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_TURNS = 40
 DEFAULT_TARGET_GEMS = 0
-DEFAULT_MEMORY_COMPACTION_TOKEN_RATIO = 0.9
-DEFAULT_MEMORY_COMPACTION_MAX_TOKENS = 1024
-DEFAULT_MODEL_CONTEXT_TOKENS = 128_000
 GAME_WON_GEM_COUNT = 100
 ROOM_EXPLORATION_REWARD_WEIGHT = 0.1
 REPO_ROOT_ENV = "MAZEBENCH_REPO_ROOT"
@@ -59,36 +55,6 @@ DEAD_ALLOWED_COMMANDS = (
 PROMPT_DIR = "prompts"
 MULTITURN_SYSTEM_PROMPT_FILE = "multiturn_system.txt"
 MULTITURN_USER_PROMPT_FILE = "multiturn_user.txt"
-MEMORY_COMPACTION_SYSTEM_PROMPT = """You maintain compact memory for MazeBench.
-Summarize the transcript for the same model to keep playing later. Return only
-the memory summary, not a game command.
-
-The returned memory replaces the older transcript. It must cover both the
-existing memory summary and the gameplay since that summary.
-
-Keep:
-- objective and win condition
-- current room, player position, view, yaw, gems collected, visited rooms
-- useful map facts, routes, blockers, failed moves, and successful moves
-- current plan and next likely action
-
-Forget:
-- repeated ASCII screens unless a detail matters
-- invalid empty responses or formatting mistakes
-- generic instructions already present in the system prompt"""
-ROW_FIELD_NAMES = {
-    "example_id",
-    "game_id",
-    "game_won_gem_count",
-    "level_id",
-    "node_bin",
-    "observation",
-    "repo_root",
-    "target_gems",
-    "timeout_seconds",
-    "view",
-    "yaw",
-}
 INFO_ROW_FIELD_NAMES = {
     "game_won_gem_count",
     "level_id",
@@ -99,103 +65,6 @@ INFO_ROW_FIELD_NAMES = {
     "view",
     "yaw",
 }
-MODEL_CONTEXT_TOKEN_LIMITS: tuple[tuple[str, int], ...] = (
-    (r"(^|/)gpt-4\.1(?:-|$)", 1_047_576),
-    (r"(^|/)gpt-5(?:[.-]\d+)?(?:-|$|/)", 400_000),
-    (r"(^|/)gpt-4o(?:-|$)", 128_000),
-    (r"(^|/)gpt-4\.5(?:-|$)", 128_000),
-    (r"(^|/)o[134](?:-|$)", 200_000),
-    (r"claude", 200_000),
-    (r"gemini", 1_048_576),
-    (r"qwen3", 262_144),
-    (r"qwen", 128_000),
-    (r"deepseek", 128_000),
-    (r"glm", 128_000),
-)
-
-
-def reasoning_value_to_text(value: object) -> str | None:
-    if value is None:
-        return None
-
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-
-    if hasattr(value, "model_dump"):
-        try:
-            return reasoning_value_to_text(value.model_dump())
-        except Exception:
-            return str(value)
-
-    if isinstance(value, list):
-        parts = [reasoning_value_to_text(item) for item in value]
-        text = "\n".join(part for part in parts if part)
-        if text.strip():
-            return text.strip()
-        try:
-            return json.dumps(value, ensure_ascii=False)
-        except TypeError:
-            return str(value)
-
-    if isinstance(value, dict):
-        preferred_keys = (
-            "text",
-            "content",
-            "reasoning",
-            "reasoning_content",
-            "summary",
-            "message",
-            "data",
-        )
-        parts = [
-            reasoning_value_to_text(value[key])
-            for key in preferred_keys
-            if key in value
-        ]
-        text = "\n".join(part for part in parts if part)
-        if text.strip():
-            return text.strip()
-        try:
-            return json.dumps(value, ensure_ascii=False)
-        except TypeError:
-            return str(value)
-
-    return str(value)
-
-
-def install_reasoning_content_parser_patch() -> None:
-    try:
-        from verifiers.clients import openai_chat_completions_client as chat_client
-    except Exception:
-        return
-
-    if getattr(chat_client, "_mazebench_reasoning_parser_patch", False):
-        return
-
-    def parse_reasoning_content(message: Any) -> str | None:
-        try:
-            message_dict = message.model_dump()
-        except Exception:
-            message_dict = dict(message) if isinstance(message, dict) else {}
-
-        if not isinstance(message_dict, dict):
-            return None
-
-        for field in chat_client.DEFAULT_REASONING_FIELDS:
-            text = reasoning_value_to_text(message_dict.get(field))
-            if text:
-                return text
-
-        return None
-
-    chat_client.parse_reasoning_content = parse_reasoning_content
-    chat_client._mazebench_reasoning_parser_patch = True
-
-
-install_reasoning_content_parser_patch()
-
-
 def read_prompt_file(filename: str) -> str:
     return (
         files(__package__ or "mazebench")
@@ -419,262 +288,6 @@ def render_multiturn_user_prompt(
     )
 
 
-def build_multiturn_prompt(row: dict[str, Any]) -> list[dict[str, str]]:
-    status = {
-        "current_room": row["level_id"],
-        "current_view": row["view"],
-        "gem_count": 0,
-        "level": row["observation"],
-        "player": None,
-        "visited_levels": [row["level_id"]],
-        "yaw": row["yaw"],
-    }
-    return [
-        {
-            "role": "user",
-            "content": render_multiturn_user_prompt(
-                status=status,
-                target_text=target_text_for_row(row),
-                result_text="Start of run.",
-            ),
-        }
-    ]
-
-
-def row_mapping(value: object) -> dict[str, Any]:
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return row_mapping(parsed)
-
-    if isinstance(value, dict):
-        return dict(value)
-
-    if hasattr(value, "keys"):
-        try:
-            return {str(key): value[key] for key in value.keys()}
-        except Exception:
-            return {}
-
-    return {}
-
-
-def message_text(message: object) -> str:
-    if isinstance(message, dict):
-        content = message.get("content", "")
-    else:
-        content = getattr(message, "content", "")
-
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or part.get("content") or "")
-            if isinstance(part, dict)
-            else str(part)
-            for part in content
-        )
-
-    return str(content or "")
-
-
-def message_role(message: object) -> str:
-    if isinstance(message, dict):
-        return str(message.get("role") or "")
-    return str(getattr(message, "role", "") or "")
-
-
-def prompt_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-
-    if isinstance(value, list):
-        return "\n".join(message_text(message) for message in value)
-
-    return ""
-
-
-def row_from_prompt(value: object) -> dict[str, Any]:
-    text = prompt_text(value)
-    if not text:
-        return {}
-
-    row: dict[str, Any] = {}
-    objective_match = re.search(
-        r"Objective:\s*Collect(?: at least)?\s+(\d+)\s+unique gem",
-        text,
-        re.IGNORECASE,
-    )
-    if objective_match:
-        row["game_won_gem_count"] = int(objective_match.group(1))
-
-    room_match = re.search(r"Current room:\s*`?([A-Za-z0-9_]+x[A-Za-z])`?", text)
-    if room_match:
-        row["level_id"] = normalize_level_id(room_match.group(1))
-
-    view_match = re.search(r"Current view:\s*([A-Za-z-]+)", text)
-    if view_match:
-        row["view"] = view_match.group(1)
-
-    yaw_match = re.search(r"Yaw:\s*(-?\d+)", text)
-    if yaw_match:
-        row["yaw"] = int(yaw_match.group(1))
-
-    return row
-
-
-def row_from_info(value: object) -> dict[str, Any]:
-    info = row_mapping(value)
-    if not info:
-        return {}
-
-    for key in (INFO_KEY, "maze_row"):
-        row = row_mapping(info.get(key))
-        if any(field in row for field in ROW_FIELD_NAMES):
-            return row
-
-    return {
-        field: info[field]
-        for field in INFO_ROW_FIELD_NAMES
-        if field in info
-    }
-
-
-def row_from_state(state: vf.State) -> dict[str, Any]:
-    for key in ("maze_row", "input", "task"):
-        row = row_mapping(state.get(key))
-        info_row = row_from_info(row.get("info"))
-        if info_row:
-            row = {**row, **info_row}
-
-        if any(field in row for field in ROW_FIELD_NAMES):
-            return row
-
-    info_row = row_from_info(state.get("info"))
-    if info_row:
-        return info_row
-
-    row = {
-        field: state.get(field)
-        for field in ROW_FIELD_NAMES
-        if state.get(field) is not None
-    }
-    if any(field in row for field in ROW_FIELD_NAMES):
-        return row
-
-    return row_from_prompt(state.get("prompt"))
-
-
-def compacted_memory_prompt_messages(
-    state: vf.State,
-    env_response: vf.Messages,
-) -> vf.Messages:
-    prompt = state.get("prompt") or []
-    system_messages = [
-        message
-        for message in prompt
-        if message_role(message) == "system"
-    ]
-    memory = str(state.get("maze_memory") or "").strip()
-    memory_messages = (
-        [
-            vf.UserMessage(
-                content=(
-                    "Model memory summary from earlier transcript:\n"
-                    f"{memory}"
-                )
-            )
-        ]
-        if memory
-        else []
-    )
-    return normalize_messages(
-        sanitize_prompt_messages(
-            [*system_messages, *memory_messages, *env_response]
-        ),
-        field_name="prompt_messages",
-    )
-
-
-def normalize_model_name(model: object) -> str:
-    return str(model or "").strip().lower()
-
-
-def known_model_context_tokens(model: object) -> int:
-    model_name = normalize_model_name(model)
-    for pattern, token_limit in MODEL_CONTEXT_TOKEN_LIMITS:
-        if re.search(pattern, model_name):
-            return token_limit
-    return DEFAULT_MODEL_CONTEXT_TOKENS
-
-
-@lru_cache(maxsize=32)
-def tokenizer_encoding_name(model: str) -> str | None:
-    try:
-        import tiktoken
-    except Exception:
-        return None
-
-    model_name = normalize_model_name(model).split("/")[-1]
-    try:
-        encoding = tiktoken.encoding_for_model(model_name)
-    except Exception:
-        try:
-            encoding = tiktoken.get_encoding("o200k_base")
-        except Exception:
-            return None
-    return str(encoding.name)
-
-
-@lru_cache(maxsize=32)
-def tokenizer_for_encoding(encoding_name: str):
-    import tiktoken
-
-    return tiktoken.get_encoding(encoding_name)
-
-
-def estimate_text_tokens(text: str, model: object = "") -> int:
-    if not text:
-        return 0
-
-    encoding_name = tokenizer_encoding_name(normalize_model_name(model))
-    if encoding_name:
-        try:
-            return len(tokenizer_for_encoding(encoding_name).encode(text))
-        except Exception:
-            pass
-
-    # Conservative-ish fallback for providers without an installed tokenizer.
-    return max(1, (len(text) + 3) // 4)
-
-
-def estimate_messages_tokens(messages: vf.Messages, model: object = "") -> int:
-    total = 3
-    for message in messages:
-        total += 4
-        total += estimate_text_tokens(message_role(message), model)
-        total += estimate_text_tokens(message_content(message), model)
-    return total
-
-
-def transcript_for_memory(messages: vf.Messages) -> str:
-    parts: list[str] = []
-    for message in messages:
-        role = message_role(message) or "message"
-        content = message_content(message).strip()
-        if not content:
-            content = "(empty)"
-        parts.append(f"{role}:\n{content}")
-    return "\n\n---\n\n".join(parts)
-
-
-def current_state_messages(messages: vf.Messages) -> vf.Messages:
-    for message in reversed(messages):
-        if message_role(message) == "user":
-            return [message]
-    return []
-
-
 def make_row(
     *,
     example_id: int,
@@ -717,7 +330,6 @@ def make_row(
             }
         }
     )
-    row["prompt"] = build_multiturn_prompt(row)
     return row
 
 
@@ -837,42 +449,6 @@ class MazeSession:
                 self.process.kill()
 
 
-def gem_score(state, target_gems: int = DEFAULT_TARGET_GEMS, **kwargs) -> float:
-    del kwargs
-    status = state.get("maze_status") or {}
-    gem_count = int(status.get("gem_count") or 0)
-    target = int(target_gems or 0)
-
-    if target <= 0:
-        return float(gem_count)
-
-    return min(1.0, gem_count / target)
-
-
-def collected_gems(state, **kwargs) -> float:
-    del kwargs
-    status = state.get("maze_status") or {}
-    return float(status.get("gem_count") or 0)
-
-
-def current_level_solved(state, **kwargs) -> float:
-    del kwargs
-    status = state.get("maze_status") or {}
-    return 1.0 if status.get("solved") else 0.0
-
-
-def visited_level_count(state, **kwargs) -> float:
-    del kwargs
-    status = state.get("maze_status") or {}
-    return float(len(status.get("visited_levels") or []))
-
-
-def room_exploration_score(state, **kwargs) -> float:
-    del kwargs
-    status = state.get("maze_status") or {}
-    return float(max(0, len(status.get("visited_levels") or []) - 1))
-
-
 COMMAND_ALIASES = {
     "close": "quit",
     "go_to_level": "goto_level",
@@ -887,65 +463,6 @@ COMMAND_ALIASES = {
     "undo": "undo",
 }
 DIRECTIONS = {"up", "down", "left", "right"}
-
-
-def message_content(message: object) -> str:
-    if isinstance(message, dict):
-        content = message.get("content", "")
-    else:
-        content = getattr(message, "content", "")
-
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, dict):
-                parts.append(str(part.get("text") or part.get("content") or ""))
-            else:
-                parts.append(str(part))
-        return "\n".join(parts)
-
-    return str(content or "")
-
-
-def sanitize_assistant_message(message: object) -> object:
-    if isinstance(message, dict):
-        role = message.get("role")
-        content = message.get("content")
-        tool_calls = message.get("tool_calls")
-    else:
-        role = getattr(message, "role", None)
-        content = getattr(message, "content", None)
-        tool_calls = getattr(message, "tool_calls", None)
-
-    if role != "assistant":
-        return message
-
-    if isinstance(message, dict):
-        return vf.AssistantMessage(
-            content="" if content is None and not tool_calls else content,
-            tool_calls=tool_calls,
-        )
-
-    if content is None:
-        content = ""
-
-    should_sanitize = (
-        getattr(message, "reasoning_content", None) is not None
-        or getattr(message, "thinking_blocks", None) is not None
-        or getattr(message, "content", None) is None
-    )
-    if not should_sanitize:
-        return message
-
-    return vf.AssistantMessage(content=content, tool_calls=tool_calls)
-
-
-def sanitize_prompt_messages(messages: vf.Messages) -> vf.Messages:
-    return [sanitize_assistant_message(message) for message in messages]
-
-
-def append_conversation_log(state: vf.State, messages: vf.Messages) -> None:
-    state.setdefault("maze_conversation_log", []).extend(messages)
 
 
 def strip_code_fence(text: str) -> str:
@@ -1158,8 +675,13 @@ def record_maze_action(
     status: dict[str, Any] | None = None,
 ) -> None:
     action_args = action_args or {}
+    current_actions = (
+        state.get("maze_actions", [])
+        if isinstance(state, dict)
+        else getattr(state, "maze_actions", [])
+    )
     record = {
-        "turn": len(state.get("maze_actions") or []) + 1,
+        "turn": len(current_actions or []) + 1,
         "valid": error is None,
         "raw_response": raw_response.strip(),
         "command": (
@@ -1172,432 +694,308 @@ def record_maze_action(
         "error": error,
         "status": slim_status(status),
     }
-    state.setdefault("maze_actions", []).append(record)
+    if isinstance(state, dict):
+        state.setdefault("maze_actions", []).append(record)
+    else:
+        actions = list(current_actions or [])
+        actions.append(record)
+        state.maze_actions = actions
 
 
 def set_maze_scorecard(state: vf.State, scorecard: dict[str, Any] | None) -> None:
     if not isinstance(scorecard, dict):
         return
 
-    state["maze_scorecard"] = scorecard
-    replay = state.get("maze_replay")
+    if isinstance(state, dict):
+        state["maze_scorecard"] = scorecard
+        replay = state.get("maze_replay")
+    else:
+        state.maze_scorecard = scorecard
+        replay = getattr(state, "maze_replay", None)
     if isinstance(replay, dict):
         replay["scorecard"] = scorecard
+        if not isinstance(state, dict):
+            state.maze_replay = replay
 
 
-class MazeTextEnv(vf.MultiTurnEnv):
-    def __init__(
-        self,
-        *,
-        max_turns: int = DEFAULT_MAX_TURNS,
-        memory_compaction: bool = True,
-        memory_compaction_token_ratio: float = DEFAULT_MEMORY_COMPACTION_TOKEN_RATIO,
-        memory_compaction_max_tokens: int = DEFAULT_MEMORY_COMPACTION_MAX_TOKENS,
-        model_context_tokens: int | None = None,
-        rubric: vf.Rubric | None = None,
-        **kwargs,
-    ) -> None:
-        super().__init__(max_turns=-1, rubric=rubric, **kwargs)
-        self.maze_max_turns = int(max_turns)
-        self.memory_compaction = bool(memory_compaction)
-        self.memory_compaction_token_ratio = min(
-            1.0,
-            max(0.0, float(memory_compaction_token_ratio)),
+class MazeBenchTask(vf.Task):
+    example_id: int
+    game_id: str = DEFAULT_GAME_ID
+    game_won_gem_count: int = GAME_WON_GEM_COUNT
+    level_id: str = DEFAULT_START_LEVEL_ID
+    node_bin: str = DEFAULT_NODE_BIN
+    observation: str = ""
+    repo_root: str = ""
+    target_gems: int = DEFAULT_TARGET_GEMS
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    view: str = DEFAULT_VIEW
+    yaw: int = DEFAULT_YAW
+
+
+class MazeBenchConfig(vf.TasksetConfig):
+    id: vf.EnvId = "mazebench"
+    num_examples: int = 1
+    level_ids: str | list[str] | None = None
+    start_level_id: str = DEFAULT_START_LEVEL_ID
+    view: str = DEFAULT_VIEW
+    yaw: int = DEFAULT_YAW
+    game_won_gem_count: int = GAME_WON_GEM_COUNT
+    node_bin: str = DEFAULT_NODE_BIN
+    repo_root: str | None = None
+    target_gems: int = DEFAULT_TARGET_GEMS
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    system_prompt: str = MULTITURN_SYSTEM_PROMPT
+    user: vf.UserConfig = Field(default_factory=vf.UserConfig)
+
+
+class MazeBenchState(vf.State):
+    game_lost: bool = False
+    game_won: bool = False
+    maze_actions: list[dict[str, Any]] = Field(default_factory=list)
+    maze_replay: dict[str, Any] = Field(default_factory=dict)
+    maze_scorecard: dict[str, Any] = Field(default_factory=dict)
+    maze_status: dict[str, Any] = Field(default_factory=dict)
+    maze_status_error: str = ""
+
+
+class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
+    async def setup_task(self, task: MazeBenchTask) -> None:
+        self.task = task
+        self.session = MazeSession(
+            game_won_gem_count=task.game_won_gem_count,
+            level_id=task.level_id,
+            node_bin=task.node_bin,
+            repo_root=task.repo_root or str(find_bridge_root()),
+            timeout_seconds=task.timeout_seconds,
+            view=task.view,
+            yaw=task.yaw,
         )
-        self.memory_compaction_max_tokens = int(memory_compaction_max_tokens)
-        self.model_context_tokens = (
-            int(model_context_tokens) if model_context_tokens is not None else None
-        )
+        atexit.register(self.close_session)
 
-    async def get_prompt_messages(self, state: vf.State) -> vf.Messages:
-        if len(state["trajectory"]) == 0:
-            return normalize_messages(
-                sanitize_prompt_messages(state["prompt"]),
-                field_name="prompt_messages",
-            )
+    def close_session(self) -> None:
+        session = getattr(self, "session", None)
+        if isinstance(session, MazeSession):
+            session.close()
+            self.session = None
 
-        prev_turn_prompt = state["trajectory"][-1]["prompt"]
-        prev_turn_completion = state["trajectory"][-1]["completion"]
-        messages = concat_messages([prev_turn_prompt, prev_turn_completion])
-        env_response = await self.env_response(messages, state)
-        env_response = normalize_messages(env_response, field_name="env_response")
-        append_conversation_log(state, env_response)
-
-        prompt_messages = normalize_messages(
-            sanitize_prompt_messages(concat_messages([messages, env_response])),
-            field_name="prompt_messages",
-        )
-        return await self.maybe_compact_memory(state, prompt_messages)
-
-    async def render_completion(self, state: vf.State) -> None:
-        log = state.get("maze_conversation_log")
-        if log is not None:
-            state["completion"] = normalize_messages(
-                log,
-                field_name="maze_conversation_log",
-            )
-            return
-
-        await super().render_completion(state)
-
-    async def add_model_response(
-        self,
-        state: vf.State,
-        prompt_messages: vf.Messages,
-        response: vf.Response,
-    ) -> None:
-        await super().add_model_response(state, prompt_messages, response)
-        if state["trajectory"]:
-            completion = state["trajectory"][-1]["completion"]
-            append_conversation_log(state, completion)
-
-            assistant_message = completion[-1] if completion else None
-            reasoning_content = getattr(assistant_message, "reasoning_content", None)
-            diagnostic = {
-                "turn": len(state["trajectory"]),
-                "content_len": len(message_content(assistant_message)),
-                "reasoning_len": len(reasoning_content or ""),
-                "finish_reason": getattr(response.message, "finish_reason", None),
-                "response_id": response.id,
-            }
-            state.setdefault("maze_response_diagnostics", []).append(diagnostic)
-            if not reasoning_content:
-                state.setdefault("maze_missing_reasoning_turns", []).append(
-                    diagnostic["turn"]
-                )
-                self.logger.info(
-                    "Assistant turn %s had no exposed reasoning_content in the "
-                    "parsed provider response.",
-                    diagnostic["turn"],
-                )
-
-    async def maybe_compact_memory(
-        self,
-        state: vf.State,
-        prompt_messages: vf.Messages,
-    ) -> vf.Messages:
-        if not self.memory_compaction or state.get("final_env_response") is not None:
-            return prompt_messages
-
-        model = state.get("model")
-        context_tokens = (
-            self.model_context_tokens
-            or state.get("model_context_tokens")
-            or self.max_seq_len
-            or known_model_context_tokens(model)
-        )
-        context_tokens = int(context_tokens)
-        prompt_tokens = estimate_messages_tokens(prompt_messages, model)
-        sampling_args = state.get("sampling_args") or {}
-        output_reserve_tokens = int(
-            sampling_args.get("max_tokens")
-            or sampling_args.get("max_completion_tokens")
-            or 0
-        )
-        compaction_threshold_tokens = int(
-            max(1, context_tokens) * self.memory_compaction_token_ratio
-        )
-        state["maze_prompt_tokens_estimate"] = prompt_tokens
-        state["maze_model_context_tokens"] = context_tokens
-        state["maze_memory_compaction_threshold_tokens"] = compaction_threshold_tokens
-
-        if prompt_tokens + output_reserve_tokens < compaction_threshold_tokens:
-            return prompt_messages
-
-        state["maze_last_memory_compaction_prompt_tokens"] = prompt_tokens
-
-        summary = await self.generate_memory_summary(state, prompt_messages)
-        if not summary:
-            state["maze_memory_compaction_error"] = "model returned empty memory summary"
-            return prompt_messages
-
-        state["maze_memory"] = summary
-        state["maze_memory_compaction_count"] = (
-            int(state.get("maze_memory_compaction_count") or 0) + 1
-        )
-        env_response = current_state_messages(prompt_messages)
-        return compacted_memory_prompt_messages(
-            state,
-            env_response=env_response,
-        )
-
-    async def generate_memory_summary(
-        self,
-        state: vf.State,
-        prompt_messages: vf.Messages,
-    ) -> str:
-        existing_memory = str(state.get("maze_memory") or "").strip()
-        user_content = (
-            "Existing memory summary:\n"
-            f"{existing_memory or '(none)'}\n\n"
-            "Full transcript to compact:\n"
-            f"{transcript_for_memory(prompt_messages)}\n\n"
-            "Return only the updated memory summary."
-        )
-        sampling_args = dict(state.get("sampling_args") or {})
-        current_max_tokens = int(sampling_args.get("max_tokens") or 0)
-        sampling_args["max_tokens"] = max(
-            current_max_tokens,
-            self.memory_compaction_max_tokens,
-        )
-        sampling_args.setdefault("temperature", 0)
-        try:
-            response = await super().get_model_response(
-                state,
-                [
-                    vf.SystemMessage(content=MEMORY_COMPACTION_SYSTEM_PROMPT),
-                    vf.UserMessage(content=user_content),
-                ],
-                sampling_args=sampling_args,
-            )
-        except Exception as error:
-            state["maze_memory_compaction_error"] = str(error)
-            return ""
-
-        return str(response.message.content or "").strip()
-
-    async def get_model_response(
-        self,
-        state: vf.State,
-        prompt: vf.Messages,
-        client: Any | None = None,
-        model: str | None = None,
-        tool_defs: list[Any] | None = None,
-        sampling_args: dict[str, Any] | None = None,
-    ) -> vf.Response:
-        try:
-            return await super().get_model_response(
-                state,
-                prompt,
-                client=client,
-                model=model,
-                tool_defs=tool_defs,
-                sampling_args=sampling_args,
-            )
-        except vf.EmptyModelResponseError:
-            state["maze_empty_model_responses"] = (
-                int(state.get("maze_empty_model_responses") or 0) + 1
-            )
-            return vf.Response(
-                id="",
-                created=0,
-                model=str(model or state.get("model") or ""),
-                usage=None,
-                message=vf.ResponseMessage(
-                    content="",
-                    finish_reason="stop",
-                    is_truncated=False,
-                    reasoning_content=None,
-                    tool_calls=None,
-                ),
-            )
-
-    async def setup_state(self, state: vf.State, **kwargs: Any) -> None:
-        del kwargs
-        state["maze_actions"] = []
-        state["maze_conversation_log"] = []
-        state["maze_scorecard"] = {}
-        row = row_from_state(state)
-        state["maze_row"] = row
-        session = MazeSession(
-            game_won_gem_count=int(row.get("game_won_gem_count") or GAME_WON_GEM_COUNT),
-            level_id=str(row.get("level_id") or DEFAULT_START_LEVEL_ID),
-            node_bin=str(row.get("node_bin") or DEFAULT_NODE_BIN),
-            repo_root=str(row.get("repo_root") or find_bridge_root()),
-            timeout_seconds=int(row.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
-            view=str(row.get("view") or DEFAULT_VIEW),
-            yaw=int(row.get("yaw") or DEFAULT_YAW),
-        )
-        state["maze_session"] = session
-        state["maze_status"] = session.request("observe")
-        state["maze_replay"] = {
-            "game_id": row.get("game_id") or DEFAULT_GAME_ID,
-            "game_won_gem_count": int(
-                row.get("game_won_gem_count") or GAME_WON_GEM_COUNT
-            ),
-            "initial": slim_status(state["maze_status"]),
-            "start_level_id": str(row.get("level_id") or DEFAULT_START_LEVEL_ID),
-            "target_gems": int(row.get("target_gems") or DEFAULT_TARGET_GEMS),
-            "actions": state["maze_actions"],
+    def initialize_state(self, status: dict[str, Any]) -> None:
+        task = self.task
+        self.state.maze_actions = []
+        self.state.maze_scorecard = {}
+        self.state.maze_status = status
+        self.state.maze_status_error = ""
+        self.state.game_lost = False
+        self.state.game_won = False
+        self.state.maze_replay = {
+            "game_id": task.game_id,
+            "game_won_gem_count": int(task.game_won_gem_count),
+            "initial": slim_status(status),
+            "start_level_id": task.level_id,
+            "target_gems": int(task.target_gems),
+            "actions": self.state.maze_actions,
             "scorecard": None,
         }
 
-    async def env_response(
-        self, messages: vf.Messages, state: vf.State, **kwargs: Any
-    ) -> vf.Messages:
-        del kwargs
-        last_message = messages[-1]
-        session = state.get("maze_session")
-        row = row_from_state(state)
-        result_text = ""
+    def update_terminal_flags(self, status: dict[str, Any]) -> None:
+        task = self.task
+        self.state.game_lost = bool(status.get("game_lost") or status.get("quit"))
+        self.state.game_won = bool(
+            status.get("game_won")
+            or int(status.get("gem_count") or 0) == int(task.game_won_gem_count)
+        )
 
-        if isinstance(session, MazeSession):
-            try:
-                raw_response = message_content(last_message)
-                command, action_args = parse_text_action(raw_response)
-                status = session.request(command, **action_args)
-                state["maze_status"] = status
-                record_maze_action(
-                    state,
-                    action_args=action_args,
-                    command=command,
-                    raw_response=raw_response,
-                    status=status,
-                )
-                result_text = action_result_text(command=command, status=status)
-            except Exception as error:
-                state["maze_status_error"] = str(error)
-                try:
-                    status = session.request("observe")
-                    state["maze_status"] = status
-                except Exception:
-                    status = state.get("maze_status") or {}
-                record_maze_action(
-                    state,
-                    error=str(error),
-                    raw_response=message_content(last_message),
-                    status=status,
-                )
-                result_text = action_result_text(error=str(error))
-        else:
-            status = state.get("maze_status") or {}
+    def record_scorecard(self, status: dict[str, Any]) -> None:
+        scorecard = status.get("scorecard")
+        if not isinstance(scorecard, dict):
+            return
+        self.state.maze_scorecard = scorecard
+        replay = dict(self.state.maze_replay or {})
+        replay["scorecard"] = scorecard
+        self.state.maze_replay = replay
+
+    async def respond(self, message: str) -> vf.Messages:
+        session = getattr(self, "session", None)
+        task = self.task
+
+        if not isinstance(session, MazeSession):
+            self.state.maze_status_error = "maze session is not available"
+            self.state.game_lost = True
+            return [{"role": "user", "content": "Maze session is not available."}]
+
+        if not self.state.maze_status:
+            status = session.request("observe")
+            self.initialize_state(status)
+            return [
+                {
+                    "role": "user",
+                    "content": render_multiturn_user_prompt(
+                        status=status,
+                        target_text=target_text_for_row(task.model_dump()),
+                        result_text="Start of run.",
+                    ),
+                }
+            ]
+
+        raw_response = str(message or "")
+        result_text = ""
+        try:
+            command, action_args = parse_text_action(raw_response)
+            status = session.request(command, **action_args)
+            self.state.maze_status = status
             record_maze_action(
-                state,
-                error="maze session is not available",
-                raw_response=message_content(last_message),
+                self.state,
+                action_args=action_args,
+                command=command,
+                raw_response=raw_response,
                 status=status,
             )
-            result_text = action_result_text(error="maze session is not available")
-
-        state["game_lost"] = bool(status.get("game_lost") or status.get("quit"))
-        state["game_won"] = bool(
-            status.get("game_won")
-            or int(status.get("gem_count") or 0)
-            == int(row.get("game_won_gem_count") or GAME_WON_GEM_COUNT)
-        )
-
-        if (
-            (state["game_lost"] or state["game_won"])
-            and not status.get("scorecard")
-            and isinstance(session, MazeSession)
-        ):
-            status = session.request("scorecard")
-            state["maze_status"] = status
-            set_maze_scorecard(state, status.get("scorecard"))
-
-        set_maze_scorecard(state, status.get("scorecard"))
-
-        if state["game_lost"] or state["game_won"]:
-            response = [
-                vf.UserMessage(
-                    content="Final scorecard:\n```json\n"
-                    + scorecard_text(status)
-                    + "\n```"
-                )
-            ]
-        else:
-            response = [
-                vf.UserMessage(
-                    content=render_multiturn_user_prompt(
-                        status=status,
-                        target_text=target_text_for_row(row),
-                        result_text=result_text,
-                    )
-                )
-            ]
-
-        turn_count = len(state.get("trajectory") or [])
-        budget_reached = self.maze_max_turns > 0 and turn_count >= self.maze_max_turns
-
-        if state["game_lost"] or state["game_won"] or budget_reached:
-            state["final_env_response"] = response
-
-        return response
-
-    @vf.stop(priority=50)
-    async def game_lost(self, state: vf.State) -> bool:
-        status = state.get("maze_status") or {}
-        return bool(state.get("game_lost") or status.get("quit"))
-
-    @vf.stop(priority=40)
-    async def game_won(self, state: vf.State) -> bool:
-        status = state.get("maze_status") or {}
-        return bool(
-            state.get("game_won")
-            or int(status.get("gem_count") or 0)
-            == int(row_from_state(state).get("game_won_gem_count") or GAME_WON_GEM_COUNT)
-        )
-
-    @vf.cleanup
-    async def close_maze_session(self, state: vf.State) -> None:
-        session = state.get("maze_session")
-        if isinstance(session, MazeSession):
+            result_text = action_result_text(command=command, status=status)
+        except Exception as error:
+            self.state.maze_status_error = str(error)
             try:
-                scorecard_status = session.request("scorecard")
-                state["maze_status"] = scorecard_status
-                set_maze_scorecard(state, scorecard_status.get("scorecard"))
+                status = session.request("observe")
+                self.state.maze_status = status
             except Exception:
-                try:
-                    state["maze_status"] = session.request("observe")
-                except Exception:
-                    pass
-            session.close()
+                status = self.state.maze_status or {}
+            record_maze_action(
+                self.state,
+                error=str(error),
+                raw_response=raw_response,
+                status=status,
+            )
+            result_text = action_result_text(error=str(error))
+
+        self.update_terminal_flags(status)
+        if (self.state.game_lost or self.state.game_won) and not status.get("scorecard"):
+            status = session.request("scorecard")
+            self.state.maze_status = status
+        self.record_scorecard(status)
+
+        if self.state.game_lost or self.state.game_won:
+            self.close_session()
+            return [
+                {
+                    "role": "user",
+                    "content": "Final scorecard:\n```json\n"
+                    + scorecard_text(status)
+                    + "\n```",
+                }
+            ]
+
+        return [
+            {
+                "role": "user",
+                "content": render_multiturn_user_prompt(
+                    status=status,
+                    target_text=target_text_for_row(task.model_dump()),
+                    result_text=result_text,
+                ),
+            }
+        ]
 
 
-def load_environment(
-    num_train_examples: int = 1,
-    num_eval_examples: int = 1,
-    level_ids: str | list[str] | None = None,
-    start_level_id: str = DEFAULT_START_LEVEL_ID,
-    view: str = DEFAULT_VIEW,
-    yaw: int = DEFAULT_YAW,
-    game_won_gem_count: int = GAME_WON_GEM_COUNT,
-    max_turns: int = DEFAULT_MAX_TURNS,
-    memory_compaction: bool = True,
-    memory_compaction_token_ratio: float = DEFAULT_MEMORY_COMPACTION_TOKEN_RATIO,
-    memory_compaction_max_tokens: int = DEFAULT_MEMORY_COMPACTION_MAX_TOKENS,
-    model_context_tokens: int | None = None,
-    node_bin: str = DEFAULT_NODE_BIN,
-    repo_root: str | None = None,
-    target_gems: int = DEFAULT_TARGET_GEMS,
-    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-    system_prompt: str | None = None,
-    **kwargs,
-) -> vf.Environment:
-    """Load the JS-backed ASCII maze benchmark."""
-    resolved_repo_root = find_bridge_root(repo_root)
-    normalized_level_ids = parse_level_ids(level_ids, start_level_id)
-    row_options = {
-        "game_won_gem_count": int(game_won_gem_count),
-        "level_ids": normalized_level_ids,
-        "node_bin": node_bin,
-        "repo_root": resolved_repo_root,
-        "target_gems": int(target_gems),
-        "timeout_seconds": int(timeout_seconds),
-        "view": view,
-        "yaw": int(yaw),
-    }
-    dataset = Dataset.from_list(build_rows(count=num_train_examples, **row_options))
-    eval_dataset = Dataset.from_list(build_rows(count=num_eval_examples, **row_options))
+class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState]):
+    def load_tasks(self) -> list[MazeBenchTask]:
+        resolved_repo_root = find_bridge_root(self.config.repo_root)
+        normalized_level_ids = parse_level_ids(
+            self.config.level_ids,
+            self.config.start_level_id,
+        )
+        rows = build_rows(
+            count=self.config.num_examples,
+            game_won_gem_count=int(self.config.game_won_gem_count),
+            level_ids=normalized_level_ids,
+            node_bin=self.config.node_bin,
+            repo_root=resolved_repo_root,
+            target_gems=int(self.config.target_gems),
+            timeout_seconds=int(self.config.timeout_seconds),
+            view=self.config.view,
+            yaw=int(self.config.yaw),
+        )
+        return [
+            MazeBenchTask(
+                idx=index,
+                name=f"{row['game_id']}:{row['level_id']}#{index}",
+                prompt=None,
+                system_prompt=self.config.system_prompt,
+                example_id=int(row["example_id"]),
+                game_id=str(row["game_id"]),
+                game_won_gem_count=int(row["game_won_gem_count"]),
+                level_id=str(row["level_id"]),
+                node_bin=str(row["node_bin"]),
+                observation=str(row["observation"]),
+                repo_root=str(row["repo_root"]),
+                target_gems=int(row["target_gems"]),
+                timeout_seconds=int(row["timeout_seconds"]),
+                view=str(row["view"]),
+                yaw=int(row["yaw"]),
+            )
+            for index, row in enumerate(rows)
+        ]
 
-    rubric = vf.Rubric()
-    rubric.add_reward_func(gem_score)
-    rubric.add_reward_func(
-        room_exploration_score, weight=ROOM_EXPLORATION_REWARD_WEIGHT
-    )
-    rubric.add_metric(collected_gems)
-    rubric.add_metric(current_level_solved)
-    rubric.add_metric(visited_level_count)
+    def user(self, task: MazeBenchTask) -> vf.User:
+        return MazeBenchUser(self.config.user)
 
-    return MazeTextEnv(
-        dataset=dataset,
-        eval_dataset=eval_dataset,
-        system_prompt=system_prompt or MULTITURN_SYSTEM_PROMPT,
-        max_turns=int(max_turns),
-        memory_compaction=bool(memory_compaction),
-        memory_compaction_token_ratio=float(memory_compaction_token_ratio),
-        memory_compaction_max_tokens=int(memory_compaction_max_tokens),
-        model_context_tokens=model_context_tokens,
-        rubric=rubric,
-        **kwargs,
-    )
+    async def finalize(
+        self,
+        task: MazeBenchTask,
+        trace: vf.Trace,
+        runtime: vf.Runtime,
+    ) -> None:
+        del task, runtime
+        trace.info["maze_actions"] = trace.state.maze_actions
+        trace.info["maze_scorecard"] = trace.state.maze_scorecard
+        trace.info["maze_replay"] = trace.state.maze_replay
+        trace.info["maze_status"] = slim_status(trace.state.maze_status)
+
+    @vf.stop
+    async def game_over(self, trace: vf.Trace) -> bool:
+        return bool(trace.state.game_lost or trace.state.game_won)
+
+    @vf.reward(weight=1.0)
+    async def gem_score(self, task: MazeBenchTask, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        gem_count = int(status.get("gem_count") or 0)
+        target = int(task.target_gems or 0)
+        if target <= 0:
+            return float(gem_count)
+        return min(1.0, gem_count / target)
+
+    @vf.reward(weight=ROOM_EXPLORATION_REWARD_WEIGHT)
+    async def room_exploration_score(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return float(max(0, len(status.get("visited_levels") or []) - 1))
+
+    @vf.metric
+    async def collected_gems(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return float(status.get("gem_count") or 0)
+
+    @vf.metric
+    async def current_level_solved(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return 1.0 if status.get("solved") else 0.0
+
+    @vf.metric
+    async def visited_level_count(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return float(len(status.get("visited_levels") or []))
+
+
+def load_taskset(config: MazeBenchConfig) -> MazeBenchTaskset:
+    return MazeBenchTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Environment:
+    """Load the JS-backed ASCII maze benchmark as a Verifiers v1 environment."""
+    if not config.taskset.id:
+        taskset_config = MazeBenchConfig.model_validate(config.taskset.model_dump())
+        config = config.model_copy(update={"taskset": taskset_config})
+    return vf.Environment(config=config)
+
+
+__all__ = ["MazeBenchTaskset"]
+
+
+if __name__ == "__main__":
+    MazeBenchUser.run()

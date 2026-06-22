@@ -9,7 +9,6 @@
     "dev": "node --watch server.js",
     "maze:terminal": "node scripts/maze-terminal.js",
     "maze:model": "node scripts/maze-model-repl.js",
-    "maze:codex": "node scripts/maze-codex-api.js",
     "maze:replay": "node scripts/maze-export-replay.js"
   },
   "dependencies": {

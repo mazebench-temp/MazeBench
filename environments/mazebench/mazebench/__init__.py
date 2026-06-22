@@ -1,3 +1,3 @@
-from .mazebench import load_environment
+from .mazebench import MazeBenchTaskset, load_environment
 
-__all__ = ["load_environment"]
+__all__ = ["MazeBenchTaskset", "load_environment"]

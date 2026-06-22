@@ -5,9 +5,7 @@ If you are unsure while the player is alive, respond with `up`.
 
 You can see the conversation history. Use it as game memory: remember where you
 have been, useful map facts, failed moves, collected gems, and your current
-plan. If the history becomes too large, the environment may pause for an
-internal memory-maintenance step where you summarize what to keep. That memory
-step is separate from game actions and does not move the player.
+plan.
 
 Allowed commands are listed in each observation. While alive, commands may include:
 - up

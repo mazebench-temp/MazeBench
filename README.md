@@ -1,7 +1,8 @@
 # MazeBench
 
-The MazeBench env can run in the browser, in the terminal,
-through Prime Intellect Verifiers, or through Codex.
+The MazeBench env can run in the browser, in the terminal, and through Prime
+Intellect Verifiers v1. The Verifiers integration includes both normal
+multi-turn chat-model runs and Codex CLI runs.
 
 ## 1. Set up the web app with Node
 
@@ -76,11 +77,13 @@ prime env install mazebench
 Run a small eval:
 
 ```bash
-prime eval run mazebench -m openai/gpt-5-nano -n 1 -r 1 -s -C "maze_actions,maze_scorecard,maze_replay" -d
+prime eval run mazebench -m openai/gpt-5-nano -n 1 -r 1 -s --max-turns 8 -d
 ```
 
 Use your own configured model after `-m`, or omit `-m` to use your Prime
-default. The terminal prints the run summary.
+default. The terminal prints the run summary. MazeBench v1 stores replay
+artifacts under `info.maze_actions`, `info.maze_scorecard`, and
+`info.maze_replay` in `results.jsonl`.
 
 View saved evals:
 
@@ -94,36 +97,33 @@ Export scorecard files and a replay video from a saved eval directory:
 npm run maze:replay -- environments/mazebench/outputs/evals/<model>/<run-id>
 ```
 
-## 4. Run it with Codex
+## 4. Run Codex through Verifiers v1
 
-Print the prompt that tells Codex how to play:
+MazeBench includes a `mazebench_codex` v1 plugin. It uses your local `codex`
+CLI as the harness, routes Codex model calls through the Verifiers v1
+interception server, and writes replay artifacts under `outputs/maze-codex-v1/`.
 
 ```bash
-npm run --silent maze:codex -- prompt default
+cd environments/mazebench
+uv run eval mazebench_codex \
+  -m openai/gpt-5-codex \
+  -n 1 -r 1 \
+  --taskset.max-actions 100 \
+  --max-turns 40 \
+  --rich false
 ```
 
-Run Codex directly:
+`--taskset.max-actions` is the maze action budget. `--max-turns` is still useful
+because Verifiers counts Codex's internal model/tool-call turns while the CLI is
+working. The harness strips the `openai/` prefix before invoking `codex exec` so
+Codex can use its local model metadata, while Verifiers still routes/bills the
+Prime model.
+
+Export the saved v1 trace to scorecard files and video the same way as normal
+MazeBench evals:
 
 ```bash
-codex exec --sandbox workspace-write "$(npm run --silent maze:codex -- prompt default)"
-```
-
-Codex will use commands like:
-
-```bash
-npm run --silent maze:codex -- start
-npm run --silent maze:codex -- observe
-npm run --silent maze:codex -- up
-npm run --silent maze:codex -- rotate left
-npm run --silent maze:codex -- scorecard
-```
-
-Codex session files live in `outputs/maze-codex/`.
-
-Export a Codex run to scorecard files and video:
-
-```bash
-npm run --silent maze:codex -- video --video --fast --draft --fps 20 --width 400 --height 400
+npm run maze:replay -- environments/mazebench/outputs/evals/<model>/<run-id>
 ```
 
 ## License

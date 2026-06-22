@@ -438,10 +438,14 @@ function extractCommandFromAssistantText(text) {
 }
 
 function extractActionsFromState(row) {
+  const info = row.info || {};
+  const replay = row.maze_replay || info.maze_replay || {};
   const actionRecords = Array.isArray(row.maze_actions)
     ? row.maze_actions
-    : Array.isArray(row.maze_replay?.actions)
-      ? row.maze_replay.actions
+    : Array.isArray(info.maze_actions)
+      ? info.maze_actions
+      : Array.isArray(replay.actions)
+      ? replay.actions
       : null;
 
   if (!actionRecords) {
@@ -473,23 +477,48 @@ function extractActionsFromCompletion(row) {
   return actions;
 }
 
+function extractActionsFromNodes(row) {
+  const nodes = Array.isArray(row.nodes) ? row.nodes : [];
+  const actions = [];
+
+  for (const node of nodes) {
+    if (!node || node.message?.role !== "assistant") {
+      continue;
+    }
+
+    const command = extractCommandFromAssistantText(messageContentToText(node.message.content));
+
+    if (command) {
+      actions.push(command);
+    }
+  }
+
+  return actions;
+}
+
 function extractActions(row) {
   const stateActions = extractActionsFromState(row);
-  return stateActions.length > 0 ? stateActions : extractActionsFromCompletion(row);
+  if (stateActions.length > 0) {
+    return stateActions;
+  }
+
+  const completionActions = extractActionsFromCompletion(row);
+  return completionActions.length > 0 ? completionActions : extractActionsFromNodes(row);
 }
 
 function extractMazeOptions(row, metadata) {
-  const info = row.info?.mazebench || {};
-  const replay = row.maze_replay || {};
+  const info = row.info?.mazebench || row.info || {};
+  const task = row.task || {};
+  const replay = row.maze_replay || row.info?.maze_replay || {};
   const gameWonGemCount =
-    Number(replay.game_won_gem_count || info.game_won_gem_count || 100) || 100;
-  const view = String(info.view || replay.initial?.view || "top-diagonal");
-  const yaw = Number(info.yaw ?? replay.initial?.yaw ?? 0);
+    Number(replay.game_won_gem_count || info.game_won_gem_count || task.game_won_gem_count || 100) || 100;
+  const view = String(info.view || task.view || replay.initial?.view || "top-diagonal");
+  const yaw = Number(info.yaw ?? task.yaw ?? replay.initial?.yaw ?? 0);
 
   return {
-    gameId: String(replay.game_id || info.game_id || "maze"),
+    gameId: String(replay.game_id || info.game_id || task.game_id || "maze"),
     gameWonGemCount,
-    levelId: String(replay.start_level_id || info.level_id || "level_HxI"),
+    levelId: String(replay.start_level_id || info.level_id || task.level_id || "level_HxI"),
     metadata,
     view: VIEW_NAMES.includes(view) ? view : "top-diagonal",
     yaw: Number.isInteger(yaw) ? yaw : 0
@@ -574,8 +603,16 @@ function existingScorecard(row) {
     return row.maze_scorecard;
   }
 
+  if (row.info?.maze_scorecard && Object.keys(row.info.maze_scorecard).length > 0) {
+    return row.info.maze_scorecard;
+  }
+
   if (row.maze_replay?.scorecard && Object.keys(row.maze_replay.scorecard).length > 0) {
     return row.maze_replay.scorecard;
+  }
+
+  if (row.info?.maze_replay?.scorecard && Object.keys(row.info.maze_replay.scorecard).length > 0) {
+    return row.info.maze_replay.scorecard;
   }
 
   return null;
@@ -1350,7 +1387,7 @@ async function main() {
 
   if (actions.length === 0) {
     throw new Error(
-      "Could not find replay actions. Re-run with -C maze_actions or check completion output."
+      "Could not find replay actions. Check trace info, state columns, or completion output."
     );
   }
 
