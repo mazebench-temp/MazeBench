@@ -144,7 +144,7 @@ uv run eval mazebench \
 ```
 
 Vision mode keeps the same JS game state, allowed commands, terminal conditions,
-and gem-only reward as ASCII mode. It sends a short text status plus a
+and reward functions as ASCII mode. It sends a short text status plus a
 perspective image of the current room, with no ASCII board.
 
 ## License

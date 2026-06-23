@@ -30,6 +30,7 @@ DEFAULT_OBSERVATION_MODE = "ascii"
 DEFAULT_VISION_HEIGHT = 512
 DEFAULT_VISION_WIDTH = 512
 GAME_WON_GEM_COUNT = 100
+ROOM_EXPLORATION_REWARD_WEIGHT = 0.1
 REPO_ROOT_ENV = "MAZEBENCH_REPO_ROOT"
 INFO_KEY = "mazebench"
 
@@ -1086,6 +1087,11 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState
         if target <= 0:
             return float(gem_count)
         return min(1.0, gem_count / target)
+
+    @vf.reward(weight=ROOM_EXPLORATION_REWARD_WEIGHT)
+    async def room_exploration_score(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return float(max(0, len(status.get("visited_levels") or []) - 1))
 
     @vf.metric
     async def collected_gems(self, trace: vf.Trace) -> float:
