@@ -250,10 +250,10 @@
     }
 
     function playSurroundingRadius() {
-      // Transitions and world actions rebuild the scene every frame; render
-      // them at the classic radius so they stay cheap, and restore the wide
-      // view with a single rebuild when they finish.
-      if (app.levelTransition || app.worldActionAnimation) {
+      // World actions rebuild the scene every frame; render them at the
+      // classic radius so they stay cheap, and restore the wide view with a
+      // single rebuild when they finish.
+      if (app.worldActionAnimation) {
         return 1;
       }
 
@@ -8237,6 +8237,10 @@
     function renderWorldViewRoomGroups(now, views) {
       const activeLevelIds = new Set();
       const consolidationParts = [];
+      const isWideLevelTransition =
+        !app.isFlyoverMode &&
+        app.levelTransition?.transitionData?.kind === "adjacent-scene" &&
+        isWorldViewPlayMode();
       let allRoomsReady = true;
 
       views
@@ -8247,7 +8251,7 @@
           const signature = worldViewRoomSignature(view, brightness);
           let entry = worldViewRoomGroups.get(view.levelId);
 
-          if (!entry || entry.signature !== signature) {
+          if (!entry || (!isWideLevelTransition && entry.signature !== signature)) {
             if (entry) {
               disposeWorldViewRoomEntry(entry);
             }
@@ -8273,23 +8277,25 @@
         }
       });
 
-      // Flyover flight renders the whole world continuously; once the reveal
-      // has settled, consolidate the per-room groups into a handful of merged
-      // meshes so steady-state flight costs ~30 draw calls instead of ~1500.
-      if (!(app.isFlyoverMode && app.flyoverWholeWorld === true)) {
+      // Flyover flight and wide play-mode transitions render the whole world
+      // continuously; consolidate per-room groups into a handful of merged
+      // meshes once the set is stable.
+      if (!(app.isFlyoverMode && app.flyoverWholeWorld === true) && !isWideLevelTransition) {
         disposeWorldConsolidation();
         return;
       }
 
       const fadesPending =
-        app.flyoverRoomFadeIns instanceof Map && app.flyoverRoomFadeIns.size > 0;
+        !isWideLevelTransition &&
+        app.flyoverRoomFadeIns instanceof Map &&
+        app.flyoverRoomFadeIns.size > 0;
 
       if (!allRoomsReady || fadesPending || views.length === 0) {
         disposeWorldConsolidation();
         return;
       }
 
-      const consolidationSignature = consolidationParts.join("|");
+      const consolidationSignature = consolidationParts.slice().sort().join("|");
 
       if (!worldConsolidation || worldConsolidation.signature !== consolidationSignature) {
         disposeWorldConsolidation();
@@ -8402,7 +8408,7 @@
         return 0;
       }
 
-      return coord < 0 ? -levelLength * unit : outgoingLength * unit;
+      return coord < 0 ? coord * levelLength * unit : coord * outgoingLength * unit;
     }
 
     function incomingNeighborAxisOffset(coord, delta, levelLength, incomingLength, incomingOffset) {
@@ -8412,7 +8418,11 @@
         return incomingOffset;
       }
 
-      return incomingOffset + (relativeCoord < 0 ? -levelLength * unit : incomingLength * unit);
+      return incomingOffset + (
+        relativeCoord < 0
+          ? relativeCoord * levelLength * unit
+          : relativeCoord * incomingLength * unit
+      );
     }
 
     function outgoingNeighborOffset(coord, levelState, outgoingState) {
@@ -8469,9 +8479,10 @@
 
     function transitionSurroundingLevelViews(transition, outgoingState, incomingState, incomingOffset, progress) {
       const coords = new Map();
+      const radius = surroundingLevelRadius();
 
-      for (let y = -1; y <= 1; y += 1) {
-        for (let x = -1; x <= 1; x += 1) {
+      for (let y = -radius; y <= radius; y += 1) {
+        for (let x = -radius; x <= radius; x += 1) {
           coords.set(`${x},${y}`, { x, y });
           coords.set(`${transition.dx + x},${transition.dy + y}`, {
             x: transition.dx + x,
@@ -8490,9 +8501,10 @@
           return;
         }
 
-        const inOutgoingNeighborhood = Math.abs(coord.x) <= 1 && Math.abs(coord.y) <= 1;
+        const inOutgoingNeighborhood = Math.abs(coord.x) <= radius && Math.abs(coord.y) <= radius;
         const inIncomingNeighborhood =
-          Math.abs(coord.x - transition.dx) <= 1 && Math.abs(coord.y - transition.dy) <= 1;
+          Math.abs(coord.x - transition.dx) <= radius &&
+          Math.abs(coord.y - transition.dy) <= radius;
 
         let alpha = 1;
 
@@ -8512,6 +8524,14 @@
           return;
         }
 
+        const levelId =
+          levelState.levelId ||
+          transitionLevelIdForCoord(coord, transition, outgoingState, incomingState);
+
+        if (!levelId) {
+          return;
+        }
+
         const offset = inOutgoingNeighborhood
           ? outgoingNeighborOffset(coord, levelState, outgoingState)
           : incomingNeighborOffset(
@@ -8525,6 +8545,9 @@
 
         views.push({
           coord,
+          dx: coord.x,
+          dy: coord.y,
+          levelId,
           levelState,
           offset,
           brightness: neighboringRoomBrightness,
@@ -8537,6 +8560,11 @@
     }
 
     function renderTransitionSurroundingLevelViews(now, views) {
+      if (usesRoomGroupWorld()) {
+        renderWorldViewRoomGroups(now, views);
+        return;
+      }
+
       views
         .slice()
         .sort((a, b) => b.distance - a.distance)
