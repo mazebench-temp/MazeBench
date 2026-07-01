@@ -53,10 +53,20 @@
       gl.bindTexture(gl.TEXTURE_2D, renderer.texture);
 
       if (!canReuseTexture) {
+        const needsTextureAllocation =
+          renderer.textureSourceWidth !== sourceCanvas.width ||
+          renderer.textureSourceHeight !== sourceCanvas.height;
+
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+
+        if (needsTextureAllocation) {
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+        } else {
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+        }
+
         renderer.textureSource = sourceCanvas;
         renderer.textureSourceWidth = sourceCanvas.width;
         renderer.textureSourceHeight = sourceCanvas.height;

@@ -396,6 +396,29 @@
       app.horizontalNeighborQueueFrameId = window.setTimeout(processHorizontalNeighborLoadQueue, 0);
     }
 
+    let neighborArrivalRenderTimeoutId = 0;
+
+    function scheduleNeighborArrivalRender() {
+      // Neighbor states can arrive in bursts (hundreds in world view);
+      // coalesce them so each batch costs one scene rebuild.
+      if (neighborArrivalRenderTimeoutId) {
+        return;
+      }
+
+      neighborArrivalRenderTimeoutId = window.setTimeout(() => {
+        neighborArrivalRenderTimeoutId = 0;
+
+        if (
+          !app.isTransitioningLevel &&
+          !app.isPlanningWorldAction &&
+          !app.worldActionAnimation &&
+          typeof app.render === "function"
+        ) {
+          app.render();
+        }
+      }, 200);
+    }
+
     function processHorizontalNeighborLoadQueue() {
       app.horizontalNeighborQueueFrameId = 0;
 
@@ -418,14 +441,8 @@
           preloadAssets: app.preloadQueuedNeighborAssets === true
         })
           .then(() => {
-            if (
-              !app.deferNeighborLoadRenders &&
-              !app.isTransitioningLevel &&
-              !app.isPlanningWorldAction &&
-              !app.worldActionAnimation &&
-              typeof app.render === "function"
-            ) {
-              app.render();
+            if (!app.deferNeighborLoadRenders) {
+              scheduleNeighborArrivalRender();
             }
           })
           .catch(() => {})
@@ -462,7 +479,9 @@
     }
 
     function syncHorizontalNeighborLevelStates() {
-      const radius = app.isFlyoverMode ? app.flyoverRadius : 1;
+      const radius = app.isFlyoverMode
+        ? app.flyoverRadius
+        : Math.max(1, Math.min(26, Math.floor(Number(app.playSurroundingRadius) || 1)));
 
       for (let dy = -radius; dy <= radius; dy += 1) {
         for (let dx = -radius; dx <= radius; dx += 1) {
@@ -470,7 +489,9 @@
             continue;
           }
 
-          queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, dx, dy));
+          queueHorizontalNeighborLevelState(adjacentWorldLevelId(app.currentLevelId, dx, dy), {
+            priority: Math.hypot(dx, dy)
+          });
         }
       }
     }
@@ -1034,6 +1055,20 @@
       return true;
     }
 
+    let renderedFrameTimestamp = -1;
+
+    function renderOncePerFrame(now) {
+      // All rAF callbacks scheduled for the same display frame receive the
+      // identical timestamp, so this dedupes the render pipeline to one run
+      // per frame no matter how many animation tickers are active.
+      if (now === renderedFrameTimestamp) {
+        return;
+      }
+
+      renderedFrameTimestamp = now;
+      app.render(now);
+    }
+
     function startCameraFollowLoop() {
       if (!usesScrollingViewport() || app.isAnimating || app.cameraFrameId !== null) {
         return;
@@ -1041,7 +1076,7 @@
 
       function step(now) {
         app.cameraFrameId = null;
-        app.render(now);
+        renderOncePerFrame(now);
       }
 
       app.cameraFrameId = window.requestAnimationFrame(step);
@@ -1306,6 +1341,8 @@
 
     function restoreTerrainState(terrain) {
       app.state.terrain = cloneTerrainState(terrain);
+      invalidateTerrainFeatureIndex();
+      app.terrainRenderVersion = (Number(app.terrainRenderVersion) || 0) + 1;
     }
 
     function syncDocumentLevelState() {
@@ -1792,16 +1829,71 @@
       );
     }
 
-    function eachOrangeWall(callback) {
+    let terrainFeatureIndex = null;
+    let terrainFeatureIndexState = null;
+
+    function invalidateTerrainFeatureIndex() {
+      terrainFeatureIndex = null;
+      terrainFeatureIndexState = null;
+    }
+
+    function getTerrainFeatureIndex() {
+      if (terrainFeatureIndex && terrainFeatureIndexState === app.state) {
+        return terrainFeatureIndex;
+      }
+
+      const index = {
+        playerGates: [],
+        playerLifts: [],
+        orangeWalls: [],
+        orangeButtons: []
+      };
+
       for (let y = 0; y < app.state.height; y += 1) {
         for (let x = 0; x < app.state.width; x += 1) {
-          if (!isOrangeWall(x, y)) {
-            continue;
-          }
+          const layers = terrainLayersAt(x, y);
 
-          callback(x, y, posKey(x, y));
+          for (let i = 0; i < layers.length; i += 1) {
+            const type = layers[i].type;
+
+            if (type === "player_gate") {
+              index.playerGates.push({ x, y, key: posKey(x, y) });
+            } else if (type === "player_lift") {
+              index.playerLifts.push({ x, y, key: posKey(x, y) });
+            } else if (type === "orange_wall") {
+              index.orangeWalls.push({ x, y, key: posKey(x, y) });
+            } else if (type === "orange_button") {
+              index.orangeButtons.push({ x, y, key: posKey(x, y) });
+            }
+          }
         }
       }
+
+      dedupeFeatureCells(index.playerGates);
+      dedupeFeatureCells(index.playerLifts);
+      dedupeFeatureCells(index.orangeWalls);
+      dedupeFeatureCells(index.orangeButtons);
+      terrainFeatureIndex = index;
+      terrainFeatureIndexState = app.state;
+      return index;
+    }
+
+    function dedupeFeatureCells(cells) {
+      const seen = new Set();
+
+      for (let i = cells.length - 1; i >= 0; i -= 1) {
+        if (seen.has(cells[i].key)) {
+          cells.splice(i, 1);
+        } else {
+          seen.add(cells[i].key);
+        }
+      }
+    }
+
+    function eachOrangeWall(callback) {
+      getTerrainFeatureIndex().orangeWalls.forEach((cell) => {
+        callback(cell.x, cell.y, cell.key);
+      });
     }
 
     function isOrangeButtonPressed(x, y, actors = app.state.actors, elevation = 0) {
@@ -1821,22 +1913,19 @@
 
     function areOrangeButtonsPressed(actors = app.state.actors) {
       let hasOrangeButton = false;
+      const buttonCells = getTerrainFeatureIndex().orangeButtons;
 
-      for (let y = 0; y < app.state.height; y += 1) {
-        for (let x = 0; x < app.state.width; x += 1) {
-          if (!isOrangeButton(x, y)) {
-            continue;
-          }
+      for (let i = 0; i < buttonCells.length; i += 1) {
+        const { x, y } = buttonCells[i];
 
-          hasOrangeButton = true;
+        hasOrangeButton = true;
 
-          if (
-            !terrainLayersOfType(x, y, "orange_button").every((layer) =>
-              isOrangeButtonPressed(x, y, actors, layer.elevation ?? 0)
-            )
-          ) {
-            return false;
-          }
+        if (
+          !terrainLayersOfType(x, y, "orange_button").every((layer) =>
+            isOrangeButtonPressed(x, y, actors, layer.elevation ?? 0)
+          )
+        ) {
+          return false;
         }
       }
 
@@ -1853,6 +1942,52 @@
       }
 
       return hasOrangeButton;
+    }
+
+    let liveSurfaceActorCodes = null;
+    let liveSurfaceActorState = null;
+
+    function actorSurfaceCode(actor) {
+      // Encodes every actor property the raised-gate/orange-wall rules read.
+      return [
+        actor.x,
+        actor.y,
+        actorElevation(actor),
+        actor.removed ? 1 : 0
+      ].join(",");
+    }
+
+    function syncLiveRaisedSurfaces() {
+      if (app.gateRenderOverride || app.orangeWallRenderOverride) {
+        app.liveRaisedPlayerGates = app.gateRenderOverride || computeRaisedPlayerGateSet();
+        app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || computeRaisedOrangeWallSet();
+        liveSurfaceActorCodes = null;
+        return;
+      }
+
+      const actors = app.state.actors;
+      let changed =
+        !liveSurfaceActorCodes ||
+        liveSurfaceActorState !== app.state ||
+        liveSurfaceActorCodes.length !== actors.length;
+
+      if (!changed) {
+        for (let i = 0; i < actors.length; i += 1) {
+          if (liveSurfaceActorCodes[i] !== actorSurfaceCode(actors[i])) {
+            changed = true;
+            break;
+          }
+        }
+      }
+
+      if (!changed) {
+        return;
+      }
+
+      liveSurfaceActorCodes = actors.map(actorSurfaceCode);
+      liveSurfaceActorState = app.state;
+      app.liveRaisedPlayerGates = computeRaisedPlayerGateSet();
+      app.liveRaisedOrangeWalls = computeRaisedOrangeWallSet();
     }
 
     function computeRaisedOrangeWallSet(actors = app.state.actors) {
@@ -1874,15 +2009,9 @@
     }
 
     function eachPlayerLift(callback) {
-      for (let y = 0; y < app.state.height; y += 1) {
-        for (let x = 0; x < app.state.width; x += 1) {
-          if (!isPlayerLift(x, y)) {
-            continue;
-          }
-
-          callback(x, y, posKey(x, y));
-        }
-      }
+      getTerrainFeatureIndex().playerLifts.forEach((cell) => {
+        callback(cell.x, cell.y, cell.key);
+      });
     }
 
     function isRaisedPlayerLift(x, y) {
@@ -1900,6 +2029,7 @@
 
       const cell = terrainAt(x, y);
 
+      app.terrainRenderVersion = (Number(app.terrainRenderVersion) || 0) + 1;
       cell.raised = Boolean(raised);
 
       if (Array.isArray(cell.layers)) {
@@ -2005,58 +2135,49 @@
       const activeActors = actors.filter((actor) => !actor.removed);
       const players = activeActors.filter((actor) => isPlayerActor(actor));
       const raised = new Set();
+      const gateCells = getTerrainFeatureIndex().playerGates;
 
-      for (let y = 0; y < app.state.height; y += 1) {
-        for (let x = 0; x < app.state.width; x += 1) {
-          if (!isPlayerGate(x, y)) {
-            continue;
+      for (let i = 0; i < gateCells.length; i += 1) {
+        const { x, y } = gateCells[i];
+
+        terrainLayersOfType(x, y, "player_gate").forEach((gateLayer) => {
+          const gateElevation = gateLayer.elevation ?? 0;
+          const sameLevelBlockOnGate = activeActors.some(
+            (actor) =>
+              !isPlayerActor(actor) &&
+              !isNonBlockingActor(actor) &&
+              actorElevation(actor) === gateElevation &&
+              actor.x === x &&
+              actor.y === y
+          );
+
+          if (
+            players.some(
+              (actor) => {
+                const playerElevation = actorElevation(actor);
+                const xyDistance = Math.abs(actor.x - x) + Math.abs(actor.y - y);
+                const standingOnGate = xyDistance === 0 && playerElevation === gateElevation;
+
+                return (
+                  xyDistance <= 1 &&
+                  !standingOnGate &&
+                  (playerElevation !== gateElevation || !sameLevelBlockOnGate)
+                );
+              }
+            )
+          ) {
+            raised.add(posKey(x, y));
           }
-
-          terrainLayersOfType(x, y, "player_gate").forEach((gateLayer) => {
-            const gateElevation = gateLayer.elevation ?? 0;
-            const sameLevelBlockOnGate = activeActors.some(
-              (actor) =>
-                !isPlayerActor(actor) &&
-                !isNonBlockingActor(actor) &&
-                actorElevation(actor) === gateElevation &&
-                actor.x === x &&
-                actor.y === y
-            );
-
-            if (
-              players.some(
-                (actor) => {
-                  const playerElevation = actorElevation(actor);
-                  const xyDistance = Math.abs(actor.x - x) + Math.abs(actor.y - y);
-                  const standingOnGate = xyDistance === 0 && playerElevation === gateElevation;
-
-                  return (
-                    xyDistance <= 1 &&
-                    !standingOnGate &&
-                    (playerElevation !== gateElevation || !sameLevelBlockOnGate)
-                  );
-                }
-              )
-            ) {
-              raised.add(posKey(x, y));
-            }
-          });
-        }
+        });
       }
 
       return raised;
     }
 
     function eachPlayerGate(callback) {
-      for (let y = 0; y < app.state.height; y += 1) {
-        for (let x = 0; x < app.state.width; x += 1) {
-          if (!isPlayerGate(x, y)) {
-            continue;
-          }
-
-          callback(x, y, posKey(x, y));
-        }
-      }
+      getTerrainFeatureIndex().playerGates.forEach((cell) => {
+        callback(cell.x, cell.y, cell.key);
+      });
     }
 
     function isRaisedPlayerGate(x, y, gateState = app.liveRaisedPlayerGates) {
@@ -2374,7 +2495,7 @@
         });
 
         if (canAuxiliaryTickerRender()) {
-          app.render(now);
+          renderOncePerFrame(now);
         }
 
         if (hasActiveAnimation) {
@@ -2475,7 +2596,7 @@
         });
 
         if (canAuxiliaryTickerRender()) {
-          app.render(now);
+          renderOncePerFrame(now);
         }
 
         if (hasActiveAnimation) {
@@ -2575,7 +2696,7 @@
         });
 
         if (canAuxiliaryTickerRender()) {
-          app.render(now);
+          renderOncePerFrame(now);
         }
 
         if (hasActiveAnimation) {
@@ -2806,7 +2927,7 @@
           if (canAuxiliaryTickerRender()) {
             app.state.effects.noisePhase = (app.state.effects.noisePhase + phaseStep) % app.NOISE_PHASE_CYCLE;
             app.lastNoiseTickMs += phaseStep * app.NOISE_FRAME_MS;
-            app.render(now);
+            renderOncePerFrame(now);
           } else {
             app.lastNoiseTickMs = now;
           }
@@ -2854,7 +2975,11 @@
           app.lastFloatingFloorTickMs = now;
 
           if (canAuxiliaryTickerRender()) {
-            app.render(now);
+            // Move the hover/spin meshes in place first; the render below
+            // then hits the unchanged-signature blit path instead of a
+            // full scene rebuild.
+            app.threeRenderer?.renderHoverFrame?.(now);
+            renderOncePerFrame(now);
           }
         }
 
@@ -2945,6 +3070,9 @@
       syncCameraTarget,
       advanceCamera,
       startCameraFollowLoop,
+      renderOncePerFrame,
+      invalidateTerrainFeatureIndex,
+      syncLiveRaisedSurfaces,
       parseWorldLevelId,
       worldLevelId,
       adjacentWorldLevelId,

@@ -596,11 +596,7 @@
       return buildCellStack(tools).terrain;
     }
 
-    function canShareBaseSurface(tool) {
-      return raisedTerrainNames.has(toolType(tool));
-    }
-
-    function setCellElevationToken(currentValue, token, targetElevation, options = {}) {
+    function setCellElevationToken(currentValue, token, targetElevation) {
       const normalizedToken = normalizeCellValue(token);
       const elevation = Math.max(0, Math.floor(Number(targetElevation) || 0));
       const tool = toolByToken.get(normalizedToken);
@@ -616,46 +612,6 @@
 
       let metadata = cellStackMetadata(tokens);
       const sameElevationEntries = metadata.entries.filter((entry) => entry.elevation === elevation);
-      const matchingEntries = sameElevationEntries.filter((entry) => !entry.isAir);
-
-      if (options.stackBaseSurface === true && isBaseSurfaceTool(tool)) {
-        const baseSurfaceEntry = matchingEntries
-          .slice()
-          .reverse()
-          .find((entry) => isBaseSurfaceTool(entry.tool));
-
-        if (baseSurfaceEntry) {
-          tokens.splice(baseSurfaceEntry.index + 1, 0, normalizedToken);
-          return normalizeCellValue(tokens.join(blockAdder));
-        }
-      }
-
-      if (
-        options.preserveBaseSurface === true &&
-        elevation === 0 &&
-        canShareBaseSurface(tool)
-      ) {
-        const topSharedEntry = matchingEntries
-          .slice()
-          .reverse()
-          .find((entry) => !isBaseSurfaceTool(entry.tool));
-
-        if (topSharedEntry) {
-          tokens[topSharedEntry.index] = normalizedToken;
-          return normalizeCellValue(tokens.join(blockAdder));
-        }
-
-        const baseSurfaceEntry = matchingEntries
-          .slice()
-          .reverse()
-          .find((entry) => isBaseSurfaceTool(entry.tool));
-
-        if (baseSurfaceEntry) {
-          tokens.splice(baseSurfaceEntry.index + 1, 0, normalizedToken);
-          return normalizeCellValue(tokens.join(blockAdder));
-        }
-      }
-
       const matchingEntry = sameElevationEntries[0];
 
       if (matchingEntry) {

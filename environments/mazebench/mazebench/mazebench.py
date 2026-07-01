@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import os
 import re
@@ -29,10 +31,39 @@ DEFAULT_TARGET_GEMS = 0
 DEFAULT_OBSERVATION_MODE = "ascii"
 DEFAULT_VISION_HEIGHT = 512
 DEFAULT_VISION_WIDTH = 512
-GAME_WON_GEM_COUNT = 100
+DEFAULT_GAME_WON_GEM_COUNT = 100
+GAME_CONFIG_RELATIVE_PATH = Path("games") / "maze" / "config.json"
 ROOM_EXPLORATION_REWARD_WEIGHT = 0.1
 REPO_ROOT_ENV = "MAZEBENCH_REPO_ROOT"
 INFO_KEY = "mazebench"
+
+
+def load_game_won_gem_count() -> int:
+    """Read the shared win threshold from games/maze/config.json."""
+    candidates: list[Path] = []
+
+    env_root = os.environ.get(REPO_ROOT_ENV)
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+
+    candidates.append(Path.cwd())
+    candidates.append(Path(__file__).resolve().parent / "runtime")
+    candidates.extend(Path(__file__).resolve().parents)
+
+    for candidate in candidates:
+        config_path = candidate / GAME_CONFIG_RELATIVE_PATH
+        try:
+            config = json.loads(config_path.read_text(encoding="utf8"))
+            count = int(config.get("game_won_gem_count"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if count > 0:
+            return count
+
+    return DEFAULT_GAME_WON_GEM_COUNT
+
+
+GAME_WON_GEM_COUNT = load_game_won_gem_count()
 
 DEATH_MESSAGE = "The player died, you must now undo or reset or go to a level."
 ALIVE_ALLOWED_COMMANDS = (
@@ -336,6 +367,12 @@ def render_vision_user_prompt(
     return "\n".join(line for line in lines if line is not None)
 
 
+async def run_blocking(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Run blocking subprocess/pipe I/O off the event loop so rollouts overlap."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
+
+
 def valid_action_commands(actions: list[dict[str, Any]]) -> list[str]:
     return [
         str(action.get("command") or "").strip()
@@ -547,6 +584,128 @@ class MazeSession:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+
+
+class VisionSession:
+    """Persistent maze-render-frame.js --serve session: one server + headless
+    browser per rollout, with actions applied incrementally between frames."""
+
+    def __init__(self, *, task: "MazeBenchTask") -> None:
+        self.repo_root = Path(task.repo_root or find_repo_root())
+        self.timeout_seconds = max(30, int(task.timeout_seconds))
+        self.init_payload = {
+            "draft": True,
+            "fast": True,
+            "gameId": task.game_id,
+            "height": int(task.vision_height),
+            "levelId": task.level_id,
+            "width": int(task.vision_width),
+            "yaw": int(task.yaw),
+        }
+        self.applied_actions: list[str] = []
+        self.last_frame = ""
+        self.process = subprocess.Popen(
+            [
+                task.node_bin,
+                str(self.repo_root / "scripts" / "maze-render-frame.js"),
+                "--serve",
+            ],
+            cwd=self.repo_root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf8",
+        )
+        try:
+            self.last_frame = self.frame_from_response(
+                self.request("init", **self.init_payload)
+            )
+        except Exception:
+            self.close(kill=True)
+            raise
+
+    def request(self, command: str, **kwargs: Any) -> dict[str, Any]:
+        if self.process.poll() is not None:
+            raise RuntimeError("maze render process is not running")
+
+        if self.process.stdin is None or self.process.stdout is None:
+            raise RuntimeError("maze render pipes are unavailable")
+
+        payload = {"command": command, **kwargs}
+        self.process.stdin.write(json.dumps(payload) + "\n")
+        self.process.stdin.flush()
+
+        ready, _, _ = select.select(
+            [self.process.stdout], [], [], self.timeout_seconds
+        )
+        if not ready:
+            self.close(kill=True)
+            raise TimeoutError(f"maze render timed out waiting for {command!r}")
+
+        line = self.process.stdout.readline()
+        if not line:
+            stderr = self.process.stderr.read() if self.process.stderr else ""
+            raise RuntimeError(f"maze render closed unexpectedly: {stderr.strip()}")
+
+        result = json.loads(line)
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "maze render command failed"))
+
+        return result
+
+    @staticmethod
+    def frame_from_response(response: dict[str, Any]) -> str:
+        frame = str(response.get("frame") or "")
+        if not frame.startswith("data:image/png;base64,"):
+            raise RuntimeError("maze render did not return a PNG data URL")
+        return frame
+
+    def frame_for_actions(self, actions: list[str]) -> str:
+        actions = [str(action) for action in actions]
+
+        if self.applied_actions != actions[: len(self.applied_actions)]:
+            # History diverged; replay everything in one fresh init request.
+            self.last_frame = self.frame_from_response(
+                self.request("init", actions=actions, **self.init_payload)
+            )
+            self.applied_actions = list(actions)
+            return self.last_frame
+
+        for action in actions[len(self.applied_actions) :]:
+            self.last_frame = self.frame_from_response(
+                self.request("action", action=action)
+            )
+            self.applied_actions.append(action)
+
+        if not self.last_frame:
+            self.last_frame = self.frame_from_response(self.request("frame"))
+
+        return self.last_frame
+
+    def close(self, kill: bool = False) -> None:
+        process = getattr(self, "process", None)
+        if process is None or process.poll() is not None:
+            return
+
+        try:
+            if kill:
+                process.send_signal(signal.SIGTERM)
+            else:
+                try:
+                    self.request("close")
+                except Exception:
+                    process.terminate()
+        finally:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+    def __del__(self) -> None:
+        try:
+            self.close(kill=True)
+        except Exception:
+            pass
 
 
 COMMAND_ALIASES = {
@@ -867,6 +1026,8 @@ class MazeBenchState(vf.State):
 class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
     async def setup_task(self, task: MazeBenchTask) -> None:
         self.task = task
+        self.vision_session = None
+        self.vision_session_failed = False
         self.session = MazeSession(
             game_won_gem_count=task.game_won_gem_count,
             level_id=task.level_id,
@@ -878,7 +1039,34 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         )
         atexit.register(self.close_session)
 
-    def build_user_message(self, status: dict[str, Any], result_text: str) -> vf.Messages:
+    async def vision_frame_data_url(self) -> str:
+        task = self.task
+        actions = valid_action_commands(self.state.maze_actions)
+
+        if not getattr(self, "vision_session_failed", False):
+            try:
+                if not isinstance(getattr(self, "vision_session", None), VisionSession):
+                    self.vision_session = await run_blocking(VisionSession, task=task)
+            except Exception:
+                # Persistent mode is unavailable (e.g. stale runtime script);
+                # stop retrying and use the one-shot renderer below.
+                self.vision_session_failed = True
+                self.vision_session = None
+            else:
+                try:
+                    return await run_blocking(
+                        self.vision_session.frame_for_actions, actions
+                    )
+                except Exception:
+                    # Session died mid-rollout; fall back for this frame and
+                    # let the next turn start a fresh session.
+                    await run_blocking(self.close_vision_session)
+
+        return await run_blocking(
+            render_vision_frame_data_url, actions=actions, task=task
+        )
+
+    async def build_user_message(self, status: dict[str, Any], result_text: str) -> vf.Messages:
         task = self.task
         target_text = target_text_for_row(task.model_dump())
         if task.observation_mode != "vision":
@@ -893,10 +1081,7 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                 }
             ]
 
-        data_url = render_vision_frame_data_url(
-            actions=valid_action_commands(self.state.maze_actions),
-            task=task,
-        )
+        data_url = await self.vision_frame_data_url()
         return [
             {
                 "role": "user",
@@ -914,11 +1099,18 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
             }
         ]
 
+    def close_vision_session(self) -> None:
+        vision_session = getattr(self, "vision_session", None)
+        if isinstance(vision_session, VisionSession):
+            vision_session.close()
+        self.vision_session = None
+
     def close_session(self) -> None:
         session = getattr(self, "session", None)
         if isinstance(session, MazeSession):
             session.close()
             self.session = None
+        self.close_vision_session()
 
     def initialize_state(self, status: dict[str, Any]) -> None:
         task = self.task
@@ -943,7 +1135,7 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         self.state.game_lost = bool(status.get("game_lost") or status.get("quit"))
         self.state.game_won = bool(
             status.get("game_won")
-            or int(status.get("gem_count") or 0) == int(task.game_won_gem_count)
+            or int(status.get("gem_count") or 0) >= int(task.game_won_gem_count)
         )
 
     def record_scorecard(self, status: dict[str, Any]) -> None:
@@ -965,15 +1157,15 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
             return [{"role": "user", "content": "Maze session is not available."}]
 
         if not self.state.maze_status:
-            status = session.request("observe")
+            status = await run_blocking(session.request, "observe")
             self.initialize_state(status)
-            return self.build_user_message(status, "Start of run.")
+            return await self.build_user_message(status, "Start of run.")
 
         raw_response = str(message or "")
         result_text = ""
         try:
             command, action_args = parse_text_action(raw_response)
-            status = session.request(command, **action_args)
+            status = await run_blocking(session.request, command, **action_args)
             self.state.maze_status = status
             record_maze_action(
                 self.state,
@@ -986,7 +1178,7 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         except Exception as error:
             self.state.maze_status_error = str(error)
             try:
-                status = session.request("observe")
+                status = await run_blocking(session.request, "observe")
                 self.state.maze_status = status
             except Exception:
                 status = self.state.maze_status or {}
@@ -1000,12 +1192,12 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
 
         self.update_terminal_flags(status)
         if (self.state.game_lost or self.state.game_won) and not status.get("scorecard"):
-            status = session.request("scorecard")
+            status = await run_blocking(session.request, "scorecard")
             self.state.maze_status = status
         self.record_scorecard(status)
 
         if self.state.game_lost or self.state.game_won:
-            self.close_session()
+            await run_blocking(self.close_session)
             return [
                 {
                     "role": "user",
@@ -1015,7 +1207,7 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                 }
             ]
 
-        return self.build_user_message(status, result_text)
+        return await self.build_user_message(status, result_text)
 
 
 class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState]):

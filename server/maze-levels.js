@@ -733,7 +733,59 @@ function createMazeLevelService({
       .filter(Boolean);
   }
 
+  const gameCache = new Map();
+
+  function appendPathStatSignature(parts, targetPath) {
+    let stats = null;
+
+    try {
+      stats = fs.statSync(targetPath);
+    } catch (error) {
+      stats = null;
+    }
+
+    parts.push(stats ? `${targetPath}:${stats.mtimeMs}:${stats.size}` : `${targetPath}:missing`);
+  }
+
+  function buildGameCacheSignature(gameId) {
+    const gameDir = path.join(gamesDir, gameId);
+    const previewsDir = path.join(gameDir, "previews");
+    const parts = [];
+
+    appendPathStatSignature(parts, gameDir);
+    appendPathStatSignature(parts, path.join(gameDir, "levels"));
+    appendPathStatSignature(parts, path.join(gameDir, "level_parsing.json"));
+    appendPathStatSignature(parts, path.join(gameDir, "player.py"));
+    appendPathStatSignature(parts, path.join(gameDir, "world_map.json"));
+    appendPathStatSignature(parts, path.join(gameDir, "world_parsing.json"));
+    appendPathStatSignature(parts, previewsDir);
+    listTopLevelFiles(previewsDir).forEach((fileName) => {
+      appendPathStatSignature(parts, path.join(previewsDir, fileName));
+    });
+
+    return parts.join("|");
+  }
+
   function getGame(gameId) {
+    const signature = buildGameCacheSignature(gameId);
+    const cached = gameCache.get(gameId);
+
+    if (cached && cached.signature === signature) {
+      return cached.game;
+    }
+
+    const game = buildGame(gameId);
+
+    if (!game) {
+      gameCache.delete(gameId);
+      return null;
+    }
+
+    gameCache.set(gameId, { game, signature });
+    return game;
+  }
+
+  function buildGame(gameId) {
     const gameDir = path.join(gamesDir, gameId);
     const levelsDir = path.join(gameDir, "levels");
     const parserPath = path.join(gameDir, "level_parsing.json");

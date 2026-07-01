@@ -144,8 +144,7 @@
     }
 
     function syncLiveSurfaceState(now) {
-      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
-      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || app.computeRaisedOrangeWallSet();
+      app.syncLiveRaisedSurfaces();
       app.syncGateAnimationTargets(now);
       app.syncOrangeWallAnimationTargets(now);
       app.syncPlayerLiftAnimationTargets(now);

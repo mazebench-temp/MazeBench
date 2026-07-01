@@ -108,12 +108,21 @@
   const editorGridOutlineSize = 8;
   const editorRenderer = {
     app: null,
+    hasCompletedPreload: false,
     layoutFrameId: null,
-    preloadVersion: 0
+    preloadVersion: 0,
+    preloadedTokens: new Set(),
+    sceneFrameId: null
   };
   const palettePreviewRenderer = {
     previewsByToken: new Map(),
     promise: null
+  };
+  const editorGridRectCache = { rect: null };
+  const pointerMoveScheduler = {
+    event: null,
+    frameId: null,
+    processor: null
   };
   const defaultSolverMaxExpandedStates = 1000000;
   const solverProgressYieldStateInterval = 4096;
@@ -190,6 +199,7 @@
     hillClimbResultIndex: -1,
     paintDragPlane: null,
     paintPointerId: null,
+    paintStrokeDidPaint: false,
     savedBoardSignature: boardSignature(
       authorData.initialLevel.width,
       authorData.initialLevel.height,
@@ -221,6 +231,14 @@
     return boardSignature(snapshot.width, snapshot.height, snapshot.cells);
   }
 
+  function undoSnapshotSignature(snapshot) {
+    if (typeof snapshot.signature !== "string") {
+      snapshot.signature = snapshotSignature(snapshot);
+    }
+
+    return snapshot.signature;
+  }
+
   function syncUndoButtonState() {
     const isLocked = state.isLevelSwitching || state.isSolverBusy || state.isSolutionPlaying;
 
@@ -233,11 +251,19 @@
           : "Undo the last editor change.";
   }
 
-  function pushUndoSnapshot() {
+  // Callers that already verified the board is about to change (for example
+  // per-cell painting) pass { boardChanged: true } so drag strokes skip the
+  // full-board signature comparison entirely. Signatures are computed at most
+  // once per snapshot and cached for later comparisons.
+  function pushUndoSnapshot(options = {}) {
     const snapshot = editorSnapshot();
     const previous = state.undoStack[state.undoStack.length - 1];
 
-    if (previous && snapshotSignature(previous) === snapshotSignature(snapshot)) {
+    if (
+      previous &&
+      options.boardChanged !== true &&
+      undoSnapshotSignature(previous) === undoSnapshotSignature(snapshot)
+    ) {
       return;
     }
 
@@ -534,9 +560,7 @@
 
   function gemPlacementValueForCells(cells, x, y, elevation = 0) {
     const gemToken = toolByName.get("gem")?.token || "G";
-    return setCellElevationToken(cells[y]?.[x] ?? emptyCellToken, gemToken, elevation, {
-      preserveBaseSurface: true
-    });
+    return setCellElevationToken(cells[y]?.[x] ?? emptyCellToken, gemToken, elevation);
   }
 
   function stripGemFromCellValue(value) {
@@ -812,6 +836,32 @@
     return app;
   }
 
+  function boardImageTokens() {
+    const tokens = new Set();
+
+    state.cells.forEach((row) => {
+      row.forEach((value) => {
+        getCellTokens(value).forEach((token) => {
+          if (token.length > 0) {
+            tokens.add(token);
+          }
+        });
+      });
+    });
+
+    return tokens;
+  }
+
+  function hasUnpreloadedBoardToken(tokens) {
+    for (const token of tokens) {
+      if (!editorRenderer.preloadedTokens.has(token)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function renderEditorScene() {
     const playData = buildEditorRenderPlayData();
     const shouldStartNoiseTicker = !editorRenderer.app;
@@ -834,16 +884,46 @@
 
     app.render();
 
+    // Only re-run the image preload pass when the board introduces a token
+    // whose imagery has not been preloaded successfully yet.
+    const boardTokens = boardImageTokens();
+
+    if (editorRenderer.hasCompletedPreload && !hasUnpreloadedBoardToken(boardTokens)) {
+      return;
+    }
+
     const preloadVersion = editorRenderer.preloadVersion + 1;
     editorRenderer.preloadVersion = preloadVersion;
 
     app.preloadImagesForLevelState(playData)
       .then(() => {
         if (editorRenderer.app === app && editorRenderer.preloadVersion === preloadVersion) {
+          editorRenderer.hasCompletedPreload = true;
+          boardTokens.forEach((token) => editorRenderer.preloadedTokens.add(token));
           app.render();
         }
       })
       .catch(() => {});
+  }
+
+  function scheduleEditorSceneRender() {
+    if (editorRenderer.sceneFrameId !== null) {
+      return;
+    }
+
+    editorRenderer.sceneFrameId = window.requestAnimationFrame(() => {
+      editorRenderer.sceneFrameId = null;
+      renderEditorScene();
+    });
+  }
+
+  function cancelScheduledEditorSceneRender() {
+    if (editorRenderer.sceneFrameId === null) {
+      return;
+    }
+
+    window.cancelAnimationFrame(editorRenderer.sceneFrameId);
+    editorRenderer.sceneFrameId = null;
   }
 
   function setStatus(message, tone) {
@@ -1221,6 +1301,22 @@
     button.title = "Cell " + (x + 1) + ", " + (y + 1) + ": " + value;
   }
 
+  function isPaintStrokeActive() {
+    return state.paintPointerId !== null;
+  }
+
+  function refreshHitButton(x, y) {
+    if (!isInsideEditorCell(x, y)) {
+      return;
+    }
+
+    const button = elements.hitGrid.children[y * state.width + x];
+
+    if (button) {
+      updateCellButton(button, x, y);
+    }
+  }
+
   function readPixelValue(value) {
     const parsed = parseFloat(value);
 
@@ -1272,6 +1368,8 @@
     if (Number.isFinite(gridShellHeight) && gridShellHeight > 0) {
       elements.sidebar.style.setProperty("--author-level-tray-height", gridShellHeight + "px");
     }
+
+    invalidateEditorGridRect();
   }
 
   function scheduleEditorGridLayout() {
@@ -1419,11 +1517,20 @@
   }
 
   function selectCell(x, y) {
+    const previousCell = state.selectedCell;
+
     state.selectedCell = {
       x: Math.max(0, Math.min(state.width - 1, x)),
       y: Math.max(0, Math.min(state.height - 1, y))
     };
-    renderGrid({ renderScene: false });
+
+    if (isPaintStrokeActive()) {
+      refreshHitButton(previousCell.x, previousCell.y);
+      refreshHitButton(state.selectedCell.x, state.selectedCell.y);
+    } else {
+      renderGrid({ renderScene: false });
+    }
+
     renderSelectedCell();
   }
 
@@ -1432,8 +1539,35 @@
     clearHillClimbResults();
     state.isDirty = true;
     renderStatus();
+
+    if (isPaintStrokeActive()) {
+      // Raw output and solver button syncing are flushed once when the paint
+      // stroke ends (see stopPainting).
+      return;
+    }
+
     renderRawOutput();
     syncSolverButtonState();
+  }
+
+  // Cheap render path used while a paint stroke is active: refreshes only the
+  // hit buttons whose cells (or selection) changed and coalesces the 3D scene
+  // re-render to at most one per animation frame. The full grid refresh runs
+  // once when the stroke ends.
+  function renderPaintStrokeChange(changedCells, selectedX, selectedY) {
+    const previousCell = state.selectedCell;
+
+    state.paintStrokeDidPaint = true;
+    state.selectedCell = {
+      x: Math.max(0, Math.min(state.width - 1, selectedX)),
+      y: Math.max(0, Math.min(state.height - 1, selectedY))
+    };
+    refreshHitButton(previousCell.x, previousCell.y);
+    changedCells.forEach((cell) => refreshHitButton(cell.x, cell.y));
+    refreshHitButton(state.selectedCell.x, state.selectedCell.y);
+    renderSelectedCell();
+    markDirty();
+    scheduleEditorSceneRender();
   }
 
   function updateCellValue(x, y, normalizedValue) {
@@ -1442,8 +1576,14 @@
       return;
     }
 
-    pushUndoSnapshot();
+    pushUndoSnapshot({ boardChanged: true });
     state.cells[y][x] = normalizedValue;
+
+    if (isPaintStrokeActive()) {
+      renderPaintStrokeChange([{ x, y }], x, y);
+      return;
+    }
+
     state.selectedCell = {
       x: Math.max(0, Math.min(state.width - 1, x)),
       y: Math.max(0, Math.min(state.height - 1, y))
@@ -1456,7 +1596,11 @@
   function updateCellsForSingleMainPlayerPlacement(x, y, normalizedValue) {
     const nextCells = state.cells.map((row) => row.slice());
     const targetValue = keepFirstMainPlayerTokenInCellValue(normalizedValue);
-    let changed = nextCells[y][x] !== targetValue;
+    const changedCells = [];
+
+    if (nextCells[y][x] !== targetValue) {
+      changedCells.push({ x, y });
+    }
 
     nextCells[y][x] = targetValue;
 
@@ -1469,19 +1613,25 @@
         const strippedValue = stripMainPlayerTokensFromCellValue(nextCells[rowIndex][columnIndex]);
 
         if (strippedValue !== nextCells[rowIndex][columnIndex]) {
-          changed = true;
+          changedCells.push({ x: columnIndex, y: rowIndex });
           nextCells[rowIndex][columnIndex] = strippedValue;
         }
       }
     }
 
-    if (!changed) {
+    if (changedCells.length === 0) {
       selectCell(x, y);
       return;
     }
 
-    pushUndoSnapshot();
+    pushUndoSnapshot({ boardChanged: true });
     state.cells = nextCells;
+
+    if (isPaintStrokeActive()) {
+      renderPaintStrokeChange(changedCells, x, y);
+      return;
+    }
+
     state.selectedCell = {
       x: Math.max(0, Math.min(state.width - 1, x)),
       y: Math.max(0, Math.min(state.height - 1, y))
@@ -1612,8 +1762,22 @@
     return fallbackPaintTargetFromCell(Number(button.dataset.x), Number(button.dataset.y));
   }
 
+  // The editor grid rect is cached and invalidated on resize/scroll/layout
+  // changes instead of calling getBoundingClientRect per pointer event.
+  function editorGridBoundingRect() {
+    if (!editorGridRectCache.rect) {
+      editorGridRectCache.rect = elements.grid.getBoundingClientRect();
+    }
+
+    return editorGridRectCache.rect;
+  }
+
+  function invalidateEditorGridRect() {
+    editorGridRectCache.rect = null;
+  }
+
   function fallbackPaintTargetFromPoint(clientX, clientY) {
-    const rect = elements.grid.getBoundingClientRect();
+    const rect = editorGridBoundingRect();
 
     if (
       rect.width <= 0 ||
@@ -1861,9 +2025,7 @@
 
     const paintLayer = Math.max(0, Math.floor(Number(target.sourceLayer) || 0));
     const currentValue = state.cells[target.paintY][target.paintX];
-    const nextValue = setCellElevationToken(currentValue, directionToken, paintLayer, {
-      preserveBaseSurface: true
-    });
+    const nextValue = setCellElevationToken(currentValue, directionToken, paintLayer);
 
     updateCellValue(target.paintX, target.paintY, nextValue);
     return true;
@@ -1946,9 +2108,7 @@
     const nextValue =
       paintLayer === null || paintLayer === undefined
         ? appendTokenToCellValue(currentValue, paintToken)
-        : setCellElevationToken(currentValue, paintToken, paintLayer, {
-            preserveBaseSurface: true
-          });
+        : setCellElevationToken(currentValue, paintToken, paintLayer);
 
     if (isMainPlayerPaint) {
       updateCellsForSingleMainPlayerPlacement(target.paintX, target.paintY, nextValue);
@@ -2567,9 +2727,7 @@
       return null;
     }
 
-    const nextValue = setCellElevationToken(currentValue, wallToken, 0, {
-      preserveBaseSurface: true
-    });
+    const nextValue = setCellElevationToken(currentValue, wallToken, 0);
 
     if (nextValue === currentValue) {
       return null;
@@ -2587,11 +2745,7 @@
       return false;
     }
 
-    return (
-      setCellElevationToken(currentValue, wallToken, 0, {
-        preserveBaseSurface: true
-      }) !== currentValue
-    );
+    return setCellElevationToken(currentValue, wallToken, 0) !== currentValue;
   }
 
   function hillClimbCandidatePositions(baseCells, wallToken) {
@@ -3368,7 +3522,31 @@
     paintFaceTargetOnce(target);
   }
 
-  function handleGridPointerMove(event) {
+  // Pointer moves are throttled to one raycast pick per animation frame: the
+  // listeners only stash the latest event and the work happens in the rAF.
+  function schedulePointerMove(event, processor) {
+    pointerMoveScheduler.event = event;
+    pointerMoveScheduler.processor = processor;
+
+    if (pointerMoveScheduler.frameId !== null) {
+      return;
+    }
+
+    pointerMoveScheduler.frameId = window.requestAnimationFrame(() => {
+      const pendingEvent = pointerMoveScheduler.event;
+      const pendingProcessor = pointerMoveScheduler.processor;
+
+      pointerMoveScheduler.frameId = null;
+      pointerMoveScheduler.event = null;
+      pointerMoveScheduler.processor = null;
+
+      if (pendingEvent && pendingProcessor) {
+        pendingProcessor(pendingEvent);
+      }
+    });
+  }
+
+  function processGridPointerMove(event) {
     const target = syncEditorHoverFromPointerEvent(event);
 
     if (state.paintPointerId !== event.pointerId || event.buttons !== 1) {
@@ -3382,17 +3560,36 @@
     paintFaceTargetOnce(target);
   }
 
+  function handleGridPointerMove(event) {
+    schedulePointerMove(event, processGridPointerMove);
+  }
+
   function stopPainting(event) {
-    if (state.paintPointerId === event.pointerId) {
-      state.paintPointerId = null;
-      state.lastPaintTargetKey = null;
-      state.eraseGestureMode = null;
-      state.paintDragPlane = null;
-      try {
-        if (elements.grid.hasPointerCapture?.(event.pointerId)) {
-          elements.grid.releasePointerCapture(event.pointerId);
-        }
-      } catch (_) {}
+    if (state.paintPointerId !== event.pointerId) {
+      return;
+    }
+
+    const didPaint = state.paintStrokeDidPaint;
+
+    state.paintPointerId = null;
+    state.paintStrokeDidPaint = false;
+    state.lastPaintTargetKey = null;
+    state.eraseGestureMode = null;
+    state.paintDragPlane = null;
+    try {
+      if (elements.grid.hasPointerCapture?.(event.pointerId)) {
+        elements.grid.releasePointerCapture(event.pointerId);
+      }
+    } catch (_) {}
+
+    if (didPaint) {
+      // One full refresh per stroke: rebuild every hit button, render the 3D
+      // scene immediately, and flush the deferred raw output / solver state.
+      cancelScheduledEditorSceneRender();
+      renderGrid();
+      renderSelectedCell();
+      renderRawOutput();
+      syncSolverButtonState();
     }
   }
 
@@ -3408,11 +3605,7 @@
     handleGridPointerDown(event);
   }
 
-  function handleDocumentGridPointerMove(event) {
-    if (eventTargetsEditorGrid(event)) {
-      return;
-    }
-
+  function processDocumentGridPointerMove(event) {
     const isActivePaintPointer = state.paintPointerId === event.pointerId;
     const isOverGrid = Boolean(fallbackPaintTargetFromPoint(event.clientX, event.clientY));
 
@@ -3421,7 +3614,15 @@
       return;
     }
 
-    handleGridPointerMove(event);
+    processGridPointerMove(event);
+  }
+
+  function handleDocumentGridPointerMove(event) {
+    if (eventTargetsEditorGrid(event)) {
+      return;
+    }
+
+    schedulePointerMove(event, processDocumentGridPointerMove);
   }
 
   function handleDocumentGridPointerEnd(event) {
@@ -3686,4 +3887,6 @@
     event.returnValue = "";
   });
   window.addEventListener("resize", scheduleEditorGridLayout);
+  window.addEventListener("resize", invalidateEditorGridRect);
+  document.addEventListener("scroll", invalidateEditorGridRect, { capture: true, passive: true });
 })();

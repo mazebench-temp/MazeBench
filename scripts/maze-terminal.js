@@ -20,26 +20,18 @@ function normalizeGameWonGemCount(value) {
   return Number.isFinite(count) && count > 0 ? count : 100;
 }
 
+const GAME_CONFIG_PATH = path.join(ROOT_DIR, "games", "maze", "config.json");
+
 function configuredGameWonGemCount() {
   if (process.env.MAZEBENCH_GAME_WON_GEM_COUNT) {
     return normalizeGameWonGemCount(process.env.MAZEBENCH_GAME_WON_GEM_COUNT);
   }
 
-  const candidates = [
-    path.join(ROOT_DIR, "environments", "mazebench", "mazebench", "mazebench.py"),
-    path.resolve(__dirname, "..", "..", "mazebench.py")
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const source = fs.readFileSync(candidate, "utf8");
-      const match = source.match(/^GAME_WON_GEM_COUNT\s*=\s*(\d+)\s*$/m);
-      if (match) {
-        return normalizeGameWonGemCount(match[1]);
-      }
-    } catch (_error) {
-      // Fall back to the built-in default when running outside the env package.
-    }
+  try {
+    const config = JSON.parse(fs.readFileSync(GAME_CONFIG_PATH, "utf8"));
+    return normalizeGameWonGemCount(config?.game_won_gem_count);
+  } catch (_error) {
+    // Fall back to the built-in default when the shared config is missing.
   }
 
   return 100;
@@ -2416,7 +2408,7 @@ function buildScorecard(context, nowMs = Date.now()) {
     {
       scorecard: {
         result: {
-          won: collectedGemCount === gameWonGemCount,
+          won: collectedGemCount >= gameWonGemCount,
           percent: (100 * collectedGemCount) / gameWonGemCount
         },
         gems: {
@@ -2490,7 +2482,7 @@ function buildScorecard(context, nowMs = Date.now()) {
 function isGameWon(context) {
   const collectedGemCount = context?.stats?.collectedGemIds?.size || 0;
   const gameWonGemCount = normalizeGameWonGemCount(context?.options?.gameWonGemCount);
-  return collectedGemCount === gameWonGemCount;
+  return collectedGemCount >= gameWonGemCount;
 }
 
 function defaultTerminalReplayDir(date = new Date()) {

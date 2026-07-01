@@ -198,7 +198,11 @@
   function renderStatus() {
     const dirtySuffix = state.isDirty ? " Unsaved changes." : "";
     elements.status.textContent = state.message + dirtySuffix;
-    elements.status.className = "sr-only";
+    // Errors (for example failed saves) must be visible, not screen-reader
+    // only. Reuses the author page status styles that already exist for the
+    // shared topbar layout.
+    elements.status.className =
+      state.messageTone === "error" ? "author-status is-error" : "sr-only";
   }
 
   function measureWorldMapLayout() {
@@ -286,46 +290,70 @@
     }
 
     Array.from(elements.grid.children).forEach((button) => {
-      const column = button.dataset.column;
-      const row = button.dataset.row;
-      const entry = getEntryAtPosition(column, row);
-      const position = [column, row];
-      const isSelected = entry
-        ? entry.fileName === state.selectedFileName
-        : positionsMatch(state.selectedPosition, position);
+      syncGridCellButton(button);
+    });
+  }
 
-      button.className =
-        "world-map-grid__cell" +
-        (entry ? " is-filled" : " is-empty") +
-        (isSelected ? " is-selected" : "");
+  // Cells are mutated in place instead of rewriting innerHTML on every
+  // render, so unchanged <img> previews are never re-created (which would
+  // re-trigger image loads on each click).
+  function syncGridCellButton(button) {
+    const column = button.dataset.column;
+    const row = button.dataset.row;
+    const entry = getEntryAtPosition(column, row);
+    const position = [column, row];
+    const isSelected = entry
+      ? entry.fileName === state.selectedFileName
+      : positionsMatch(state.selectedPosition, position);
+    const className =
+      "world-map-grid__cell" +
+      (entry ? " is-filled" : " is-empty") +
+      (isSelected ? " is-selected" : "");
+
+    if (button.className !== className) {
+      button.className = className;
+    }
+
+    const previewUrl = entry ? getPreviewUrlForFile(entry.fileName) : "";
+    const contentKey = entry ? "entry:" + entry.fileName + ":" + previewUrl : "empty";
+
+    if (button.dataset.contentKey !== contentKey) {
+      button.dataset.contentKey = contentKey;
 
       if (entry) {
-        const previewUrl = getPreviewUrlForFile(entry.fileName);
         const previewMarkup = previewUrl
           ? '<img class="world-map-grid__preview" src="' + escapeHtml(previewUrl) + '" alt="">'
           : '<span class="world-map-grid__placeholder">No preview</span>';
-        const selectionMarkup = isSelected
-          ? '<span class="world-map-grid__selection-frame" aria-hidden="true"></span>'
-          : "";
         button.innerHTML =
-          selectionMarkup +
-          '<span class="world-map-grid__preview-shell">' +
-          previewMarkup +
-          "</span>";
-        button.setAttribute(
-          "aria-label",
-          entry.fileName + " at " + formatPosition(entry.position)
-        );
-        button.title = entry.fileName + " at " + formatPosition(entry.position);
+          '<span class="world-map-grid__preview-shell">' + previewMarkup + "</span>";
       } else {
-        button.innerHTML =
-          isSelected
-            ? '<span class="world-map-grid__selection-frame" aria-hidden="true"></span>'
-            : "";
-        button.setAttribute("aria-label", "Empty slot " + formatPosition([column, row]));
-        button.title = "Empty slot " + formatPosition([column, row]);
+        button.innerHTML = "";
       }
-    });
+    }
+
+    const existingFrame =
+      button.firstElementChild &&
+      button.firstElementChild.classList.contains("world-map-grid__selection-frame")
+        ? button.firstElementChild
+        : null;
+
+    if (isSelected && !existingFrame) {
+      const frame = document.createElement("span");
+      frame.className = "world-map-grid__selection-frame";
+      frame.setAttribute("aria-hidden", "true");
+      button.prepend(frame);
+    } else if (!isSelected && existingFrame) {
+      existingFrame.remove();
+    }
+
+    const label = entry
+      ? entry.fileName + " at " + formatPosition(entry.position)
+      : "Empty slot " + formatPosition(position);
+
+    if (button.getAttribute("aria-label") !== label) {
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    }
   }
 
   function renderSelection() {
@@ -702,4 +730,13 @@
     }
   });
   window.addEventListener("resize", scheduleWorldMapLayout);
+
+  window.addEventListener("beforeunload", function (event) {
+    if (!state.isDirty) {
+      return;
+    }
+
+    event.preventDefault();
+    event.returnValue = "";
+  });
 })();

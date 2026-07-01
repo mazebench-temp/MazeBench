@@ -25,12 +25,12 @@ const {
 const mazeEngine = loadMazeEngine();
 
 {
-  const source = fs.readFileSync(
-    path.join(ROOT_DIR, "environments", "mazebench", "mazebench", "mazebench.py"),
-    "utf8"
+  const config = JSON.parse(
+    fs.readFileSync(path.join(ROOT_DIR, "games", "maze", "config.json"), "utf8")
   );
-  const match = source.match(/^GAME_WON_GEM_COUNT\s*=\s*(\d+)\s*$/m);
-  assert.equal(GAME_WON_GEM_COUNT, Number(match?.[1]));
+  assert.equal(Number.isInteger(config.game_won_gem_count), true);
+  assert.equal(config.game_won_gem_count > 0, true);
+  assert.equal(GAME_WON_GEM_COUNT, config.game_won_gem_count);
 }
 
 function runTerminal(args) {
@@ -234,6 +234,13 @@ function syntheticFloor(width, height) {
     percent: 100,
     won: true
   });
+
+  // Regression: overshooting the threshold (e.g. two gems collected by one
+  // action) must still count as a win.
+  context.stats.collectedGemIds.add("fake-gem-id-2");
+  assert.equal(isGameWon(context), true);
+  const overshotScorecard = JSON.parse(buildScorecard(context, 61000)).scorecard;
+  assert.equal(overshotScorecard.result.won, true);
 }
 
 {

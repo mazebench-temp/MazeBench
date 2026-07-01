@@ -1048,7 +1048,7 @@
             }
           });
 
-          app.render(now);
+          (app.renderOncePerFrame || app.render)(now);
 
           if (hasActiveLift) {
             app.animationFrameId = window.requestAnimationFrame(stepLift);
@@ -1414,7 +1414,7 @@
             });
           }
 
-          app.render(now);
+          (app.renderOncePerFrame || app.render)(now);
 
           if (progress < 1) {
             app.animationFrameId = window.requestAnimationFrame(step);
@@ -1520,7 +1520,7 @@
             }
           );
 
-          app.render(now);
+          (app.renderOncePerFrame || app.render)(now);
 
           if (progress < 1) {
             app.animationFrameId = window.requestAnimationFrame(stepFall);
@@ -3041,7 +3041,7 @@
           Math.round((app.worldActionAnimation.cameraPoint?.x || 0) * 1000),
           Math.round((app.worldActionAnimation.cameraPoint?.y || 0) * 1000)
         ].join(":");
-        app.render(now);
+        (app.renderOncePerFrame || app.render)(now);
 
         if (progress >= 1) {
           finish();

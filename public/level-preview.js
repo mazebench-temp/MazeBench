@@ -81,6 +81,8 @@
     const thumbnailCanvas = createThumbnailCanvas(canvas);
     const dataUrl = previewCanvasToDataUrl(thumbnailCanvas);
 
+    app.threeRenderer?.dispose?.();
+
     if (app.gl && typeof app.gl.getExtension === "function") {
       const loseContextExtension = app.gl.getExtension("WEBGL_lose_context");
 

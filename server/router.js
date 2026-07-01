@@ -45,7 +45,7 @@ function createRequestRouter({
     const publicFilePath = publicFileRoutes.get(url.pathname);
 
     if (publicFilePath) {
-      sendFile(response, publicFilePath, getContentType(publicFilePath));
+      sendFile(request, response, publicFilePath, getContentType(publicFilePath));
       return;
     }
 
@@ -59,7 +59,7 @@ function createRequestRouter({
         return;
       }
 
-      sendFile(response, assetPath, getContentType(assetPath));
+      sendFile(request, response, assetPath, getContentType(assetPath));
       return;
     }
 

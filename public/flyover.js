@@ -1418,6 +1418,18 @@
     }
   }
 
+  function flightRenderSignature() {
+    return [
+      camera.yaw,
+      camera.tilt,
+      camera.zoom,
+      app.flyoverCameraOffsetX,
+      app.flyoverCameraOffsetZ,
+      app.currentLevelId || "",
+      app.flyoverSelectedLevelId || ""
+    ].join(";");
+  }
+
   function scheduleFlight() {
     if (flight.frameId) {
       return;
@@ -1425,8 +1437,26 @@
 
     flight.frameId = window.requestAnimationFrame((now) => {
       flight.frameId = 0;
+      const beforeSignature = flightRenderSignature();
       advanceFlight(now);
-      app.render(now);
+
+      // Skip the render pipeline entirely on frames where nothing moved —
+      // the flight loop stays alive only to react to input.
+      if (
+        flightRenderSignature() !== beforeSignature ||
+        heldCameraControls.size > 0 ||
+        heldFlightControls.size > 0 ||
+        cameraVelocity.yaw !== 0 ||
+        cameraVelocity.tilt !== 0 ||
+        cameraVelocity.zoom !== 0 ||
+        flightVelocity.xRoomsPerSecond !== 0 ||
+        flightVelocity.zRoomsPerSecond !== 0 ||
+        (app.flyoverRoomFadeIns instanceof Map && app.flyoverRoomFadeIns.size > 0) ||
+        (app.flyoverDepartingViews || []).length > 0
+      ) {
+        (app.renderOncePerFrame || app.render)(now);
+      }
+
       updateFlyoverStatsHud(now);
       scheduleFlight();
     });
@@ -1579,6 +1609,18 @@
       heldCameraControls.delete(control);
     }
   }, true);
+
+  function releaseHeldControls() {
+    heldFlightControls.clear();
+    heldCameraControls.clear();
+  }
+
+  window.addEventListener("blur", releaseHeldControls);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      releaseHeldControls();
+    }
+  });
 
   app.state.effects.fuzzyEnabled = false;
   app.syncPlayLayout();

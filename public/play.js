@@ -89,6 +89,16 @@
     return;
   }
 
+  // ?view=world renders the whole world around the current room while
+  // playing; ?view=<n> renders n rings of neighboring rooms (default 1).
+  const viewParam = new URLSearchParams(window.location.search).get("view");
+
+  if (viewParam === "world") {
+    app.playSurroundingRadius = 26;
+  } else if (Number.isFinite(Number(viewParam)) && Number(viewParam) > 1) {
+    app.playSurroundingRadius = Math.min(26, Math.floor(Number(viewParam)));
+  }
+
   if (window.__PIXEL_GAME_DEBUG__ === true) {
     window.__PIXEL_GAME_APP__ = app;
   }

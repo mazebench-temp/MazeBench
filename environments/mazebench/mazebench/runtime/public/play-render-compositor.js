@@ -241,8 +241,7 @@
     function captureViewportSnapshot(options = {}, now = performance.now()) {
       const skipActorsPredicate =
         typeof options.skipActorsPredicate === "function" ? options.skipActorsPredicate : null;
-      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
-      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || app.computeRaisedOrangeWallSet();
+      app.syncLiveRaisedSurfaces();
       app.syncGateAnimationTargets(now);
       app.syncOrangeWallAnimationTargets(now);
       app.syncPlayerLiftAnimationTargets(now);
@@ -273,8 +272,7 @@
     function captureSceneSnapshot(options = {}, now = performance.now()) {
       const skipActorsPredicate =
         typeof options.skipActorsPredicate === "function" ? options.skipActorsPredicate : null;
-      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
-      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || app.computeRaisedOrangeWallSet();
+      app.syncLiveRaisedSurfaces();
       app.syncGateAnimationTargets(now);
       app.syncOrangeWallAnimationTargets(now);
       app.syncPlayerLiftAnimationTargets(now);
@@ -322,8 +320,7 @@
               ? 2
               : 1;
 
-      app.liveRaisedPlayerGates = app.gateRenderOverride || app.computeRaisedPlayerGateSet();
-      app.liveRaisedOrangeWalls = app.orangeWallRenderOverride || app.computeRaisedOrangeWallSet();
+      app.syncLiveRaisedSurfaces();
       app.syncGateAnimationTargets(now);
       app.syncOrangeWallAnimationTargets(now);
       app.syncPlayerLiftAnimationTargets(now);
@@ -363,7 +360,7 @@
 
       function step(now) {
         app.levelTransitionFrameId = null;
-        app.render(now);
+        (app.renderOncePerFrame || app.render)(now);
       }
 
       app.levelTransitionFrameId = window.requestAnimationFrame(step);

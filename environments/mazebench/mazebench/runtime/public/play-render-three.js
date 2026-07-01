@@ -9,6 +9,8 @@
     let scene = null;
     let edgeScene = null;
     let camera = null;
+    let ambientLight = null;
+    let keyLight = null;
     let raycaster = null;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -64,6 +66,25 @@
     const neighboringRoomBrightness = 0.62;
     const geometryCache = new Map();
     const edgeGeometryCache = new Map();
+
+    function markPersistentGeometry(geometry) {
+      if (geometry?.userData) {
+        geometry.userData.persistentGeometry = true;
+      }
+
+      return geometry;
+    }
+
+    function cacheGeometry(key, geometry) {
+      geometryCache.set(key, markPersistentGeometry(geometry));
+      return geometry;
+    }
+
+    function cacheEdgeGeometry(key, geometry) {
+      edgeGeometryCache.set(key, markPersistentGeometry(geometry));
+      return geometry;
+    }
+
     const materialCache = new Map();
     const lineMaterialCache = new Map();
     const textureCache = new Map();
@@ -75,6 +96,18 @@
     const groupLabelMaterialCache = new Map();
     const polycubeFaceCellsCache = new Map();
     const playerLiftMarkerMeshes = new Set();
+    // Retained-actor tracking: scene/edge objects created for each actor in
+    // the current room, so animation frames can move them in place instead
+    // of tearing down and rebuilding the whole scene graph.
+    const trackedActorObjects = new Map();
+    const trackedStaticActorCodes = new Map();
+    // World-view play: merged per-room groups cached across scene rebuilds.
+    const worldViewRoomGroups = new Map();
+    let trackedBuildStateRef = null;
+    let trackedBuildTerrainVersion = -1;
+    let terrainScanCacheState = null;
+    let terrainScanCacheVersion = -1;
+    let terrainScanCacheValue = "";
     let polycubeComponentNeighborOffsetCache = null;
     let polycubeEdgeContactOffsetCache = null;
 
@@ -98,6 +131,7 @@
       lastSceneContentSignature = "";
       lastShadowSceneSignature = "";
       hasRenderedScene = false;
+      terrainScanCacheState = null;
     }
 
     function renderOffsetX() {
@@ -212,8 +246,32 @@
       return cameraMode === "perspective";
     }
 
+    function playSurroundingRadius() {
+      // Transitions and world actions rebuild the scene every frame; render
+      // them at the classic radius so they stay cheap, and restore the wide
+      // view with a single rebuild when they finish.
+      if (app.levelTransition || app.worldActionAnimation) {
+        return 1;
+      }
+
+      return Math.max(1, Math.min(26, Math.floor(Number(app.playSurroundingRadius) || 1)));
+    }
+
+    function isWorldViewPlayMode() {
+      return !app.isFlyoverMode && !isEditorRenderMode() && playSurroundingRadius() > 1;
+    }
+
     function perspectiveCameraFarPlane() {
       if (!app.isFlyoverMode) {
+        if (isWorldViewPlayMode()) {
+          return Math.max(
+            24000,
+            (surroundingLevelRadius() * 2 + 1) *
+              Math.max(app.boardRect.width, app.boardRect.height) *
+              4
+          );
+        }
+
         return 8000;
       }
 
@@ -495,7 +553,11 @@
     }
 
     function clampDebugCameraZoom(zoom) {
-      return Math.max(debugCameraMinZoom, Math.min(debugCameraMaxZoom, zoom));
+      // World view allows zooming far out so the whole world is visible
+      // while playing.
+      const minZoom = isWorldViewPlayMode() ? 0.06 : debugCameraMinZoom;
+
+      return Math.max(minZoom, Math.min(debugCameraMaxZoom, zoom));
     }
 
     function cameraUpVectorFor(viewDirection, yaw) {
@@ -575,7 +637,9 @@
         debugCameraAnimationFrameId = 0;
         const stillAnimating = applyDebugCameraAnimation(now);
 
-        if (typeof app.render === "function") {
+        if (typeof app.renderOncePerFrame === "function") {
+          app.renderOncePerFrame(now);
+        } else if (typeof app.render === "function") {
           app.render(now);
         }
 
@@ -659,7 +723,9 @@
         debugCameraTiltHoldFrameId = 0;
         const shouldContinue = applyDebugCameraTiltHold(now);
 
-        if (typeof app.render === "function") {
+        if (typeof app.renderOncePerFrame === "function") {
+          app.renderOncePerFrame(now);
+        } else if (typeof app.render === "function") {
           app.render(now);
         }
 
@@ -788,13 +854,22 @@
     }
 
     function renderContextColor(color) {
-      return dimHexColor(color, renderContextBrightness());
+      const brightness = renderContextBrightness();
+      // Quantize so fades reuse a bounded set of dimmed colors instead of
+      // minting a new material cache entry every animation frame.
+      const quantized = brightness >= 0.999 ? 1 : Math.round(brightness * 32) / 32;
+      return dimHexColor(color, quantized);
     }
 
-    function material(color, opacity = 1) {
+    function material(color, opacity = 1, variants = null) {
       const alpha = Math.max(0, Math.min(1, opacity));
       const renderColor = renderContextColor(color);
-      const key = `${renderColor}:${Math.round(alpha * 1000)}`;
+      const doubleSide = variants?.doubleSide === true;
+      const noDepthWrite = variants?.depthWrite === false;
+      const polygonOffset = variants?.polygonOffset === true;
+      const polygonOffsetFactor = polygonOffset ? variants.polygonOffsetFactor ?? -2 : 0;
+      const polygonOffsetUnits = polygonOffset ? variants.polygonOffsetUnits ?? -2 : 0;
+      const key = `${renderColor}:${Math.round(alpha * 1000)}:${doubleSide ? 1 : 0}${noDepthWrite ? 1 : 0}${polygonOffset ? 1 : 0}:${polygonOffsetFactor}:${polygonOffsetUnits}`;
 
       if (!materialCache.has(key)) {
         const options = {
@@ -802,7 +877,7 @@
           flatShading: true,
           opacity: alpha,
           transparent: alpha < 0.999,
-          depthWrite: alpha >= 0.999
+          depthWrite: noDepthWrite ? false : alpha >= 0.999
         };
 
         if (renderColor !== "#050608") {
@@ -810,10 +885,19 @@
           options.emissiveIntensity = renderColor === "#b85f16" ? 0.28 : 0.12;
         }
 
-        materialCache.set(
-          key,
-          new THREE.MeshLambertMaterial(options)
-        );
+        const cachedMaterial = new THREE.MeshLambertMaterial(options);
+
+        if (doubleSide) {
+          cachedMaterial.side = THREE.DoubleSide;
+        }
+
+        if (polygonOffset) {
+          cachedMaterial.polygonOffset = true;
+          cachedMaterial.polygonOffsetFactor = polygonOffsetFactor;
+          cachedMaterial.polygonOffsetUnits = polygonOffsetUnits;
+        }
+
+        materialCache.set(key, cachedMaterial);
       }
 
       return materialCache.get(key);
@@ -1580,7 +1664,7 @@
           invalidateSceneCache();
 
           if (typeof app.render === "function") {
-            window.requestAnimationFrame(() => app.render());
+            window.requestAnimationFrame((now) => (app.renderOncePerFrame || app.render)(now));
           }
         })
         .catch(() => {
@@ -1750,7 +1834,7 @@
 
       geometry.rotateX(Math.PI / 2);
       geometry.computeVertexNormals();
-      geometryCache.set(key, geometry);
+      cacheGeometry(key, geometry);
       return geometry;
     }
 
@@ -1769,7 +1853,7 @@
       const geometry = new THREE.CylinderGeometry(radius, radius, height, segments, 1, false);
 
       geometry.computeVertexNormals();
-      geometryCache.set(key, geometry);
+      cacheGeometry(key, geometry);
       return geometry;
     }
 
@@ -1788,8 +1872,18 @@
       const geometry = new THREE.BoxGeometry(width, height, depth);
 
       geometry.computeVertexNormals();
-      geometryCache.set(key, geometry);
+      cacheGeometry(key, geometry);
       return geometry;
+    }
+
+    function octahedronGeometry(radius) {
+      const key = `octa:${Math.round(radius * 100)}`;
+
+      if (geometryCache.has(key)) {
+        return geometryCache.get(key);
+      }
+
+      return cacheGeometry(key, new THREE.OctahedronGeometry(radius, 0));
     }
 
     function normalizeCardinalDirection(direction) {
@@ -1876,7 +1970,7 @@
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
-      geometryCache.set(key, geometry);
+      cacheGeometry(key, geometry);
       return geometry;
     }
 
@@ -1964,7 +2058,7 @@
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      edgeGeometryCache.set(key, geometry);
+      cacheEdgeGeometry(key, geometry);
       return geometry;
     }
 
@@ -2508,7 +2602,7 @@
       filteredEdges.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
 
       if (cacheable) {
-        edgeGeometryCache.set(key, filteredEdges);
+        cacheEdgeGeometry(key, filteredEdges);
       }
 
       return filteredEdges;
@@ -2516,28 +2610,13 @@
 
     function addOutlinedMesh(geometry, color, position, options = {}) {
       const opacity = options.opacity ?? 1;
-      const shouldCloneMaterial =
-        options.doubleSide === true ||
-        options.depthWrite === false ||
-        options.polygonOffset === true;
-      const meshMaterial = shouldCloneMaterial ? material(color, opacity).clone() : material(color, opacity);
-
-      if (options.doubleSide === true) {
-        meshMaterial.side = THREE.DoubleSide;
-        meshMaterial.needsUpdate = true;
-      }
-
-      if (options.depthWrite === false) {
-        meshMaterial.depthWrite = false;
-        meshMaterial.needsUpdate = true;
-      }
-
-      if (options.polygonOffset === true) {
-        meshMaterial.polygonOffset = true;
-        meshMaterial.polygonOffsetFactor = options.polygonOffsetFactor ?? -2;
-        meshMaterial.polygonOffsetUnits = options.polygonOffsetUnits ?? -2;
-        meshMaterial.needsUpdate = true;
-      }
+      const meshMaterial = material(color, opacity, {
+        doubleSide: options.doubleSide,
+        depthWrite: options.depthWrite,
+        polygonOffset: options.polygonOffset,
+        polygonOffsetFactor: options.polygonOffsetFactor,
+        polygonOffsetUnits: options.polygonOffsetUnits
+      });
 
       const mesh = new THREE.Mesh(geometry, meshMaterial);
       mesh.position.set(position.x, position.y, position.z);
@@ -2564,7 +2643,7 @@
       return mesh;
     }
 
-    function addEdgeLines(geometry, position, threshold = 24, opacity = 1, edgeGeometry = null) {
+    function addEdgeLines(geometry, position, threshold = 24, opacity = 1, edgeGeometry = null, scale = null) {
       if (!edgeOutlinesEnabled()) {
         return null;
       }
@@ -2577,6 +2656,11 @@
 
       const edges = new THREE.LineSegments(edgeGeometry || edgeGeometryFor(geometry, threshold), lineMaterial("#000000", lineOpacity));
       edges.position.copy(position);
+
+      if (scale) {
+        edges.scale.copy(scale);
+      }
+
       edges.userData.edgeBasePosition = position.clone();
       edgeScene.add(edges);
       return edges;
@@ -2612,23 +2696,34 @@
             attributeValues.set(name, []);
           }
 
-          attributeValues.get(name).push(...attribute.array);
+          // Collect the typed arrays and concatenate once at the end;
+          // push(...array) overflows the argument limit on large batches.
+          attributeValues.get(name).push(attribute.array);
         });
         sourceGeometry.dispose();
       });
 
       const geometry = new THREE.BufferGeometry();
 
-      attributeValues.forEach((values, name) => {
+      attributeValues.forEach((arrays, name) => {
         const meta = attributeMeta.get(name);
+        let totalLength = 0;
+
+        arrays.forEach((array) => {
+          totalLength += array.length;
+        });
+
+        const merged = new meta.ArrayType(totalLength);
+        let offset = 0;
+
+        arrays.forEach((array) => {
+          merged.set(array, offset);
+          offset += array.length;
+        });
 
         geometry.setAttribute(
           name,
-          new THREE.BufferAttribute(
-            new meta.ArrayType(values),
-            meta.itemSize,
-            meta.normalized
-          )
+          new THREE.BufferAttribute(merged, meta.itemSize, meta.normalized)
         );
       });
       geometry.computeBoundingSphere();
@@ -2677,7 +2772,9 @@
           !child.geometry?.attributes?.position ||
           !child.material ||
           Array.isArray(child.material) ||
-          child.children.length > 0
+          child.children.length > 0 ||
+          child.userData?.dynamicActorObject === true ||
+          child.parent?.userData?.dynamicActorObject === true
         ) {
           return;
         }
@@ -2740,6 +2837,8 @@
     }
 
     function optimizeWholeWorldFlyoverScene() {
+      // World-view play merges per room (renderWorldViewRoomGroups) so the
+      // global pass stays flyover-only.
       if (!app.isFlyoverMode || app.flyoverWholeWorld !== true) {
         return;
       }
@@ -2894,7 +2993,7 @@
       geometry.computeVertexNormals();
 
       if (cacheKey) {
-        geometryCache.set(cacheKey, geometry);
+        cacheGeometry(cacheKey, geometry);
       }
 
       return geometry;
@@ -3036,7 +3135,7 @@
           geometry.rotateY(Math.PI);
         }
 
-        geometryCache.set(key, geometry);
+        cacheGeometry(key, geometry);
       }
 
       return geometryCache.get(key);
@@ -3204,7 +3303,7 @@
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
-      geometryCache.set(cacheKey, geometry);
+      cacheGeometry(cacheKey, geometry);
       return geometry;
     }
 
@@ -3605,7 +3704,7 @@
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      edgeGeometryCache.set(cacheKey, geometry);
+      cacheEdgeGeometry(cacheKey, geometry);
       return geometry;
     }
 
@@ -3767,7 +3866,7 @@
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
-      geometryCache.set(cacheKey, geometry);
+      cacheGeometry(cacheKey, geometry);
       return geometry;
     }
 
@@ -3817,7 +3916,7 @@
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      edgeGeometryCache.set(cacheKey, geometry);
+      cacheEdgeGeometry(cacheKey, geometry);
       return geometry;
     }
 
@@ -3929,7 +4028,7 @@
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
-      geometryCache.set(key, geometry);
+      cacheGeometry(key, geometry);
       return geometry;
     }
 
@@ -3941,7 +4040,7 @@
       const key = `${geometry.uuid}:${threshold}`;
 
       if (!edgeGeometryCache.has(key)) {
-        edgeGeometryCache.set(key, new THREE.EdgesGeometry(geometry, threshold));
+        cacheEdgeGeometry(key, new THREE.EdgesGeometry(geometry, threshold));
       }
 
       return edgeGeometryCache.get(key);
@@ -4148,9 +4247,14 @@
         return;
       }
 
-      editorHoverRenderFrameId = window.requestAnimationFrame(() => {
+      editorHoverRenderFrameId = window.requestAnimationFrame((now) => {
         editorHoverRenderFrameId = 0;
-        app.render();
+
+        if (typeof app.renderOncePerFrame === "function") {
+          app.renderOncePerFrame(now);
+        } else {
+          app.render();
+        }
       });
     }
 
@@ -4714,7 +4818,7 @@
         )
       );
       geometry.computeVertexNormals();
-      geometryCache.set(key, geometry);
+      cacheGeometry(key, geometry);
       return geometry;
     }
 
@@ -4760,7 +4864,7 @@
           const geometry = new THREE.PlaneGeometry(size, size);
 
           geometry.rotateX(-Math.PI / 2);
-          geometryCache.set(geometryKey, geometry);
+          cacheGeometry(geometryKey, geometry);
         }
 
         const arrow = new THREE.Mesh(geometryCache.get(geometryKey), arrowMaterial);
@@ -4898,7 +5002,7 @@
 
       if (layer.type === "exit") {
         const gem = new THREE.Mesh(
-          new THREE.OctahedronGeometry(unit * 0.18, 0),
+          octahedronGeometry(unit * 0.18),
           material("#ff7b72", visibility)
         );
         gem.position.set(center.x, topY + unit * 0.08, center.z);
@@ -6447,6 +6551,7 @@
       group.position.set(x, placement.bottomY, z);
       group.scale.setScalar(placement.scale);
       group.rotation.y = placement.spin;
+      group.userData.gemSpinGroup = true;
 
       model.parts.forEach((part) => {
         const mesh = new THREE.Mesh(part.geometry, material(part.color || actorRenderColor(actor), opacity));
@@ -6476,6 +6581,7 @@
       edgeGroup.scale.copy(group.scale);
       edgeGroup.rotation.copy(group.rotation);
       edgeGroup.userData.edgeBasePosition = group.position.clone();
+      edgeGroup.userData.gemSpinGroup = true;
 
       model.parts.forEach((part) => {
         const edges = new THREE.LineSegments(
@@ -6492,7 +6598,7 @@
 
     function addGemFallback(actor, x, z, elevation, sink, scale, fade, visibility, opacity, now) {
       const gem = new THREE.Mesh(
-        new THREE.OctahedronGeometry(unit * 0.22 * scale, 0),
+        octahedronGeometry(unit * 0.22 * scale),
         material(actorRenderColor(actor), opacity)
       );
 
@@ -6692,11 +6798,9 @@
       const width = Math.max(puncherArmThickness, lengthX + unit * 0.18);
       const armDepth = Math.max(puncherArmThickness, lengthZ + unit * 0.18);
       const height = unit * 0.16;
-      const geometry = boxGeometry(
-        horizontal ? width : puncherArmThickness,
-        height,
-        horizontal ? puncherArmThickness : armDepth
-      );
+      // The arm length animates every frame; scale a shared unit box instead
+      // of minting a new cached geometry per animation frame.
+      const geometry = boxGeometry(1, 1, 1);
       const visibility = actorFadeVisibility(actor);
       const armColor = actor.renderInHole ? dimHexColor("#9ca3af", visibility) : "#9ca3af";
       const mesh = new THREE.Mesh(geometry, material(armColor, opacity));
@@ -6707,10 +6811,15 @@
       );
 
       mesh.position.copy(position);
+      mesh.scale.set(
+        horizontal ? width : puncherArmThickness,
+        height,
+        horizontal ? puncherArmThickness : armDepth
+      );
       mesh.castShadow = renderContextCastsShadows();
       mesh.receiveShadow = false;
       scene.add(mesh);
-      addEdgeLines(geometry, position, 18, edgeOpacity * 0.84);
+      addEdgeLines(geometry, position, 18, edgeOpacity * 0.84, null, mesh.scale);
     }
 
     function addPuncherCylinderPart(
@@ -6913,49 +7022,33 @@
         return;
       }
 
-      while (targetScene.children.length > 0) {
-        const child = targetScene.children[0];
+      for (let i = targetScene.children.length - 1; i >= 0; i -= 1) {
+        const child = targetScene.children[i];
 
         if (child.geometry && !cachedGeometryHas(child.geometry)) {
           child.geometry.dispose();
         }
-
-        targetScene.remove(child);
       }
+
+      targetScene.clear();
     }
 
     function disposeScene() {
       disposeSceneChildren(scene);
       disposeSceneChildren(edgeScene);
       playerLiftMarkerMeshes.clear();
+      trackedActorObjects.clear();
+      trackedStaticActorCodes.clear();
+      trackedBuildStateRef = null;
+      trackedBuildTerrainVersion = -1;
     }
 
     function geometryCacheHas(geometry) {
-      if (geometry?.userData?.persistentGeometry) {
-        return true;
-      }
-
-      for (const cached of geometryCache.values()) {
-        if (cached === geometry) {
-          return true;
-        }
-      }
-
-      return false;
+      return Boolean(geometry?.userData?.persistentGeometry);
     }
 
     function cachedGeometryHas(geometry) {
-      if (geometryCacheHas(geometry)) {
-        return true;
-      }
-
-      for (const cached of edgeGeometryCache.values()) {
-        if (cached === geometry) {
-          return true;
-        }
-      }
-
-      return false;
+      return geometryCacheHas(geometry);
     }
 
     function transitionSet(values) {
@@ -7139,6 +7232,18 @@
         return actionBounds;
       }
 
+      if (isWorldViewPlayMode() && !app.levelTransition) {
+        // Keep the shadow frustum on the current room; distant rooms are
+        // dimmed scenery and a world-spanning 1024px shadow map would be
+        // spread far too thin.
+        return {
+          minX: 0,
+          maxX: Math.max(1, app.state.width) * unit,
+          minZ: 0,
+          maxZ: Math.max(1, app.state.height) * unit
+        };
+      }
+
       const transition = app.levelTransition?.transitionData;
 
       if (transition?.kind !== "adjacent-scene" || !transition.outgoingLevel) {
@@ -7173,39 +7278,68 @@
       };
     }
 
+    function ensureSceneLights() {
+      if (ambientLight && keyLight) {
+        return;
+      }
+
+      ambientLight = new THREE.AmbientLight("#ffffff", 1.45);
+      keyLight = new THREE.DirectionalLight("#ffffff", 1.2);
+      keyLight.shadow.mapSize.width = 1024;
+      keyLight.shadow.mapSize.height = 1024;
+      keyLight.shadow.bias = -0.0002;
+      keyLight.shadow.normalBias = unit * 0.006;
+      keyLight.shadow.radius = 4;
+    }
+
     function resetScene() {
+      app.threeSceneRebuildCount = (app.threeSceneRebuildCount || 0) + 1;
+      // Cached world-view room groups survive rebuilds; detach them so
+      // disposeScene doesn't free their merged geometry.
+      detachWorldViewRoomGroups();
       disposeScene();
-      scene = new THREE.Scene();
-      edgeScene = new THREE.Scene();
-      scene.background = new THREE.Color("#050608");
-      scene.add(new THREE.AmbientLight("#ffffff", 1.45));
+
+      if (!scene) {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color("#050608");
+      }
+
+      if (!edgeScene) {
+        edgeScene = new THREE.Scene();
+      }
+
+      ensureSceneLights();
+      scene.add(ambientLight);
       const lightBounds = sceneLightBounds();
       const boardCenter = new THREE.Vector3(
         (lightBounds.minX + lightBounds.maxX) / 2,
         0,
         (lightBounds.minZ + lightBounds.maxZ) / 2
       );
-      const keyLight = new THREE.DirectionalLight("#ffffff", 1.2);
       keyLight.position.set(boardCenter.x + unit * 5, unit * 18, boardCenter.z - unit * 5);
       keyLight.target.position.copy(boardCenter);
       keyLight.castShadow = !app.isFlyoverMode;
-      keyLight.shadow.mapSize.width = 1024;
-      keyLight.shadow.mapSize.height = 1024;
-      keyLight.shadow.bias = -0.0002;
-      keyLight.shadow.normalBias = unit * 0.006;
-      keyLight.shadow.radius = 4;
 
       const shadowSpan = Math.max(
         lightBounds.maxX - lightBounds.minX,
         lightBounds.maxZ - lightBounds.minZ,
         unit * 8
       );
-      keyLight.shadow.camera.left = -shadowSpan;
-      keyLight.shadow.camera.right = shadowSpan;
-      keyLight.shadow.camera.top = shadowSpan;
-      keyLight.shadow.camera.bottom = -shadowSpan;
-      keyLight.shadow.camera.near = 1;
-      keyLight.shadow.camera.far = shadowSpan * 3;
+      const shadowCamera = keyLight.shadow.camera;
+
+      if (
+        shadowCamera.right !== shadowSpan ||
+        shadowCamera.far !== shadowSpan * 3
+      ) {
+        shadowCamera.left = -shadowSpan;
+        shadowCamera.right = shadowSpan;
+        shadowCamera.top = shadowSpan;
+        shadowCamera.bottom = -shadowSpan;
+        shadowCamera.near = 1;
+        shadowCamera.far = shadowSpan * 3;
+        shadowCamera.updateProjectionMatrix();
+      }
+
       scene.add(keyLight);
       scene.add(keyLight.target);
     }
@@ -7301,26 +7435,29 @@
     }
 
     function hasShadowAffectingAnimation() {
-      return Boolean(
-        app.isAnimating ||
-          app.worldActionAnimation ||
-          app.levelTransition ||
-          app.gateAnimationFrameId !== null ||
-          app.orangeWallAnimationFrameId !== null ||
-          app.playerLiftAnimationFrameId !== null
-      );
+      return hasActiveSceneAnimation();
     }
 
-    function floatingFloorAnimationSignature(now) {
-      if (app.isFlyoverMode && app.flyoverWholeWorld === true) {
-        return "";
+    function terrainScanSignature() {
+      const version = Number(app.terrainRenderVersion) || 0;
+
+      if (terrainScanCacheState === app.state && terrainScanCacheVersion === version) {
+        return terrainScanCacheValue;
       }
 
-      if (app.floatingFloorFrameId === null) {
-        return "";
+      const parts = [];
+
+      for (let y = 0; y < app.state.height; y += 1) {
+        for (let x = 0; x < app.state.width; x += 1) {
+          const layers = app.terrainLayersAt(x, y);
+          parts.push(layers.map(layerSignature).join("+") || "empty");
+        }
       }
 
-      return `floating-floor:${Math.floor(now / Math.max(1, app.FLOATING_FLOOR_HOVER_FRAME_MS || 33))}`;
+      terrainScanCacheState = app.state;
+      terrainScanCacheVersion = version;
+      terrainScanCacheValue = parts.join(";");
+      return terrainScanCacheValue;
     }
 
     function flyoverFadeAnimationSignature(now) {
@@ -7381,7 +7518,6 @@
         app.boardRect.height,
         edgeOutlinesEnabled() ? "edges:on" : "edges:off",
         animationSignature(now),
-        floatingFloorAnimationSignature(now),
         flyoverFadeAnimationSignature(now),
         app.isFlyoverMode ? "flyover-selection" : "no-flyover-selection",
         transition
@@ -7415,25 +7551,13 @@
         parts.push(`neighbor:${view.dx},${view.dy}:${levelStateSignature(view.levelState)}`);
       });
 
-      for (let y = 0; y < app.state.height; y += 1) {
-        for (let x = 0; x < app.state.width; x += 1) {
-          const layers = app.terrainLayersAt(x, y);
-          parts.push(layers.map(layerSignature).join("+") || "empty");
-        }
-      }
+      parts.push(terrainScanSignature());
 
       app.state.actors.forEach((actor) => {
         parts.push(actorSignature(actor));
       });
 
       return parts.join(";");
-    }
-
-    function sceneSignature(now) {
-      return [
-        sceneContentSignature(now),
-        debugCameraSignature()
-      ].join(";");
     }
 
     function flyoverShadowSceneSignature() {
@@ -7460,12 +7584,7 @@
         parts.push(`neighbor:${view.dx},${view.dy}:${levelStateSignature(view.levelState)}`);
       });
 
-      for (let y = 0; y < app.state.height; y += 1) {
-        for (let x = 0; x < app.state.width; x += 1) {
-          const layers = app.terrainLayersAt(x, y);
-          parts.push(layers.map(layerSignature).join("+") || "empty");
-        }
-      }
+      parts.push(terrainScanSignature());
 
       app.state.actors.forEach((actor) => {
         parts.push(actorSignature(actor));
@@ -7672,10 +7791,177 @@
       };
     }
 
+    function actorSpinAngle(actor, now) {
+      return ((now % gemSpinPeriodMs) / gemSpinPeriodMs) * Math.PI * 2 + (actor.hoverSeed || 0);
+    }
+
+    function actorHoverOffset(actor, now) {
+      return Math.max(0, app.floatingFloorHoverOffset?.(actor, now) || 0);
+    }
+
+    function actorStructureCode(actor) {
+      // Everything addActor bakes into geometry/material choices EXCEPT the
+      // continuously-animated transform fields (renderX/renderY/
+      // renderElevation/renderSink/hover/spin), which syncActorTransforms
+      // applies as position deltas.
+      return [
+        actor.type,
+        actor.groupId || "",
+        actor.modelUrl || "",
+        actor.direction || actor.facing || "",
+        actor.removed ? 1 : 0,
+        actor.x,
+        actor.y,
+        actor.elevation ?? 0,
+        Math.round((actor.renderScale ?? 1) * 1000),
+        Math.round((actor.renderAlpha ?? 1) * 1000),
+        actor.renderInHole ? 1 : 0,
+        actor.renderPunchEffect === true ? 1 : 0,
+        actor.showCollectedGhost === true ? 1 : 0
+      ].join(":");
+    }
+
+    function staticActorCode(actor) {
+      return [
+        actorStructureCode(actor),
+        Math.round(((actor.renderX ?? actor.x)) * 1000),
+        Math.round(((actor.renderY ?? actor.y)) * 1000),
+        Math.round(((actor.renderElevation ?? actor.elevation ?? 0)) * 1000),
+        Math.round(((actor.renderSink ?? 0)) * 1000)
+      ].join(":");
+    }
+
+    function trackActorSceneObjects(actor, sceneStart, edgeStart, now) {
+      const objects = [];
+
+      for (let i = sceneStart; i < scene.children.length; i += 1) {
+        const object = scene.children[i];
+
+        object.userData.dynamicActorObject = true;
+        objects.push({
+          object,
+          basePosition: object.position.clone(),
+          baseRotationY: object.rotation.y,
+          baseEdgeBase: null
+        });
+      }
+
+      for (let i = edgeStart; i < edgeScene.children.length; i += 1) {
+        const object = edgeScene.children[i];
+
+        object.userData.dynamicActorObject = true;
+        objects.push({
+          object,
+          basePosition: object.position.clone(),
+          baseRotationY: object.rotation.y,
+          baseEdgeBase: object.userData.edgeBasePosition
+            ? object.userData.edgeBasePosition.clone()
+            : null
+        });
+      }
+
+      if (!objects.length) {
+        return;
+      }
+
+      trackedActorObjects.set(actor, {
+        objects,
+        base: {
+          renderX: actor.renderX ?? actor.x,
+          renderY: actor.renderY ?? actor.y,
+          renderElevation: actor.renderElevation ?? actor.elevation ?? 0,
+          sink: actor.renderSink ?? 0,
+          hover: actorHoverOffset(actor, now),
+          spin: actorSpinAngle(actor, now)
+        },
+        structureCode: actorStructureCode(actor)
+      });
+    }
+
+    function syncActorTransforms(now) {
+      if (
+        trackedBuildStateRef !== app.state ||
+        trackedBuildTerrainVersion !== (Number(app.terrainRenderVersion) || 0) ||
+        (trackedActorObjects.size === 0 && trackedStaticActorCodes.size === 0)
+      ) {
+        return false;
+      }
+
+      let valid = true;
+
+      trackedActorObjects.forEach((entry, actor) => {
+        if (valid && entry.structureCode !== actorStructureCode(actor)) {
+          valid = false;
+        }
+      });
+      trackedStaticActorCodes.forEach((code, actor) => {
+        if (valid && code !== staticActorCode(actor)) {
+          valid = false;
+        }
+      });
+
+      if (!valid) {
+        return false;
+      }
+
+      trackedActorObjects.forEach((entry, actor) => {
+        const base = entry.base;
+        const dx = ((actor.renderX ?? actor.x) - base.renderX) * unit;
+        const dz = ((actor.renderY ?? actor.y) - base.renderY) * unit;
+        const dy =
+          ((actor.renderElevation ?? actor.elevation ?? 0) - base.renderElevation) * elevationUnit -
+          ((actor.renderSink ?? 0) - base.sink) +
+          (actorHoverOffset(actor, now) - base.hover);
+        const spinDelta = actor.type === "gem" ? actorSpinAngle(actor, now) - base.spin : 0;
+
+        entry.objects.forEach((tracked) => {
+          tracked.object.position.set(
+            tracked.basePosition.x + dx,
+            tracked.basePosition.y + dy,
+            tracked.basePosition.z + dz
+          );
+
+          if (tracked.baseEdgeBase && tracked.object.userData.edgeBasePosition) {
+            tracked.object.userData.edgeBasePosition.set(
+              tracked.baseEdgeBase.x + dx,
+              tracked.baseEdgeBase.y + dy,
+              tracked.baseEdgeBase.z + dz
+            );
+          }
+
+          if (spinDelta !== 0 && tracked.object.userData.gemSpinGroup === true) {
+            tracked.object.rotation.y = tracked.baseRotationY + spinDelta;
+          }
+        });
+      });
+
+      return true;
+    }
+
+    function renderHoverFrame(now = performance.now()) {
+      if (!THREE || !renderer || !camera || !hasRenderedScene) {
+        return false;
+      }
+
+      if (hasActiveSceneAnimation() || isEditorRenderMode() || app.isFlyoverMode) {
+        return false;
+      }
+
+      if (!syncActorTransforms(now)) {
+        return false;
+      }
+
+      // Hover bob is ~2px: skipping the shadow-map update is invisible and
+      // avoids re-rendering the shadow pass 30x per second at idle.
+      renderSceneToComposite(false);
+      return true;
+    }
+
     function renderActorsForCurrentContext(now = performance.now()) {
       const state = renderState();
       const renderedActors = addWeightlessActorGroups();
       const hiddenActorKeys = activeRenderContext?.hiddenActorKeys;
+      const trackActors = !activeRenderContext && !isEditorRenderMode() && state === app.state;
       const shouldHidePlayerActor = (actor) =>
         activeRenderContext?.hidePlayers &&
         (
@@ -7683,6 +7969,13 @@
             ? app.isMainPlayerActor(actor)
             : app.isPlayerActor?.(actor) && actor?.type !== "clone"
         );
+
+      if (trackActors) {
+        trackedActorObjects.clear();
+        trackedStaticActorCodes.clear();
+        trackedBuildStateRef = app.state;
+        trackedBuildTerrainVersion = Number(app.terrainRenderVersion) || 0;
+      }
 
       state.actors.forEach((actor) => {
         if (shouldHidePlayerActor(actor)) {
@@ -7694,6 +7987,21 @@
         }
 
         if (renderedActors.has(actor)) {
+          // Weightless-group actors render as merged columns; the fast
+          // animation path bails when any of them moves.
+          if (trackActors) {
+            trackedStaticActorCodes.set(actor, staticActorCode(actor));
+          }
+
+          return;
+        }
+
+        if (trackActors) {
+          const sceneStart = scene.children.length;
+          const edgeStart = edgeScene.children.length;
+
+          addActor(actor, now);
+          trackActorSceneObjects(actor, sceneStart, edgeStart, now);
           return;
         }
 
@@ -7720,7 +8028,11 @@
     }
 
     function surroundingLevelRadius() {
-      return app.isFlyoverMode ? Math.max(1, Math.min(6, Number(app.flyoverRadius) || 3)) : 1;
+      if (app.isFlyoverMode) {
+        return Math.max(1, Math.min(6, Number(app.flyoverRadius) || 3));
+      }
+
+      return playSurroundingRadius();
     }
 
     function flyoverRoomWorldWidth() {
@@ -8233,8 +8545,117 @@
       return Number.isFinite(bounds.minX) ? bounds : null;
     }
 
+    function worldViewRoomSignature(view, brightness) {
+      return [
+        view.levelId,
+        levelStateSignature(view.levelState),
+        Math.round(brightness * 1000),
+        edgeOutlinesEnabled() ? 1 : 0
+      ].join(":");
+    }
+
+    function disposeWorldViewRoomEntry(entry) {
+      [entry.group, entry.edgeGroup].forEach((container) => {
+        container.parent?.remove(container);
+        container.traverse((child) => {
+          if (child.geometry && !cachedGeometryHas(child.geometry)) {
+            child.geometry.dispose();
+          }
+        });
+      });
+    }
+
+    function detachWorldViewRoomGroups() {
+      worldViewRoomGroups.forEach((entry) => {
+        entry.group.parent?.remove(entry.group);
+        entry.edgeGroup.parent?.remove(entry.edgeGroup);
+      });
+    }
+
+    function disposeWorldViewRoomGroups() {
+      worldViewRoomGroups.forEach((entry) => {
+        disposeWorldViewRoomEntry(entry);
+      });
+      worldViewRoomGroups.clear();
+    }
+
+    function buildWorldViewRoomEntry(view, brightness, signature, now) {
+      const group = new THREE.Group();
+      const edgeGroup = new THREE.Group();
+
+      edgeGroup.userData.edgeBasePosition = new THREE.Vector3();
+
+      // Room content renders at local origin so the finished group can be
+      // repositioned for free when the anchor room changes.
+      const previousScene = scene;
+      const previousEdgeScene = edgeScene;
+
+      scene = group;
+      edgeScene = edgeGroup;
+
+      try {
+        renderLevelStateAt(view.levelState, { x: 0, z: 0 }, {
+          role: "neighbor",
+          brightness,
+          dx: view.dx,
+          dy: view.dy,
+          hidePlayers: true
+        }, now);
+      } finally {
+        scene = previousScene;
+        edgeScene = previousEdgeScene;
+      }
+
+      group.updateMatrixWorld(true);
+      edgeGroup.updateMatrixWorld(true);
+      mergeImmediateSceneObjects(group, "mesh");
+      mergeImmediateSceneObjects(edgeGroup, "line");
+      return { group, edgeGroup, signature };
+    }
+
+    function renderWorldViewRoomGroups(now, views) {
+      const activeLevelIds = new Set();
+
+      views
+        .slice()
+        .sort((a, b) => b.distance - a.distance)
+        .forEach((view) => {
+          const brightness = flyoverLevelBrightness(view.levelId, view.brightness);
+          const signature = worldViewRoomSignature(view, brightness);
+          let entry = worldViewRoomGroups.get(view.levelId);
+
+          if (!entry || entry.signature !== signature) {
+            if (entry) {
+              disposeWorldViewRoomEntry(entry);
+            }
+
+            entry = buildWorldViewRoomEntry(view, brightness, signature, now);
+            worldViewRoomGroups.set(view.levelId, entry);
+          }
+
+          activeLevelIds.add(view.levelId);
+          entry.group.position.set(view.offset.x, 0, view.offset.z);
+          entry.edgeGroup.position.set(view.offset.x, 0, view.offset.z);
+          entry.edgeGroup.userData.edgeBasePosition.set(view.offset.x, 0, view.offset.z);
+          scene.add(entry.group);
+          edgeScene.add(entry.edgeGroup);
+        });
+
+      worldViewRoomGroups.forEach((entry, levelId) => {
+        if (!activeLevelIds.has(levelId)) {
+          disposeWorldViewRoomEntry(entry);
+          worldViewRoomGroups.delete(levelId);
+        }
+      });
+    }
+
     function renderSurroundingLevelViews(now, views) {
       renderFlyoverDepartingLevelViews(now);
+
+      if (isWorldViewPlayMode()) {
+        renderWorldViewRoomGroups(now, views);
+        return;
+      }
 
       views
         .slice()
@@ -9209,6 +9630,29 @@
 
       syncRendererSize();
       const forceRender = hasActiveSceneAnimation();
+
+      // Movement fast path: while only actor render positions animate, move
+      // the tracked actor objects in place and re-render — no scene rebuild.
+      if (
+        forceRender &&
+        app.isAnimating &&
+        !app.worldActionAnimation &&
+        !app.levelTransition &&
+        app.gateAnimationFrameId === null &&
+        app.orangeWallAnimationFrameId === null &&
+        app.playerLiftAnimationFrameId === null &&
+        !app.isFlyoverMode &&
+        !isEditorRenderMode() &&
+        hasRenderedScene &&
+        syncActorTransforms(now)
+      ) {
+        app.threeFastAnimationFrameCount = (app.threeFastAnimationFrameCount || 0) + 1;
+        renderSceneToComposite(true);
+        lastSceneSignature = "";
+        lastSceneContentSignature = "";
+        return true;
+      }
+
       const contentSignature = forceRender ? "" : sceneContentSignature(now);
       const signature = forceRender ? "" : `${contentSignature};${debugCameraSignature()}`;
       const contentChanged =
@@ -9278,14 +9722,66 @@
       return true;
     }
 
+    function disposeRenderer() {
+      if (debugCameraAnimationFrameId) {
+        window.cancelAnimationFrame(debugCameraAnimationFrameId);
+        debugCameraAnimationFrameId = 0;
+      }
+
+      if (debugCameraTiltHoldFrameId) {
+        window.cancelAnimationFrame(debugCameraTiltHoldFrameId);
+        debugCameraTiltHoldFrameId = 0;
+      }
+
+      if (editorHoverRenderFrameId) {
+        window.cancelAnimationFrame(editorHoverRenderFrameId);
+        editorHoverRenderFrameId = 0;
+      }
+
+      disposeWorldViewRoomGroups();
+      disposeScene();
+      geometryCache.forEach((geometry) => geometry.dispose());
+      geometryCache.clear();
+      edgeGeometryCache.forEach((geometry) => geometry.dispose());
+      edgeGeometryCache.clear();
+      materialCache.forEach((cached) => cached.dispose());
+      materialCache.clear();
+      lineMaterialCache.forEach((cached) => cached.dispose());
+      lineMaterialCache.clear();
+      imageMaterialCache.forEach((cached) => cached.dispose());
+      imageMaterialCache.clear();
+      groupLabelMaterialCache.forEach((cached) => cached.dispose());
+      groupLabelMaterialCache.clear();
+      textureCache.forEach((texture) => texture.dispose());
+      textureCache.clear();
+      groupLabelTextureCache.forEach((texture) => texture?.dispose?.());
+      groupLabelTextureCache.clear();
+      keyLight?.shadow?.dispose();
+      keyLight?.dispose();
+      ambientLight = null;
+      keyLight = null;
+      scene = null;
+      edgeScene = null;
+      camera = null;
+
+      if (renderer) {
+        renderer.renderLists?.dispose?.();
+        renderer.dispose();
+        renderer.forceContextLoss?.();
+        renderer = null;
+      }
+    }
+
     app.threeRendererReady = import(threeModuleUrl)
       .then((module) => {
         THREE = module;
         renderer = new THREE.WebGLRenderer({
+          // alpha is load-bearing: the edge-outline overlay pass clears the
+          // drawing buffer to transparent before compositing onto the 2D canvas.
           alpha: true,
           antialias: true,
           canvas: threeCanvas,
-          logarithmicDepthBuffer: true,
+          logarithmicDepthBuffer: false,
           preserveDrawingBuffer: false
         });
         renderer.autoClear = false;
@@ -9296,6 +9792,7 @@
         renderer.shadowMap.autoUpdate = false;
         renderer.shadowMap.type = THREE.PCFShadowMap;
         scene = new THREE.Scene();
+        scene.background = new THREE.Color("#050608");
         edgeScene = new THREE.Scene();
         createCameraForMode();
         updateCameraModeToggle();
@@ -9310,7 +9807,7 @@
         }
 
         if (typeof app.render === "function") {
-          window.requestAnimationFrame(() => app.render());
+          window.requestAnimationFrame((now) => (app.renderOncePerFrame || app.render)(now));
         }
       })
       .catch(() => {
@@ -9328,6 +9825,8 @@
       invalidateSceneCache,
       prewarmAdjacentLevelTransition,
       renderScene,
+      renderHoverFrame,
+      dispose: disposeRenderer,
       getRenderStats: () => ({ ...(app.threeRenderStats || {}) }),
       usesDirectCanvas: () => app.flyoverDirectCanvas === true,
       threeCanvas

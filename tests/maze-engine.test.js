@@ -115,6 +115,34 @@ function createState(playData) {
 }
 
 {
+  // Regression: gems already collected before the engine was created
+  // (mid-session states) must not register as instantly solved.
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain: floorTerrain(3, 1),
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "gem", x: 1, y: 0, removed: true },
+      { type: "gem", x: 2, y: 0, removed: false }
+    ]
+  });
+
+  assert.equal(engine.isSolved(state), false);
+
+  const firstMove = engine.move(state, 1, 0);
+
+  assert.equal(firstMove.moved, true);
+  assert.equal(engine.isSolved(state), false);
+
+  const secondMove = engine.move(state, 1, 0);
+
+  assert.equal(secondMove.moved, true);
+  assert.equal(state.actorRemoved[2], 1);
+  assert.equal(engine.isSolved(state), true);
+}
+
+{
   const { engine, state } = createState({
     width: 3,
     height: 1,

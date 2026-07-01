@@ -13,32 +13,25 @@ const {
 } = require("../server/app");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
+const DEFAULT_TERMINAL_REPLAY_ROOT = path.join(ROOT_DIR, "outputs", "maze-terminal");
 
 function normalizeGameWonGemCount(value) {
   const count = Number(value);
   return Number.isFinite(count) && count > 0 ? count : 100;
 }
 
+const GAME_CONFIG_PATH = path.join(ROOT_DIR, "games", "maze", "config.json");
+
 function configuredGameWonGemCount() {
   if (process.env.MAZEBENCH_GAME_WON_GEM_COUNT) {
     return normalizeGameWonGemCount(process.env.MAZEBENCH_GAME_WON_GEM_COUNT);
   }
 
-  const candidates = [
-    path.join(ROOT_DIR, "environments", "mazebench", "mazebench", "mazebench.py"),
-    path.resolve(__dirname, "..", "..", "mazebench.py")
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const source = fs.readFileSync(candidate, "utf8");
-      const match = source.match(/^GAME_WON_GEM_COUNT\s*=\s*(\d+)\s*$/m);
-      if (match) {
-        return normalizeGameWonGemCount(match[1]);
-      }
-    } catch (_error) {
-      // Fall back to the built-in default when running outside the env package.
-    }
+  try {
+    const config = JSON.parse(fs.readFileSync(GAME_CONFIG_PATH, "utf8"));
+    return normalizeGameWonGemCount(config?.game_won_gem_count);
+  } catch (_error) {
+    // Fall back to the built-in default when the shared config is missing.
   }
 
   return 100;
@@ -190,10 +183,18 @@ function parseArgs(argv) {
     gameId: "maze",
     gameWonGemCount: GAME_WON_GEM_COUNT,
     json: false,
-    levelId: "",
+    levelId: "level_HxI",
     maxExpandedStates: 1000000,
     moves: "",
     pitch: 1,
+    replayDraft: false,
+    replayFast: false,
+    recordReplay: null,
+    replayOutDir: "",
+    replayFps: null,
+    replayHeight: null,
+    replayVideo: null,
+    replayWidth: null,
     solve: false,
     yaw: 0,
     once: false
@@ -225,6 +226,30 @@ function parseArgs(argv) {
       options.pitch = pitchFromView(next());
     } else if (arg === "--yaw") {
       options.yaw = normalizeYaw(Number(next()));
+    } else if (arg === "--record-replay" || arg === "--replay") {
+      options.recordReplay = true;
+    } else if (arg === "--no-replay") {
+      options.recordReplay = false;
+    } else if (arg === "--replay-out-dir") {
+      options.replayOutDir = next();
+    } else if (arg === "--video") {
+      options.replayVideo = true;
+    } else if (arg === "--no-video" || arg === "--no-replay-video") {
+      options.replayVideo = false;
+    } else if (arg === "--fast" || arg === "--fast-video" || arg === "--fast-render") {
+      options.replayFast = true;
+    } else if (arg === "--no-fast") {
+      options.replayFast = false;
+    } else if (arg === "--draft" || arg === "--draft-video" || arg === "--draft-render") {
+      options.replayDraft = true;
+    } else if (arg === "--no-draft") {
+      options.replayDraft = false;
+    } else if (arg === "--fps" || arg === "--replay-fps") {
+      options.replayFps = Number(next());
+    } else if (arg === "--width" || arg === "--replay-width") {
+      options.replayWidth = Number(next());
+    } else if (arg === "--height" || arg === "--replay-height") {
+      options.replayHeight = Number(next());
     } else if (arg === "--once") {
       options.once = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -240,9 +265,10 @@ function printHelp() {
   console.log(`Usage: npm run maze:terminal -- [options]
 
 Options:
-  --level <id>       Maze world level id, for example level_HxI.
+  --level <id>       Maze world level id. Defaults to level_HxI.
   --moves <UDLR>     Apply moves and print the resulting board once.
   --view <name>      top, top-diagonal, diagonal, side-diagonal, or side.
+                     Defaults to top-diagonal.
   --pitch <0-4>      Camera pitch; 0 is top-down, 4 is side.
   --yaw <0-3>        Camera yaw rotation.
   --json             Print machine-readable state instead of terminal text.
@@ -251,6 +277,19 @@ Options:
                      Solver search cap used by --solve.
   --game-won-gem-count <n>
                      Unique gems required for the game_won condition.
+  --record-replay    Write local replay artifacts for non-interactive runs.
+                     Interactive runs write replay artifacts by default.
+  --no-replay        Do not write replay artifacts for interactive runs.
+  --replay-out-dir <path>
+                     Directory for maze_scorecard.json, maze_actions.txt,
+                     maze_replay.json, results.jsonl, and maze_replay.mp4.
+  --video            Render maze_replay.mp4 for non-interactive runs.
+  --no-video         Do not ask/render video for interactive runs.
+  --fast             Render only settled states, not animation tweens.
+  --draft            Lower replay DPR and disable effects for faster capture.
+  --fps <n>          Replay video FPS when rendering without the prompt.
+  --width <px>       Replay video width when rendering without the prompt.
+  --height <px>      Replay video height when rendering without the prompt.
   --once             Render once and exit.
 
 Interactive controls:
@@ -497,7 +536,7 @@ function restoreRoomSnapshot(context, snapshot) {
   return true;
 }
 
-function createRunStats(levelId) {
+function createRunStats(levelId, options = {}) {
   return {
     actionCounts: {
       move: 0,
@@ -505,6 +544,7 @@ function createRunStats(levelId) {
       rotateCamera: 0,
       undo: 0
     },
+    actions: [],
     blockedMoves: 0,
     collectedGemIds: new Set(),
     elevationChanges: 0,
@@ -528,6 +568,8 @@ function createRunStats(levelId) {
       down: 0,
       up: 0
     },
+    initialPitch: clampPitch(Number.isInteger(options.pitch) ? options.pitch : 1),
+    initialYaw: normalizeYaw(Number.isInteger(options.yaw) ? options.yaw : 0),
     roomTransitions: 0,
     startedAtMs: Date.now(),
     startingLevelId: levelId,
@@ -563,7 +605,7 @@ function createTerminalContext(mazeEngine, options) {
   };
 
   context.entrySnapshot = captureRoomSnapshot(context);
-  context.stats = createRunStats(context.level.id);
+  context.stats = createRunStats(context.level.id, normalizedOptions);
   recordPlayerVisit(context);
   return context;
 }
@@ -2107,6 +2149,36 @@ function isAllowedEdgeTransition(sourceType, targetType) {
   return sourceType === targetType;
 }
 
+function moveCommand(move) {
+  return MOVE_ACTIONS.get(String(move || "").toUpperCase())?.label.toLowerCase() || "";
+}
+
+function recordReplayAction(context, command, normalizedAction, args = {}) {
+  const stats = context?.stats;
+
+  if (!stats || !command) {
+    return null;
+  }
+
+  const record = {
+    args,
+    command,
+    normalized_action: normalizedAction,
+    turn: stats.actions.length + 1,
+    valid: true
+  };
+
+  stats.actions.push(record);
+  return record;
+}
+
+function replayActionCommands(context) {
+  return (context?.stats?.actions || [])
+    .filter((record) => record && record.valid !== false)
+    .map((record) => String(record.command || "").trim())
+    .filter(Boolean);
+}
+
 function applyMove(context, move) {
   const action = screenMoveVector(move, context.options.yaw);
   if (!action) {
@@ -2116,6 +2188,8 @@ function applyMove(context, move) {
   if (isPlayerDead(context)) {
     return { moved: false, playerDead: true };
   }
+
+  const command = moveCommand(move);
 
   applyCollectedGemsToContext(context);
   const beforeStats = {
@@ -2133,6 +2207,7 @@ function applyMove(context, move) {
     }
 
     recordMoveStats(context, move, edgeTransition, beforeStats);
+    recordReplayAction(context, command, "move", { direction: command });
     return edgeTransition;
   }
 
@@ -2143,6 +2218,7 @@ function applyMove(context, move) {
   }
 
   recordMoveStats(context, move, result, beforeStats);
+  recordReplayAction(context, command, "move", { direction: command });
   return result;
 }
 
@@ -2153,6 +2229,8 @@ function undoMove(context) {
   if (stats) {
     stats.actionCounts.undo += 1;
   }
+
+  recordReplayAction(context, "undo", "undo");
 
   if (!previous) {
     return false;
@@ -2171,6 +2249,8 @@ function resetLevel(context) {
     stats.actionCounts.reset += 1;
   }
 
+  recordReplayAction(context, "reset", "reset_level");
+
   if (!context.entrySnapshot) {
     return false;
   }
@@ -2187,6 +2267,48 @@ function applyMoves(context, moves) {
   for (const move of String(moves || "").toUpperCase()) {
     applyMove(context, move);
   }
+}
+
+function rotateCamera(context, direction) {
+  const normalized = String(direction || "").toLowerCase();
+  const stats = context?.stats;
+
+  if (isPlayerDead(context)) {
+    return false;
+  }
+
+  if (normalized === "up") {
+    context.options.pitch = clampPitch(context.options.pitch - 1);
+    if (stats) {
+      stats.actionCounts.rotateCamera += 1;
+      stats.pitchRotations.up += 1;
+    }
+  } else if (normalized === "down") {
+    context.options.pitch = clampPitch(context.options.pitch + 1);
+    if (stats) {
+      stats.actionCounts.rotateCamera += 1;
+      stats.pitchRotations.down += 1;
+    }
+  } else if (normalized === "left") {
+    context.options.yaw = normalizeYaw(context.options.yaw - 1);
+    if (stats) {
+      stats.actionCounts.rotateCamera += 1;
+      stats.yawRotations.left += 1;
+    }
+  } else if (normalized === "right") {
+    context.options.yaw = normalizeYaw(context.options.yaw + 1);
+    if (stats) {
+      stats.actionCounts.rotateCamera += 1;
+      stats.yawRotations.right += 1;
+    }
+  } else {
+    return false;
+  }
+
+  recordReplayAction(context, `rotate camera ${normalized}`, "rotate_camera", {
+    direction: normalized
+  });
+  return true;
 }
 
 function solverDirectionsForYaw(yaw) {
@@ -2286,7 +2408,7 @@ function buildScorecard(context, nowMs = Date.now()) {
     {
       scorecard: {
         result: {
-          won: collectedGemCount === gameWonGemCount,
+          won: collectedGemCount >= gameWonGemCount,
           percent: (100 * collectedGemCount) / gameWonGemCount
         },
         gems: {
@@ -2360,7 +2482,237 @@ function buildScorecard(context, nowMs = Date.now()) {
 function isGameWon(context) {
   const collectedGemCount = context?.stats?.collectedGemIds?.size || 0;
   const gameWonGemCount = normalizeGameWonGemCount(context?.options?.gameWonGemCount);
-  return collectedGemCount === gameWonGemCount;
+  return collectedGemCount >= gameWonGemCount;
+}
+
+function defaultTerminalReplayDir(date = new Date()) {
+  const timestamp = date.toISOString().replace(/[:.]/g, "-");
+  return path.join(DEFAULT_TERMINAL_REPLAY_ROOT, timestamp);
+}
+
+function initialReplayView(context) {
+  const pitch = clampPitch(context?.stats?.initialPitch ?? context?.options?.pitch);
+  return VIEW_NAMES[pitch] || "top-diagonal";
+}
+
+function initialReplayYaw(context) {
+  return normalizeYaw(context?.stats?.initialYaw ?? context?.options?.yaw);
+}
+
+function buildReplayRow(context, scorecard) {
+  const stats = context.stats || {};
+  const actionRecords = (stats.actions || []).map((record) => ({ ...record }));
+  const gameWonGemCount = normalizeGameWonGemCount(context.options?.gameWonGemCount);
+  const replay = {
+    actions: actionRecords,
+    game_id: context.options?.gameId || context.game?.id || "maze",
+    game_won_gem_count: gameWonGemCount,
+    initial: {
+      view: initialReplayView(context),
+      yaw: initialReplayYaw(context)
+    },
+    scorecard,
+    start_level_id: stats.startingLevelId || context.level.id
+  };
+
+  return {
+    info: {
+      mazebench: {
+        game_id: replay.game_id,
+        game_won_gem_count: gameWonGemCount,
+        level_id: replay.start_level_id,
+        view: replay.initial.view,
+        yaw: replay.initial.yaw
+      }
+    },
+    maze_actions: actionRecords,
+    maze_replay: replay,
+    maze_scorecard: scorecard
+  };
+}
+
+function writeReplayJsonFiles(outDir, row) {
+  const replayPath = path.join(outDir, "maze_replay.json");
+  const resultsPath = path.join(outDir, "results.jsonl");
+  const metadataPath = path.join(outDir, "metadata.json");
+  const metadata = {
+    created_at: new Date().toISOString(),
+    source: "maze-terminal"
+  };
+
+  fs.writeFileSync(replayPath, `${JSON.stringify(row.maze_replay, null, 2)}\n`);
+  fs.writeFileSync(resultsPath, `${JSON.stringify(row)}\n`);
+  fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+
+  return { metadataPath, replayPath, resultsPath };
+}
+
+function shouldWriteReplayArtifacts(options, interactive) {
+  if (options.json || options.recordReplay === false) {
+    return false;
+  }
+
+  return options.recordReplay === true || interactive;
+}
+
+function replayVideoOverrides(options = {}) {
+  const overrides = {};
+
+  if (Number.isFinite(options.replayFps) && options.replayFps > 0) {
+    overrides.fps = options.replayFps;
+  }
+
+  if (Number.isFinite(options.replayWidth) && options.replayWidth > 0) {
+    overrides.width = options.replayWidth;
+  }
+
+  if (Number.isFinite(options.replayHeight) && options.replayHeight > 0) {
+    overrides.height = options.replayHeight;
+  }
+
+  if (options.replayDraft) {
+    overrides.draft = true;
+  }
+
+  if (options.replayFast) {
+    overrides.fast = true;
+  }
+
+  return overrides;
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(String(value || "").trim());
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseDimensions(value, fallback) {
+  const match = String(value || "").trim().match(/^(\d+)\s*[xX]\s*(\d+)$/);
+
+  if (!match) {
+    return fallback;
+  }
+
+  return {
+    height: parsePositiveInteger(match[2], fallback.height),
+    width: parsePositiveInteger(match[1], fallback.width)
+  };
+}
+
+function askQuestion(rl, question) {
+  return new Promise((resolve) => {
+    rl.question(question, resolve);
+  });
+}
+
+async function promptReplayVideoOptions(options = {}) {
+  const { defaultReplayOptions } = require("./maze-export-replay");
+  const defaults = {
+    ...defaultReplayOptions(),
+    ...replayVideoOverrides(options)
+  };
+
+  process.stdin.resume();
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  try {
+    const answer = String(await askQuestion(rl, "\nGenerate replay video now? [y/N] "))
+      .trim()
+      .toLowerCase();
+
+    if (answer !== "y" && answer !== "yes") {
+      return null;
+    }
+
+    const fpsAnswer = await askQuestion(rl, `FPS [${defaults.fps}]: `);
+    const dimensionsAnswer = await askQuestion(
+      rl,
+      `Dimensions WxH [${defaults.width}x${defaults.height}]: `
+    );
+    const fastAnswer = String(await askQuestion(rl, "Fast mode? [y/N] "))
+      .trim()
+      .toLowerCase();
+    const draftAnswer = String(
+      await askQuestion(rl, "Draft speed mode (DPR-scaled + effects off)? [y/N] ")
+    )
+      .trim()
+      .toLowerCase();
+    const dimensions = parseDimensions(dimensionsAnswer, {
+      height: defaults.height,
+      width: defaults.width
+    });
+
+    return {
+      draft: draftAnswer === "y" || draftAnswer === "yes",
+      fast: fastAnswer === "y" || fastAnswer === "yes",
+      fps: parsePositiveInteger(fpsAnswer, defaults.fps),
+      height: dimensions.height,
+      width: dimensions.width
+    };
+  } finally {
+    rl.close();
+    process.stdin.pause();
+  }
+}
+
+async function renderLocalReplayVideo(actions, row, outDir, videoOptions = {}) {
+  const {
+    defaultReplayOptions,
+    humanSize,
+    renderReplayVideo,
+    validateReplayOptions
+  } = require("./maze-export-replay");
+
+  const replayOptions = validateReplayOptions({
+    ...defaultReplayOptions(),
+    ...videoOptions,
+    video: true
+  });
+  const mazeOptions = {
+    gameId: row.maze_replay.game_id,
+    gameWonGemCount: row.maze_replay.game_won_gem_count,
+    levelId: row.maze_replay.start_level_id,
+    view: row.maze_replay.initial.view,
+    yaw: row.maze_replay.initial.yaw
+  };
+
+  console.log("Rendering maze replay video...");
+  const rendered = await renderReplayVideo(actions, mazeOptions, outDir, replayOptions);
+  console.log(`Wrote ${rendered.videoPath} (${humanSize(rendered.videoPath)})`);
+  return rendered;
+}
+
+async function writeLocalReplayArtifacts(context, scorecard, renderOptions = {}) {
+  const { writeSidecarFiles } = require("./maze-export-replay");
+  const outDir = path.resolve(
+    ROOT_DIR,
+    context.options.replayOutDir || defaultTerminalReplayDir()
+  );
+  const actions = replayActionCommands(context);
+  const row = buildReplayRow(context, scorecard);
+  const sidecars = writeSidecarFiles(outDir, actions, scorecard);
+  const replayFiles = writeReplayJsonFiles(outDir, row);
+
+  console.log(`\nReplay artifacts: ${outDir}`);
+  console.log(`Wrote ${sidecars.scorecardPath}`);
+  console.log(`Wrote ${sidecars.actionsPath}`);
+  console.log(`Wrote ${replayFiles.replayPath}`);
+  console.log(`Wrote ${replayFiles.resultsPath}`);
+
+  if (renderOptions.renderVideo) {
+    await renderLocalReplayVideo(actions, row, outDir, renderOptions.videoOptions || {});
+  }
+
+  return {
+    ...sidecars,
+    ...replayFiles,
+    actions,
+    outDir,
+    row
+  };
 }
 
 function printScreen(context, clear = false) {
@@ -2385,14 +2737,52 @@ function startInteractive(context) {
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
   process.stdin.resume();
+  let ending = false;
 
-  function endRun() {
+  async function endRun(reason) {
+    if (ending) {
+      return;
+    }
+
+    ending = true;
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
     process.stdin.pause();
-    console.log(buildScorecard(context));
-    process.exit(0);
+
+    if (reason === "quit") {
+      recordReplayAction(context, "quit", "quit");
+    }
+
+    const scorecardText = buildScorecard(context);
+    const scorecard = JSON.parse(scorecardText).scorecard;
+    console.log(scorecardText);
+
+    if (shouldWriteReplayArtifacts(context.options, true)) {
+      try {
+        const artifacts = await writeLocalReplayArtifacts(context, scorecard);
+
+        if (context.options.replayVideo !== false) {
+          const videoOptions = await promptReplayVideoOptions(context.options);
+
+          if (videoOptions) {
+            await renderLocalReplayVideo(
+              artifacts.actions,
+              artifacts.row,
+              artifacts.outDir,
+              videoOptions
+            );
+          }
+        }
+      } catch (error) {
+        console.error(
+          `Replay artifact generation failed: ${error instanceof Error ? error.message : error}`
+        );
+        process.exitCode = 1;
+      }
+    }
+
+    process.exit(process.exitCode || 0);
   }
 
   process.stdin.on("keypress", (_text, key = {}) => {
@@ -2413,7 +2803,8 @@ function startInteractive(context) {
       console.log(`\n${DEATH_MESSAGE}`);
       shouldRender = false;
     } else if (key.name === "q" || (key.ctrl && key.name === "c")) {
-      endRun();
+      void endRun("quit");
+      return;
     } else if (key.name === "up") {
       applyMove(context, "U");
     } else if (key.name === "down") {
@@ -2423,21 +2814,13 @@ function startInteractive(context) {
     } else if (key.name === "right") {
       applyMove(context, "R");
     } else if (key.name === "i") {
-      context.options.pitch = clampPitch(context.options.pitch - 1);
-      context.stats.actionCounts.rotateCamera += 1;
-      context.stats.pitchRotations.up += 1;
+      rotateCamera(context, "up");
     } else if (key.name === "k") {
-      context.options.pitch = clampPitch(context.options.pitch + 1);
-      context.stats.actionCounts.rotateCamera += 1;
-      context.stats.pitchRotations.down += 1;
+      rotateCamera(context, "down");
     } else if (key.name === "j") {
-      context.options.yaw = normalizeYaw(context.options.yaw - 1);
-      context.stats.actionCounts.rotateCamera += 1;
-      context.stats.yawRotations.left += 1;
+      rotateCamera(context, "left");
     } else if (key.name === "l") {
-      context.options.yaw = normalizeYaw(context.options.yaw + 1);
-      context.stats.actionCounts.rotateCamera += 1;
-      context.stats.yawRotations.right += 1;
+      rotateCamera(context, "right");
     } else if (key.name === "z" || key.name === "u") {
       undoMove(context);
     } else if (key.name === "r") {
@@ -2449,7 +2832,7 @@ function startInteractive(context) {
     if (shouldRender) {
       printScreen(context, true);
       if (isGameWon(context)) {
-        endRun();
+        void endRun("game_won");
         return;
       }
       console.log(interactiveHelpText(context));
@@ -2470,8 +2853,17 @@ async function main() {
     return;
   }
 
-  if (options.once || !process.stdin.isTTY) {
+  const interactive = !options.once && process.stdin.isTTY;
+
+  if (!interactive) {
     printScreen(context, false);
+    if (shouldWriteReplayArtifacts(options, false)) {
+      const scorecard = JSON.parse(buildScorecard(context)).scorecard;
+      await writeLocalReplayArtifacts(context, scorecard, {
+        renderVideo: options.replayVideo === true,
+        videoOptions: replayVideoOverrides(options)
+      });
+    }
     return;
   }
 
@@ -2496,9 +2888,12 @@ module.exports = {
   loadMazeEngine,
   loadMazeSolver,
   normalizeGameWonGemCount,
+  replayActionCommands,
   renderScreen,
+  rotateCamera,
   resetLevel,
   solveContext,
+  writeLocalReplayArtifacts,
   undoMove,
   screenMoveVector
 };

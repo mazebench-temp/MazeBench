@@ -173,11 +173,16 @@
     const actorInitialElevations = [];
     const weightlessRelativeElevations = [];
     const searchSeenActors = new Uint32Array(actorCount);
+    const initialGemRemoved = new Uint8Array(actorCount);
     let searchSeenStamp = 0;
 
     for (let index = 0; index < actorCount; index += 1) {
       actorInitialElevations[index] = initialActorElevation(actorSource[index], index);
       weightlessRelativeElevations[index] = 0;
+
+      if (actorTypes[index] === "gem" && actorSource[index]?.removed) {
+        initialGemRemoved[index] = 1;
+      }
 
       if (actorTypes[index] === "orange_button") {
         orangeButtonActors.push(index);
@@ -8133,7 +8138,11 @@
 
     function isSolved(state) {
       for (let index = 0; index < actorCount; index += 1) {
-        if (actorTypes[index] === "gem" && state.actorRemoved[index]) {
+        if (
+          actorTypes[index] === "gem" &&
+          state.actorRemoved[index] &&
+          !initialGemRemoved[index]
+        ) {
           return true;
         }
       }
@@ -8144,17 +8153,17 @@
         }
 
         for (let player = 0; player < actorCount; player += 1) {
-        if (!isPlayerActor(player) || state.actorRemoved[player]) {
-          continue;
-        }
+          if (!isPlayerActor(player) || state.actorRemoved[player]) {
+            continue;
+          }
 
-        if (
-          state.actorX[player] === state.actorX[gem] &&
-          state.actorY[player] === state.actorY[gem] &&
-          actorElevation(state, player) === actorElevation(state, gem)
-        ) {
-          return true;
-        }
+          if (
+            state.actorX[player] === state.actorX[gem] &&
+            state.actorY[player] === state.actorY[gem] &&
+            actorElevation(state, player) === actorElevation(state, gem)
+          ) {
+            return true;
+          }
         }
       }
 

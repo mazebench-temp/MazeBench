@@ -163,6 +163,7 @@ const NO_CACHE_HEADERS = {
   "Cache-Control": "no-store, max-age=0",
   Pragma: "no-cache"
 };
+const STATIC_CACHE_CONTROL = "max-age=300";
 
 function readRequestBody(request, options = {}) {
   return new Promise((resolve, reject) => {
@@ -238,14 +239,54 @@ function sendRedirect(response, location, statusCode = 302) {
   response.end();
 }
 
-function sendFile(response, filePath, contentType) {
-  if (!fs.existsSync(filePath)) {
+function buildStaticFileEtag(stats) {
+  return `"${stats.size.toString(16)}-${Math.round(stats.mtimeMs).toString(16)}"`;
+}
+
+function requestEtagMatches(request, etag) {
+  const ifNoneMatch = request.headers["if-none-match"];
+
+  if (typeof ifNoneMatch !== "string" || ifNoneMatch.length === 0) {
+    return false;
+  }
+
+  return ifNoneMatch
+    .split(",")
+    .map((value) => value.trim())
+    .some((value) => value === etag || value === `W/${etag}` || value === "*");
+}
+
+function sendFile(request, response, filePath, contentType) {
+  const stats = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+
+  if (!stats || !stats.isFile()) {
     sendHtml(response, 404, renderNotFound());
     return;
   }
 
-  response.writeHead(200, { "Content-Type": contentType, ...NO_CACHE_HEADERS });
-  response.end(fs.readFileSync(filePath));
+  const etag = buildStaticFileEtag(stats);
+
+  if (requestEtagMatches(request, etag)) {
+    response.writeHead(304, {
+      "Cache-Control": STATIC_CACHE_CONTROL,
+      ETag: etag
+    });
+    response.end();
+    return;
+  }
+
+  response.writeHead(200, {
+    "Cache-Control": STATIC_CACHE_CONTROL,
+    "Content-Length": stats.size,
+    "Content-Type": contentType,
+    ETag: etag
+  });
+
+  const fileStream = fs.createReadStream(filePath);
+  fileStream.on("error", () => {
+    response.destroy();
+  });
+  fileStream.pipe(response);
 }
 
 const {
@@ -303,15 +344,34 @@ const { handleRequest } = createRequestRouter({
   writeMazeWorldMap
 });
 
+function isExpectedRequestError(error) {
+  return (
+    error instanceof Error &&
+    error.name === "Error" &&
+    error.code === undefined &&
+    error.syscall === undefined
+  );
+}
+
 function createRequestHandler() {
   return async function requestHandler(request, response) {
     try {
       await handleRequest(request, response);
     } catch (error) {
-      const statusCode = error?.message === "Request body is too large." ? 413 : 400;
-      sendJson(response, statusCode, {
-        error: error instanceof Error ? error.message : "Something went wrong."
-      });
+      console.error(`Request failed: ${request.method} ${request.url}`, error);
+
+      if (response.headersSent) {
+        response.destroy();
+        return;
+      }
+
+      if (isExpectedRequestError(error)) {
+        const statusCode = error.message === "Request body is too large." ? 413 : 400;
+        sendJson(response, statusCode, { error: error.message });
+        return;
+      }
+
+      sendJson(response, 500, { error: "Something went wrong." });
     }
   };
 }

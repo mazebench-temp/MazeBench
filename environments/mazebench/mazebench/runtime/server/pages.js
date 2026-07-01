@@ -28,21 +28,31 @@ function createPageRenderer({
   function renderHomePage() {
     const games = listGames();
     const items = games
-      .map(
-        (game) => `<a class="game-link" href="${
+      .flatMap((game) => {
+        const gameLink = `<a class="game-link" href="${
           game.id === "maze"
             ? `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
             : `/games/${encodeURIComponent(game.id)}`
         }">
           <span class="game-link__title">${escapeHtml(game.name)}</span>
-        </a>`
-      )
+        </a>`;
+
+        if (game.id !== "maze") {
+          return [gameLink];
+        }
+
+        const flyoverLink = `<a class="game-link game-link--flyover" href="/flyover/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}">
+          <span class="game-link__title">Flyover View</span>
+        </a>`;
+
+        return [gameLink, flyoverLink];
+      })
       .join("");
 
     return renderPage({
-      title: "Games",
+      title: "Main Menu",
       body: `<main class="shell">
-        <h1>Choose a game</h1>
+        <h1>Main Menu</h1>
         <div class="game-list">${items}</div>
       </main>`
     });
@@ -130,6 +140,14 @@ function createPageRenderer({
             title="Switch camera projection"
           >Perspective</button>`
       : "";
+    const resetProgressButtonMarkup = hasBoard
+      ? `<button
+            id="reset-progress"
+            class="progress-reset-button"
+            type="button"
+            title="Reset collected gems"
+          >Reset Progress</button>`
+      : "";
     const boardMarkup =
       hasBoard
         ? `<section class="play-stage" aria-label="${escapeHtml(game.name)} board">
@@ -170,11 +188,55 @@ function createPageRenderer({
             <a class="back-link" data-play-author-link href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Author</a>
             <a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">World Map</a>
             <p>${escapeHtml(level.label)}</p>
+            ${resetProgressButtonMarkup}
             ${cameraModeToggleMarkup}
             ${edgeToggleMarkup}
             ${fuzzyToggleMarkup}
           </div>
         </header>
+        ${boardMarkup}
+      </main>`
+    });
+  }
+
+  function renderFlyoverPage(game, level) {
+    const levelState = {
+      ...getLevelState(game, level),
+      flyover: true,
+      flyoverRadius: 3
+    };
+    const hasBoard = levelState.width > 0 && levelState.height > 0;
+    const boardMarkup =
+      hasBoard
+        ? `<section class="play-stage flyover-stage" aria-label="${escapeHtml(game.name)} flyover">
+            <div class="maze-frame flyover-frame">
+              <canvas
+                id="maze-canvas"
+                class="maze-canvas"
+                width="${levelState.width * 64}"
+                height="${levelState.height * 64}"
+                aria-label="${escapeHtml(game.name)} flyover"
+              ></canvas>
+            </div>
+            <div class="flyover-hud"></div>
+          </section>
+          <script>window.__PLAY_DATA__ = ${serializeForScript(levelState)};</script>
+          <script src="/play-rules.js" defer></script>
+          <script src="/play-core.js" defer></script>
+          <script src="/play-render-effects.js" defer></script>
+          <script src="/play-render-terrain.js" defer></script>
+          <script src="/play-render-actors.js" defer></script>
+          <script src="/play-render-three.js" defer></script>
+          <script src="/play-render-compositor.js" defer></script>
+          <script src="/play-render.js" defer></script>
+          <script src="/maze-engine.js" defer></script>
+          <script src="/flyover.js" defer></script>`
+        : `<section class="play-stage"><p>This level is empty.</p></section>`;
+
+    return renderPage({
+      title: `${game.name} Flyover`,
+      bodyClass: "play-body flyover-body",
+      body: `<main class="play-shell flyover-shell">
         ${boardMarkup}
       </main>`
     });
@@ -267,7 +329,7 @@ function createPageRenderer({
             </details>
             <details class="author-panel author-disclosure">
               <summary class="author-disclosure__summary">
-                <span>Transform</span>
+                <span>Transformer</span>
               </summary>
               <div class="author-disclosure__body">
                 <div class="author-control-row">
@@ -288,19 +350,48 @@ function createPageRenderer({
                     <span>Flip V</span>
                   </button>
                 </div>
+              </div>
+            </details>
+            <details class="author-panel author-disclosure">
+              <summary class="author-disclosure__summary">
+                <span>Solver</span>
+              </summary>
+              <div class="author-disclosure__body">
                 <div class="author-control-row">
                   <label class="field">
                     <span>Search states</span>
                     <input id="solver-max-states" type="number" min="1" step="1" value="1000000" inputmode="numeric" aria-label="Solver search state limit">
                   </label>
+                  <label class="field">
+                    <span>Algorithm</span>
+                    <select id="solver-algorithm" aria-label="Solver algorithm">
+                      <option value="astar" selected>A*</option>
+                      <option value="weighted_astar">Weighted A*</option>
+                      <option value="bfs">BFS</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Hill-Climb</span>
+                    <select id="hill-climb-mode" aria-label="Hill-Climb mode">
+                      <option value="place_gem" selected>Place Gem</option>
+                      <option value="fixed_gem">Fixed Gem</option>
+                    </select>
+                  </label>
                 </div>
                 <div class="author-control-row">
                   <button id="place-gem" class="tool-button" type="button">Place Gem</button>
+                  <button id="hill-climb" class="tool-button" type="button">Hill-Climb</button>
+                  <button id="solver-cancel" class="tool-button" type="button" disabled>Cancel</button>
                   <button id="solve-level" class="tool-button" type="button">Solver</button>
                   <button id="play-solution" class="tool-button" type="button">
                     <span class="tool-button__icon" aria-hidden="true">&#9654;</span>
                     <span>Play Solution</span>
                   </button>
+                </div>
+                <div class="author-control-row">
+                  <button id="hill-climb-prev" class="tool-button" type="button" disabled>Prev Result</button>
+                  <button id="hill-climb-next" class="tool-button" type="button" disabled>Next Result</button>
+                  <span id="hill-climb-result-label" class="author-panel__copy"></span>
                 </div>
               </div>
             </details>
@@ -411,6 +502,7 @@ function createPageRenderer({
 
   return {
     renderAuthorPage,
+    renderFlyoverPage,
     renderGamePage,
     renderHomePage,
     renderNotFound,

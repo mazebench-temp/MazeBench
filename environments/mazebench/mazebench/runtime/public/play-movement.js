@@ -224,6 +224,7 @@
     }
 
     function fillHoleAt(x, y) {
+      app.terrainRenderVersion = (Number(app.terrainRenderVersion) || 0) + 1;
       if (!app.isInsideBoard(x, y)) {
         return;
       }
@@ -310,17 +311,6 @@
         : null;
       const engine = createCurrentEngine();
       const engineState = engine.cloneState(engine.initialState);
-      const previousState = {
-        actors: cloneActorPositions(),
-        terrain: cloneTerrainState(state.terrain),
-        levelSnapshot:
-          typeof app.cloneLevelSnapshot === "function" ? app.cloneLevelSnapshot() : null,
-        levelEntrySnapshot:
-          typeof app.cloneStoredLevelSnapshot === "function"
-            ? app.cloneStoredLevelSnapshot(app.levelEntrySnapshot)
-            : null,
-        undoGroupId: app.activeUndoGroupId || null
-      };
       const raisedPlayerGates = computeRaisedPlayerGateSet();
       const raisedOrangeWalls = computeRaisedOrangeWallSet();
       const moveResult = engine.move(engineState, dx, dy, {
@@ -328,6 +318,24 @@
         startOnCurrentSlope: options.startOnCurrentSlope === true
       });
       const moves = moveResult.moves.map(moveFromEngineRecord).filter(Boolean);
+      // Snapshots are only taken once we know the move actually goes
+      // somewhere — blocked moves skip all of the deep clones below. The
+      // snapshot must precede recordCollectedGemsFromMoves, which mutates
+      // the gem-collection fields cloneActorPositions captures.
+      const previousState =
+        moves.length > 0
+          ? {
+              actors: cloneActorPositions(),
+              terrain: cloneTerrainState(state.terrain),
+              levelSnapshot:
+                typeof app.cloneLevelSnapshot === "function" ? app.cloneLevelSnapshot() : null,
+              levelEntrySnapshot:
+                typeof app.cloneStoredLevelSnapshot === "function"
+                  ? app.cloneStoredLevelSnapshot(app.levelEntrySnapshot)
+                  : null,
+              undoGroupId: app.activeUndoGroupId || null
+            }
+          : null;
       app.recordCollectedGemsFromMoves?.(moves);
       const liftToggles = Array.isArray(moveResult.liftToggles) ? moveResult.liftToggles : [];
       const finalRaisedOrangeWalls = computeRaisedOrangeWallSet(
@@ -355,6 +363,10 @@
         if (recordHistory && hasLogicalMoves) {
           previousState.iceSlideMoves = iceSlideMoveMetadata(moves);
           moveHistory.push(previousState);
+
+          if (moveHistory.length > 500) {
+            moveHistory.splice(0, moveHistory.length - 500);
+          }
         }
 
         if (animate) {

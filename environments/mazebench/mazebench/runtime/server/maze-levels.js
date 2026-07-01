@@ -113,10 +113,16 @@ function createMazeLevelService({
 
     if (typeof blockAdder === "string" && blockAdder.length > 0) {
       return String(cell)
-        .split(blockAdder);
+        .split(blockAdder)
+        .map(normalizeLegacyMazeToken);
     }
 
-    return cell ? [cell] : [];
+    return cell ? [normalizeLegacyMazeToken(cell)] : [];
+  }
+
+  function normalizeLegacyMazeToken(token) {
+    const trimmedToken = String(token ?? "").trim();
+    return trimmedToken === "h" ? "" : trimmedToken;
   }
 
   function getDefinitionTokens(config) {
@@ -236,6 +242,7 @@ function createMazeLevelService({
     return (
       type === "player" ||
       type === "circle_player" ||
+      type === "clone" ||
       type === "box" ||
       type === "gem" ||
       type === "floating_floor" ||
@@ -251,6 +258,7 @@ function createMazeLevelService({
     return (
       type === "player" ||
       type === "circle_player" ||
+      type === "clone" ||
       type === "box" ||
       type === "floating_floor" ||
       type === "weightless_box"
@@ -280,6 +288,22 @@ function createMazeLevelService({
     return definitionType(definition) === "tree" ? 3 : isRaisedTerrainDefinition(definition) ? 1 : 0;
   }
 
+  // In maze level text, "+" is a layer separator. It advances the logical stack
+  // even for thin/non-blocking objects so later tokens do not share their layer.
+  function actorDefinitionLayerSlotHeight(definition) {
+    return isActorDefinition(definition) ? 1 : 0;
+  }
+
+  function terrainDefinitionLayerSlotHeight(definition) {
+    const type = definitionType(definition);
+
+    if (type === "floor" || type === "ice") {
+      return 0;
+    }
+
+    return Math.max(1, terrainDefinitionStackHeight(definition));
+  }
+
   function isSurfaceAttachmentDefinition(definition) {
     return definitionType(definition) === "orange_button";
   }
@@ -303,10 +327,21 @@ function createMazeLevelService({
     const actors = [];
     let surfaceHeight = null;
     let previousSurfaceTerrain = false;
+    let hasAirEntry = false;
+    let consumedBaseVoid = false;
 
     cellDefinitions.forEach((definition) => {
       if (definition?.isAir) {
+        hasAirEntry = true;
+
+        if (surfaceHeight === null && !consumedBaseVoid) {
+          consumedBaseVoid = true;
+          previousSurfaceTerrain = false;
+          return;
+        }
+
         surfaceHeight = Math.max(0, surfaceHeight ?? 0) + 1;
+        consumedBaseVoid = true;
         previousSurfaceTerrain = false;
         return;
       }
@@ -319,10 +354,8 @@ function createMazeLevelService({
           elevation
         });
 
-        if (isSupportActorDefinition(definition)) {
-          surfaceHeight = elevation + 1;
-          previousSurfaceTerrain = false;
-        }
+        surfaceHeight = elevation + actorDefinitionLayerSlotHeight(definition);
+        previousSurfaceTerrain = false;
 
         return;
       }
@@ -332,16 +365,17 @@ function createMazeLevelService({
       }
 
       const isRaisedTerrain = isRaisedTerrainDefinition(definition);
-      const stackHeight = terrainDefinitionStackHeight(definition);
+      const isBaseSurface = definitionType(definition) === "floor" || definitionType(definition) === "ice";
+      const stackHeight = terrainDefinitionLayerSlotHeight(definition);
       let elevation = Math.max(0, surfaceHeight ?? 0);
 
-      if (!isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
+      if (isBaseSurface && !isRaisedTerrain && previousSurfaceTerrain && surfaceHeight !== null) {
         elevation = surfaceHeight + 1;
       }
 
       terrainLayers.push(buildTerrainLayer(definition, elevation));
       surfaceHeight = elevation + stackHeight;
-      previousSurfaceTerrain = !isRaisedTerrain;
+      previousSurfaceTerrain = isBaseSurface;
     });
 
     const wallLayer = terrainLayers.find((layer) => layer.type === "wall") || null;
@@ -398,7 +432,7 @@ function createMazeLevelService({
       };
     }
 
-    if (actors.some(({ definition }) => !isSurfaceAttachmentDefinition(definition))) {
+    if (!hasAirEntry && actors.some(({ definition }) => !isSurfaceAttachmentDefinition(definition))) {
       return {
         actors,
         terrain: buildTerrainCell("floor", floorDefinition, {
@@ -457,7 +491,11 @@ function createMazeLevelService({
         cellStack.actors.forEach(({ definition, elevation }) => {
           actors.push({
             type: definitionType(definition),
-            groupId: definitionType(definition) === "weightless_box" ? definition.token : null,
+            groupId:
+              definitionType(definition) === "weightless_box" ||
+              definitionType(definition) === "clone"
+                ? definition.token
+                : null,
             label: definition.label,
             imageUrl: definition.imageUrl,
             modelUrl: definition.modelUrl,
@@ -695,7 +733,59 @@ function createMazeLevelService({
       .filter(Boolean);
   }
 
+  const gameCache = new Map();
+
+  function appendPathStatSignature(parts, targetPath) {
+    let stats = null;
+
+    try {
+      stats = fs.statSync(targetPath);
+    } catch (error) {
+      stats = null;
+    }
+
+    parts.push(stats ? `${targetPath}:${stats.mtimeMs}:${stats.size}` : `${targetPath}:missing`);
+  }
+
+  function buildGameCacheSignature(gameId) {
+    const gameDir = path.join(gamesDir, gameId);
+    const previewsDir = path.join(gameDir, "previews");
+    const parts = [];
+
+    appendPathStatSignature(parts, gameDir);
+    appendPathStatSignature(parts, path.join(gameDir, "levels"));
+    appendPathStatSignature(parts, path.join(gameDir, "level_parsing.json"));
+    appendPathStatSignature(parts, path.join(gameDir, "player.py"));
+    appendPathStatSignature(parts, path.join(gameDir, "world_map.json"));
+    appendPathStatSignature(parts, path.join(gameDir, "world_parsing.json"));
+    appendPathStatSignature(parts, previewsDir);
+    listTopLevelFiles(previewsDir).forEach((fileName) => {
+      appendPathStatSignature(parts, path.join(previewsDir, fileName));
+    });
+
+    return parts.join("|");
+  }
+
   function getGame(gameId) {
+    const signature = buildGameCacheSignature(gameId);
+    const cached = gameCache.get(gameId);
+
+    if (cached && cached.signature === signature) {
+      return cached.game;
+    }
+
+    const game = buildGame(gameId);
+
+    if (!game) {
+      gameCache.delete(gameId);
+      return null;
+    }
+
+    gameCache.set(gameId, { game, signature });
+    return game;
+  }
+
+  function buildGame(gameId) {
     const gameDir = path.join(gamesDir, gameId);
     const levelsDir = path.join(gameDir, "levels");
     const parserPath = path.join(gameDir, "level_parsing.json");

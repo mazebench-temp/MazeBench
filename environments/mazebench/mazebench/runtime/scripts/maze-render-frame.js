@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const readline = require("node:readline");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DEFAULT_BROWSER_PATHS = [
@@ -193,9 +194,8 @@ async function captureFrame(page) {
   });
 }
 
-async function renderFrame(payload) {
-  const { chromium } = await import("playwright-core");
-  const options = {
+function normalizeRenderOptions(payload) {
+  return {
     actions: Array.isArray(payload.actions) ? payload.actions : [],
     browser: String(payload.browser || ""),
     cameraStepDegrees: Number(payload.cameraStepDegrees || 18),
@@ -209,10 +209,37 @@ async function renderFrame(payload) {
     width: Number(payload.width || 512),
     yaw: Number(payload.yaw || 0)
   };
+}
+
+async function setCameraView(session) {
+  await session.page.evaluate(
+    ({ tiltDegrees, yawTurns, zoom }) => {
+      const tilt = (tiltDegrees * Math.PI) / 180;
+      window.__PIXEL_GAME_APP__?.threeRenderer?.setDebugCameraView?.({
+        animate: false,
+        mode: "perspective",
+        tilt,
+        yaw: yawTurns * (Math.PI / 2),
+        zoom
+      });
+    },
+    {
+      tiltDegrees: session.cameraTiltDegrees,
+      yawTurns: session.cameraYawTurns,
+      zoom: session.options.cameraZoom
+    }
+  );
+  await waitUntilSettled(session.page, 20);
+}
+
+async function createRenderSession(payload) {
+  const { chromium } = await import("playwright-core");
+  const options = normalizeRenderOptions(payload);
   const server = await startServer();
-  const browser = await launchBrowser(chromium, options.browser);
+  let browser = null;
 
   try {
+    browser = await launchBrowser(chromium, options.browser);
     const page = await browser.newPage({
       deviceScaleFactor: 1,
       viewport: { width: options.width, height: options.height }
@@ -320,96 +347,243 @@ async function renderFrame(payload) {
       app.render?.();
     }, options);
 
-    let cameraTiltDegrees = options.cameraTiltDegrees;
-    let cameraYawTurns = ((options.yaw % 4) + 4) % 4;
+    const session = {
+      browser,
+      cameraTiltDegrees: options.cameraTiltDegrees,
+      cameraYawTurns: ((options.yaw % 4) + 4) % 4,
+      closed: false,
+      options,
+      page,
+      server
+    };
 
-    async function setCameraView() {
-      await page.evaluate(
-        ({ tiltDegrees, yawTurns, zoom }) => {
-          const tilt = (tiltDegrees * Math.PI) / 180;
-          window.__PIXEL_GAME_APP__?.threeRenderer?.setDebugCameraView?.({
-            animate: false,
-            mode: "perspective",
-            tilt,
-            yaw: yawTurns * (Math.PI / 2),
-            zoom
-          });
-        },
-        { tiltDegrees: cameraTiltDegrees, yawTurns: cameraYawTurns, zoom: options.cameraZoom }
-      );
-      await waitUntilSettled(page, 20);
-    }
-
-    await setCameraView();
+    await setCameraView(session);
     await waitUntilSettled(page);
-
-    for (const commandText of options.actions) {
-      const parsed = parseCommandLine(commandText);
-      if (!parsed) {
-        continue;
-      }
-
-      if (parsed.command === "move") {
-        const key = {
-          down: "ArrowDown",
-          left: "ArrowLeft",
-          right: "ArrowRight",
-          up: "ArrowUp"
-        }[parsed.direction];
-        await page.keyboard.press(key);
-        await waitUntilSettled(page);
-      } else if (parsed.command === "rotate_camera") {
-        if (parsed.direction === "left") {
-          cameraYawTurns -= 1;
-        } else if (parsed.direction === "right") {
-          cameraYawTurns += 1;
-        } else if (parsed.direction === "up") {
-          cameraTiltDegrees = Math.max(20, cameraTiltDegrees - options.cameraStepDegrees);
-        } else if (parsed.direction === "down") {
-          cameraTiltDegrees = Math.min(82, cameraTiltDegrees + options.cameraStepDegrees);
-        }
-        await setCameraView();
-      } else if (parsed.command === "undo") {
-        await page.keyboard.press("z");
-        await waitUntilSettled(page);
-      } else if (parsed.command === "reset_level") {
-        await page.keyboard.press("r");
-        await waitUntilSettled(page);
-      } else if (parsed.command === "goto_level") {
-        const levelId = `level_${parsed.x}x${parsed.y}`;
-        await page.evaluate(async (nextLevelId) => {
-          const app = window.__PIXEL_GAME_APP__;
-          const response = await fetch(
-            `/api/play/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(nextLevelId)}`
-          );
-
-          if (!response.ok) {
-            throw new Error(`Could not load ${nextLevelId}`);
-          }
-
-          const levelState = await response.json();
-          app.applyLevelState(levelState, {
-            deferRender: true,
-            immediateCamera: true,
-            resetHistory: false,
-            resetLevelEntry: true
-          });
-          await app.preloadImagesForLevelState?.(levelState);
-          app.render?.();
-        }, levelId);
-        await waitUntilSettled(page);
-      }
-    }
-
-    await setCameraView();
-    return await captureFrame(page);
-  } finally {
-    await browser.close().catch(() => {});
+    return session;
+  } catch (error) {
+    await browser?.close().catch(() => {});
     await server.close().catch(() => {});
+    throw error;
   }
 }
 
+async function applySessionAction(session, commandText) {
+  const { options, page } = session;
+  const parsed = parseCommandLine(commandText);
+
+  if (!parsed) {
+    return false;
+  }
+
+  if (parsed.command === "move") {
+    const key = {
+      down: "ArrowDown",
+      left: "ArrowLeft",
+      right: "ArrowRight",
+      up: "ArrowUp"
+    }[parsed.direction];
+    await page.keyboard.press(key);
+    await waitUntilSettled(page);
+  } else if (parsed.command === "rotate_camera") {
+    if (parsed.direction === "left") {
+      session.cameraYawTurns -= 1;
+    } else if (parsed.direction === "right") {
+      session.cameraYawTurns += 1;
+    } else if (parsed.direction === "up") {
+      session.cameraTiltDegrees = Math.max(20, session.cameraTiltDegrees - options.cameraStepDegrees);
+    } else if (parsed.direction === "down") {
+      session.cameraTiltDegrees = Math.min(82, session.cameraTiltDegrees + options.cameraStepDegrees);
+    }
+    await setCameraView(session);
+  } else if (parsed.command === "undo") {
+    await page.keyboard.press("z");
+    await waitUntilSettled(page);
+  } else if (parsed.command === "reset_level") {
+    await page.keyboard.press("r");
+    await waitUntilSettled(page);
+  } else if (parsed.command === "goto_level") {
+    const levelId = `level_${parsed.x}x${parsed.y}`;
+    await page.evaluate(async (nextLevelId) => {
+      const app = window.__PIXEL_GAME_APP__;
+      const response = await fetch(
+        `/api/play/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(nextLevelId)}`
+      );
+
+      if (!response.ok) {
+        throw new Error(`Could not load ${nextLevelId}`);
+      }
+
+      const levelState = await response.json();
+      app.applyLevelState(levelState, {
+        deferRender: true,
+        immediateCamera: true,
+        resetHistory: false,
+        resetLevelEntry: true
+      });
+      await app.preloadImagesForLevelState?.(levelState);
+      app.render?.();
+    }, levelId);
+    await waitUntilSettled(page);
+  }
+
+  return true;
+}
+
+async function captureSessionFrame(session) {
+  await setCameraView(session);
+  return captureFrame(session.page);
+}
+
+async function closeRenderSession(session) {
+  if (!session || session.closed) {
+    return;
+  }
+
+  session.closed = true;
+  await session.browser.close().catch(() => {});
+  await session.server.close().catch(() => {});
+}
+
+async function renderFrame(payload) {
+  const session = await createRenderSession(payload);
+
+  try {
+    for (const commandText of session.options.actions) {
+      await applySessionAction(session, commandText);
+    }
+
+    return await captureSessionFrame(session);
+  } finally {
+    await closeRenderSession(session);
+  }
+}
+
+function writeLine(payload) {
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function runServeMode() {
+  let session = null;
+  let queue = Promise.resolve();
+
+  async function closeSession() {
+    const current = session;
+    session = null;
+    await closeRenderSession(current);
+  }
+
+  async function handleMessage(message) {
+    const command = String(message.command || "").trim().toLowerCase();
+
+    if (command === "init") {
+      await closeSession();
+      session = await createRenderSession(message);
+
+      for (const commandText of session.options.actions) {
+        await applySessionAction(session, commandText);
+      }
+
+      return { ok: true, frame: await captureSessionFrame(session) };
+    }
+
+    if (command === "close") {
+      await closeSession();
+      return { ok: true, closing: true };
+    }
+
+    if (!session) {
+      throw new Error('render session is not initialized; send {"command":"init",...} first');
+    }
+
+    if (command === "action") {
+      const applied = await applySessionAction(session, message.action);
+      return { ok: true, applied, frame: await captureSessionFrame(session) };
+    }
+
+    if (command === "frame") {
+      return { ok: true, frame: await captureSessionFrame(session) };
+    }
+
+    throw new Error(`unknown command: ${message.command}`);
+  }
+
+  function shutdown() {
+    queue = queue
+      .then(() => closeSession())
+      .catch(() => {})
+      .finally(() => process.exit(0));
+  }
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    terminal: false
+  });
+
+  rl.on("line", (line) => {
+    if (!String(line || "").trim()) {
+      return;
+    }
+
+    queue = queue.then(async () => {
+      let response;
+
+      try {
+        response = await handleMessage(JSON.parse(line));
+      } catch (error) {
+        response = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+
+      writeLine(response);
+
+      if (response.ok && response.closing) {
+        process.exit(0);
+      }
+    });
+  });
+
+  rl.on("close", shutdown);
+}
+
+function printUsage() {
+  process.stdout.write(`Usage: node scripts/maze-render-frame.js [--serve]
+
+One-shot mode (default):
+  Reads one JSON payload on stdin, replays payload.actions in a headless
+  browser, then writes {"data_url":"data:image/png;base64,..."} on stdout.
+  Payload fields: actions, browser, cameraStepDegrees, cameraTiltDegrees,
+  cameraZoom, draft, fast, gameId, height, levelId, width, yaw.
+
+Serve mode (--serve):
+  Keeps one local server + headless browser alive and answers JSON lines
+  on stdin, mirroring scripts/maze-bridge.js:
+    {"command":"init","gameId":"maze","levelId":"level_HxI","width":512,"height":512,"yaw":0}
+    {"command":"action","action":"up"}
+    {"command":"frame"}
+    {"command":"close"}
+  Each response is one JSON line, {"ok":true,"frame":"data:image/png;base64,..."}
+  or {"ok":false,"error":"..."}.
+`);
+}
+
 async function main() {
+  const argv = process.argv.slice(2);
+
+  if (argv.includes("--help") || argv.includes("-h")) {
+    printUsage();
+    return;
+  }
+
+  if (argv.includes("--serve")) {
+    runServeMode();
+    return;
+  }
+
   const payload = JSON.parse(readStdin() || "{}");
   const dataUrl = await renderFrame(payload);
   process.stdout.write(`${JSON.stringify({ data_url: dataUrl })}\n`);
@@ -423,5 +597,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  applySessionAction,
+  captureSessionFrame,
+  closeRenderSession,
+  createRenderSession,
   renderFrame
 };

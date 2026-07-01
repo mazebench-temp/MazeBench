@@ -36,6 +36,7 @@
       startLevelTransition
     } = renderCompositor;
     const transitionWarmups = new Map();
+    const TRANSITION_WARMUP_CACHE_LIMIT = 8;
     const isTransitionPlayerActor =
       typeof isMainPlayerActor === "function"
         ? isMainPlayerActor
@@ -723,6 +724,20 @@
       ].join("->");
     }
 
+    function pruneTransitionWarmups() {
+      const originLevelId = app.currentLevelId || "";
+
+      transitionWarmups.forEach((entry, key) => {
+        if (entry.originLevelId !== originLevelId) {
+          transitionWarmups.delete(key);
+        }
+      });
+
+      while (transitionWarmups.size >= TRANSITION_WARMUP_CACHE_LIMIT) {
+        transitionWarmups.delete(transitionWarmups.keys().next().value);
+      }
+    }
+
     function warmAdjacentLevelTransition(transition, options = {}) {
       const key = transitionWarmupKey(transition);
 
@@ -733,7 +748,7 @@
       const cachedWarmup = transitionWarmups.get(key);
 
       if (cachedWarmup) {
-        return cachedWarmup;
+        return cachedWarmup.warmup;
       }
 
       const outgoingLevelId = app.currentLevelId;
@@ -765,7 +780,8 @@
         throw error;
       });
 
-      transitionWarmups.set(key, warmup);
+      pruneTransitionWarmups();
+      transitionWarmups.set(key, { originLevelId: outgoingLevelId || "", warmup });
       return warmup;
     }
 
@@ -773,7 +789,7 @@
       const key = transition?.warmupKey || transitionWarmupKey(transition);
       const warmup =
         transition?.warmupPromise ||
-        (key ? transitionWarmups.get(key) : null);
+        (key ? transitionWarmups.get(key)?.warmup : null);
 
       if (!warmup) {
         return null;
@@ -899,16 +915,9 @@
       };
     }
 
-    async function prepareAdjacentLevelTransfer(transition) {
-      if (!transition) {
-        return null;
-      }
-
-      const previousLevelSnapshot = attachRaisedSurfaceState(
-        cloneLevelSnapshot(),
-        computeRaisedPlayerGateSet(),
-        computeRaisedOrangeWallSet()
-      );
+    async function resolveAdjacentLevelTransfer(transition, previousLevelSnapshot) {
+      // Only await warmup consumption when a warmup can actually exist:
+      // the level load below must start synchronously during move planning.
       const warmupKey = transition?.warmupKey || transitionWarmupKey(transition);
       const warmup =
         transition?.warmupPromise || (warmupKey && transitionWarmups.has(warmupKey))
@@ -917,6 +926,7 @@
       const nextLevelState =
         cloneStoredLevelSnapshot(warmup?.nextLevelState) ||
         await loadTransitionLevelState(transition.nextLevelId);
+      const levelStartPlayer = playerStartForLevelState(nextLevelState, transition.player.type);
       const sourceElevation = Number.isInteger(transition.sourceElevation)
         ? transition.sourceElevation
         : actorElevation(transition.player);
@@ -995,12 +1005,41 @@
 
       return {
         entersHole: targetType === "hole",
+        levelStartPlayer,
         nextLevelState,
         previousLevelSnapshot,
         sourceType,
         targetElevation,
         targetType,
-        transferredPlayer
+        transferredPlayer,
+        warmup
+      };
+    }
+
+    async function prepareAdjacentLevelTransfer(transition) {
+      if (!transition) {
+        return null;
+      }
+
+      const previousLevelSnapshot = attachRaisedSurfaceState(
+        cloneLevelSnapshot(),
+        computeRaisedPlayerGateSet(),
+        computeRaisedOrangeWallSet()
+      );
+      const transfer = await resolveAdjacentLevelTransfer(transition, previousLevelSnapshot);
+
+      if (!transfer) {
+        return null;
+      }
+
+      return {
+        entersHole: transfer.entersHole,
+        nextLevelState: transfer.nextLevelState,
+        previousLevelSnapshot: transfer.previousLevelSnapshot,
+        sourceType: transfer.sourceType,
+        targetElevation: transfer.targetElevation,
+        targetType: transfer.targetType,
+        transferredPlayer: transfer.transferredPlayer
       };
     }
 
@@ -1032,72 +1071,15 @@
       }
 
       try {
-        const warmup = await consumeTransitionWarmup(transition);
-        const nextLevelState =
-          cloneStoredLevelSnapshot(warmup?.nextLevelState) ||
-          await loadTransitionLevelState(transition.nextLevelId);
-        const levelStartPlayer = playerStartForLevelState(nextLevelState, transition.player.type);
-        const reviveStartPlayer = levelStartPlayer ? { ...levelStartPlayer } : null;
-        const sourceElevation = Number.isInteger(transition.sourceElevation)
-          ? transition.sourceElevation
-          : actorElevation(transition.player);
-        const sourceSurface =
-          transition.sourceType
-            ? { type: transition.sourceType }
-            : transitionTerrainSurfaceAtElevation(
-                previousLevelSnapshot,
-                transition.player.x,
-                transition.player.y,
-                sourceElevation,
-                {
-                  raisedPlayerGates: previousLevelSnapshot.raisedPlayerGates
-                    ? new Set(previousLevelSnapshot.raisedPlayerGates)
-                    : null,
-                  raisedOrangeWalls: previousLevelSnapshot.raisedOrangeWalls
-                    ? new Set(previousLevelSnapshot.raisedOrangeWalls)
-                    : null
-                }
-              );
-        const sourceType = sourceSurface?.type || "empty";
-        const targetElevation = Number.isInteger(transition.targetElevation)
-          ? transition.targetElevation
-          : sourceElevation;
-        const targetSurface = transitionTerrainSurfaceAtElevation(
-          nextLevelState,
-          transition.targetX,
-          transition.targetY,
-          targetElevation
-        );
-        const targetHole = transitionTerrainHoleAtElevation(
-          nextLevelState,
-          transition.targetX,
-          transition.targetY,
-          targetElevation
-        );
-        const targetSlopeEntry = transitionTerrainSlopeEntryAt(
-          nextLevelState,
-          transition.targetX,
-          transition.targetY,
-          transition.dx,
-          transition.dy,
-          targetElevation
-        );
-        const targetType = targetSurface?.type || targetHole?.type || targetSlopeEntry?.type || "empty";
+        const transfer = await resolveAdjacentLevelTransfer(transition, previousLevelSnapshot);
 
-        if (
-          !isAllowedTransitionTarget(
-            transition,
-            sourceType,
-            targetType,
-            nextLevelState,
-            transition.targetX,
-            transition.targetY,
-            targetElevation
-          )
-        ) {
+        if (!transfer) {
           app.isTransitioningLevel = false;
           return false;
         }
+
+        const { entersHole, levelStartPlayer, nextLevelState, warmup } = transfer;
+        const reviveStartPlayer = levelStartPlayer ? { ...levelStartPlayer } : null;
 
         if (
           typeof app.threeRenderer?.prewarmAdjacentLevelTransition === "function" &&
@@ -1106,23 +1088,6 @@
         ) {
           await preloadTransitionNeighborhood(previousLevelSnapshot.levelId, nextLevelState.levelId);
         }
-
-        const entersHole = targetType === "hole";
-        const transferredPlayer = {
-          type: transition.player.type,
-          groupId: transition.player.groupId ?? null,
-          label: transition.player.label,
-          imageUrl: transition.player.imageUrl || null,
-          x: transition.targetX,
-          y: transition.targetY,
-          removed: false,
-          elevation: targetElevation
-        };
-
-        nextLevelState.actors = [
-          ...(nextLevelState.actors || []).filter((actor) => !isTransitionPlayerActor(actor)),
-          transferredPlayer
-        ];
 
         moveHistory.push({
           kind: "level-transition",
@@ -1137,6 +1102,7 @@
           deferRender: true,
           preserveAnimation: transition.followSourcePlayerBeforeContinuation === true
         });
+        pruneTransitionWarmups();
 
         const incomingRaisedPlayerGates = computeRaisedPlayerGateSet();
         const incomingRaisedOrangeWalls = computeRaisedOrangeWallSet();

@@ -42,6 +42,31 @@ function floorTerrain(width, height) {
   }
 
   {
+    // Regression: a gem collected before the engine was created (mid-session
+    // state) must not count as an instant solve; the solver has to path to
+    // the remaining live gem instead of returning an empty path.
+    const engine = createEngine({
+      width: 3,
+      height: 1,
+      terrain: floorTerrain(3, 1),
+      actors: [
+        { type: "player", x: 0, y: 0, removed: false },
+        { type: "gem", x: 0, y: 0, removed: true },
+        { type: "gem", x: 2, y: 0, removed: false }
+      ]
+    });
+
+    const result = await solveWithAStar(engine, {
+      maxExpandedStates: 100,
+      progressYieldStateInterval: 1
+    });
+
+    assert.equal(result.status, "solved");
+    assert.equal(result.moves, 2);
+    assert.equal(result.path, "RR");
+  }
+
+  {
     const engine = createEngine({
       width: 3,
       height: 1,

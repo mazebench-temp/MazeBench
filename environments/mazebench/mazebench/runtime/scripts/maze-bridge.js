@@ -301,7 +301,7 @@ function sessionSnapshot(session, extra = {}) {
   const currentView = VIEW_NAMES[context.options.pitch];
   const rendered = splitRenderedScreen(renderScreen(context));
   const gameWonGemCount = normalizeGameWonGemCount(context.options?.gameWonGemCount);
-  const gameWon = session.collectedGemIds.size === gameWonGemCount;
+  const gameWon = session.collectedGemIds.size >= gameWonGemCount;
   const terminalExtra = { ...extra };
   const player = activePlayer(context);
   const playerDead = !player;

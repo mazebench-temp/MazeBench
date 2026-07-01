@@ -153,6 +153,24 @@
     return Number.isFinite(value) && value > 0 ? value : fallback;
   }
 
+  function solverAlgorithmOption(value) {
+    if (value === "bfs") {
+      return "bfs";
+    }
+
+    return value === "weighted_astar" || value === "weighted" ? "weighted_astar" : "astar";
+  }
+
+  function throwIfSolverAborted(signal) {
+    if (!signal?.aborted) {
+      return;
+    }
+
+    const error = new Error("Solver cancelled.");
+    error.name = "AbortError";
+    throw error;
+  }
+
   function solverNonPlayerMoveReward(engine, moveResult, rewardCap) {
     if (Number.isFinite(moveResult?.nonPlayerMoveCount)) {
       return Math.min(rewardCap, moveResult.nonPlayerMoveCount);
@@ -195,6 +213,8 @@
   }
 
   async function solveWithAStar(engine, options = {}) {
+    throwIfSolverAborted(options.signal);
+    const algorithm = solverAlgorithmOption(options.algorithm);
     const directions = Array.isArray(options.directions) ? options.directions : defaultDirections;
     const maxExpandedStates = numericOption(
       options.maxExpandedStates,
@@ -208,6 +228,11 @@
       options.nonPlayerMoveRewardCap,
       defaultNonPlayerMoveRewardCap
     );
+    const heuristicWeight =
+      algorithm === "bfs"
+        ? 0
+        : 1;
+    const useSearchReward = algorithm === "weighted_astar";
     const open = new SolverHeap();
     const bestCostByKey = new Map();
     const statePool = new SolverStatePool(engine);
@@ -226,7 +251,7 @@
       cost: 0,
       searchReward: 0,
       path: "",
-      priority: engine.heuristic(initialState),
+      priority: heuristicWeight * engine.heuristic(initialState),
       order: order
     }));
     order += 1;
@@ -234,6 +259,7 @@
     await reportProgress(reportProgressFn, expanded, maxExpandedStates, open.size, true);
 
     while (open.size > 0) {
+      throwIfSolverAborted(options.signal);
       const current = open.pop();
 
       if (current.cost !== bestCostByKey.get(current.key)) {
@@ -270,6 +296,7 @@
       }
 
       for (const direction of directions) {
+        throwIfSolverAborted(options.signal);
         const moveResult = engine.moveForSearch(
           current.state,
           direction.dx,
@@ -282,8 +309,10 @@
 
         const nextCost = current.cost + 1;
         const nextSearchReward =
-          current.searchReward +
-          solverNonPlayerMoveReward(engine, moveResult, nonPlayerMoveRewardCap);
+          useSearchReward
+            ? current.searchReward +
+              solverNonPlayerMoveReward(engine, moveResult, nonPlayerMoveRewardCap)
+            : 0;
         const nextKey = engine.stateKey(current.state);
         const bestKnownCost = bestCostByKey.get(nextKey);
 
@@ -301,7 +330,7 @@
           cost: nextCost,
           searchReward: nextSearchReward,
           path: current.path + direction.label,
-          priority: nextCost + engine.heuristic(nextState) - nextSearchReward,
+          priority: nextCost + heuristicWeight * engine.heuristic(nextState) - nextSearchReward,
           order
         }));
         order += 1;
@@ -378,6 +407,7 @@
   }
 
   async function findHardestGemPlacement(engine, options = {}) {
+    throwIfSolverAborted(options.signal);
     const directions = Array.isArray(options.directions) ? options.directions : defaultDirections;
     const maxExpandedStates = numericOption(
       options.maxExpandedStates,
@@ -415,6 +445,7 @@
     await reportProgress(reportProgressFn, expanded, maxExpandedStates, open.size, true);
 
     while (open.size > 0) {
+      throwIfSolverAborted(options.signal);
       const current = open.pop();
 
       if (current.cost !== bestCostByKey.get(current.key)) {
@@ -441,6 +472,7 @@
       }
 
       for (const direction of directions) {
+        throwIfSolverAborted(options.signal);
         const moveResult = engine.moveForSearch(
           current.state,
           direction.dx,
