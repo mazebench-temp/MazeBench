@@ -89,14 +89,16 @@
     return;
   }
 
-  // ?view=world renders the whole world around the current room while
-  // playing; ?view=<n> renders n rings of neighboring rooms (default 1).
+  // Play renders the whole world around the current room by default;
+  // ?view=<n> limits it to n rings of neighboring rooms (?view=1 restores
+  // the classic 3x3 neighborhood).
   const viewParam = new URLSearchParams(window.location.search).get("view");
+  const viewRings = Number(viewParam);
 
-  if (viewParam === "world") {
+  if (viewParam === "world" || viewParam === null || !Number.isFinite(viewRings)) {
     app.playSurroundingRadius = 26;
-  } else if (Number.isFinite(Number(viewParam)) && Number(viewParam) > 1) {
-    app.playSurroundingRadius = Math.min(26, Math.floor(Number(viewParam)));
+  } else {
+    app.playSurroundingRadius = Math.max(1, Math.min(26, Math.floor(viewRings)));
   }
 
   if (window.__PIXEL_GAME_DEBUG__ === true) {

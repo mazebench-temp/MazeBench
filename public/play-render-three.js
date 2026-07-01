@@ -1,6 +1,7 @@
 (function () {
   const modules = window.PlayModules || (window.PlayModules = {});
   const threeModuleUrl = "/vendor/three.module.js";
+  const gltfLoaderModuleUrl = "/vendor/GLTFLoader.js";
 
   modules.registerThreeRenderFunctions = function registerThreeRenderFunctions(app) {
     const threeCanvas = document.createElement("canvas");
@@ -11,6 +12,7 @@
     let camera = null;
     let ambientLight = null;
     let keyLight = null;
+    let GLTFLoaderClass = null;
     let raycaster = null;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -39,8 +41,6 @@
     let debugCameraTiltHoldFrameId = 0;
     let debugCameraTiltHoldLastMs = 0;
     const debugCameraTiltHoldKeys = new Set();
-    const compositeCanvas = document.createElement("canvas");
-    const compositeCtx = compositeCanvas.getContext("2d");
     const unit = app.TILE_SIZE;
     const elevationUnit = unit;
     const shapeCornerRadius = 0;
@@ -103,6 +103,9 @@
     const trackedStaticActorCodes = new Map();
     // World-view play: merged per-room groups cached across scene rebuilds.
     const worldViewRoomGroups = new Map();
+    // Flyover whole-world: one consolidated snapshot of all room groups,
+    // rebuilt only when the world settles after changes.
+    let worldConsolidation = null;
     let trackedBuildStateRef = null;
     let trackedBuildTerrainVersion = -1;
     let terrainScanCacheState = null;
@@ -259,6 +262,15 @@
 
     function isWorldViewPlayMode() {
       return !app.isFlyoverMode && !isEditorRenderMode() && playSurroundingRadius() > 1;
+    }
+
+    function usesRoomGroupWorld() {
+      // Both wide-view play and whole-world flyover render neighbor rooms as
+      // per-room merged groups cached across scene rebuilds.
+      return (
+        isWorldViewPlayMode() ||
+        (app.isFlyoverMode && app.flyoverWholeWorld === true)
+      );
     }
 
     function perspectiveCameraFarPlane() {
@@ -983,640 +995,159 @@
       return editorPickMaterial;
     }
 
-    function xmlElements(parent, tagName) {
-      if (!parent || typeof parent.getElementsByTagNameNS !== "function") {
-        return [];
+    function averageTextureColor(texture) {
+      const image = texture?.image;
+
+      if (!image || !image.width || !image.height) {
+        return null;
       }
 
-      return Array.from(parent.getElementsByTagNameNS("*", tagName));
-    }
+      try {
+        const sampleSize = 8;
+        const canvas = document.createElement("canvas");
 
-    function firstXmlElement(parent, tagName) {
-      return xmlElements(parent, tagName)[0] || null;
-    }
+        canvas.width = sampleSize;
+        canvas.height = sampleSize;
+        const context = canvas.getContext("2d");
 
-    function childXmlElements(parent, tagName) {
-      if (!parent?.children) {
-        return [];
-      }
+        context.drawImage(image, 0, 0, sampleSize, sampleSize);
+        const data = context.getImageData(0, 0, sampleSize, sampleSize).data;
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let count = 0;
 
-      return Array.from(parent.children).filter((child) => child.localName === tagName);
-    }
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] < 8) {
+            continue;
+          }
 
-    function parseFloatList(text) {
-      const normalizedText = String(text || "").trim();
-
-      if (!normalizedText) {
-        return [];
-      }
-
-      return normalizedText
-        .split(/\s+/)
-        .map(Number)
-        .filter((value) => Number.isFinite(value));
-    }
-
-    function stripColladaRef(value) {
-      return String(value || "").replace(/^#/, "");
-    }
-
-    function colorHexFromFloats(values, fallback = "#2f7d3f") {
-      if (!Array.isArray(values) || values.length < 3) {
-        return fallback;
-      }
-
-      return `#${values
-        .slice(0, 3)
-        .map((value) => Math.round(clamp01(value) * 255).toString(16).padStart(2, "0"))
-        .join("")}`;
-    }
-
-    function colladaMaterialColors(doc) {
-      const effectColors = new Map();
-
-      xmlElements(doc, "effect").forEach((effect) => {
-        const id = effect.getAttribute("id");
-        const diffuse = firstXmlElement(effect, "diffuse");
-        const color = firstXmlElement(diffuse, "color");
-
-        if (id && color) {
-          effectColors.set(id, colorHexFromFloats(parseFloatList(color.textContent)));
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          count += 1;
         }
-      });
 
-      const materialColors = new Map();
-
-      xmlElements(doc, "material").forEach((materialElement) => {
-        const id = materialElement.getAttribute("id");
-        const instanceEffect = firstXmlElement(materialElement, "instance_effect");
-        const effectId = stripColladaRef(instanceEffect?.getAttribute("url"));
-
-        if (id) {
-          materialColors.set(id, effectColors.get(effectId) || "#2f7d3f");
+        if (!count) {
+          return null;
         }
-      });
 
-      return materialColors;
+        const hex = (value) => Math.round(value / count).toString(16).padStart(2, "0");
+
+        return `#${hex(r)}${hex(g)}${hex(b)}`;
+      } catch (error) {
+        return null;
+      }
     }
 
-    function colladaSourceArrays(meshElement) {
-      const sources = new Map();
+    function extractModelFromGltf(gltf) {
+      const root = gltf?.scene || gltf?.scenes?.[0];
 
-      xmlElements(meshElement, "source").forEach((source) => {
-        const id = source.getAttribute("id");
-        const floatArray = firstXmlElement(source, "float_array");
-        const accessor = firstXmlElement(source, "accessor");
+      if (!root) {
+        return null;
+      }
 
-        if (!id || !floatArray) {
+      root.updateMatrixWorld(true);
+      const parts = [];
+
+      root.traverse((child) => {
+        if (!child.isMesh || !child.geometry?.attributes?.position) {
           return;
         }
 
-        sources.set(id, {
-          values: parseFloatList(floatArray.textContent),
-          stride: Math.max(1, Number(accessor?.getAttribute("stride")) || 3)
+        const geometry = child.geometry.clone();
+
+        geometry.applyMatrix4(child.matrixWorld);
+
+        if (!geometry.attributes.normal) {
+          geometry.computeVertexNormals();
+        }
+
+        geometry.computeBoundingBox();
+        markPersistentGeometry(geometry);
+
+        const material = Array.isArray(child.material) ? child.material[0] : child.material;
+        // Raw linear values, matching how the art was authored: the game's
+        // look treats glTF baseColorFactor floats as display-space hex.
+        let color = material?.color
+          ? `#${material.color.getHexString(THREE.LinearSRGBColorSpace)}`
+          : null;
+
+        // Textured materials usually carry a white base color; the renderer
+        // is flat-shaded, so bake the texture's average color instead.
+        if (material?.map && (!color || color === "#ffffff")) {
+          color = averageTextureColor(material.map) || color;
+        }
+
+        parts.push({
+          geometry,
+          color
         });
       });
 
-      return sources;
-    }
+      // The renderer only keeps flat-color part geometry; free the loader's
+      // own geometries, materials, and decoded textures.
+      root.traverse((child) => {
+        child.geometry?.dispose?.();
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
 
-    function colladaVertexSources(meshElement) {
-      const vertices = new Map();
-
-      xmlElements(meshElement, "vertices").forEach((vertexElement) => {
-        const id = vertexElement.getAttribute("id");
-        const positionInput = childXmlElements(vertexElement, "input").find(
-          (input) => input.getAttribute("semantic") === "POSITION"
-        );
-
-        if (id && positionInput) {
-          vertices.set(id, stripColladaRef(positionInput.getAttribute("source")));
-        }
-      });
-
-      return vertices;
-    }
-
-    function colladaInputInfo(primitive, vertexSources) {
-      const inputs = childXmlElements(primitive, "input").map((input) => ({
-        offset: Math.max(0, Number(input.getAttribute("offset")) || 0),
-        semantic: input.getAttribute("semantic"),
-        source: stripColladaRef(input.getAttribute("source"))
-      }));
-      const stride = inputs.reduce((max, input) => Math.max(max, input.offset + 1), 1);
-      const vertexInput = inputs.find((input) => input.semantic === "VERTEX");
-      const positionInput = inputs.find((input) => input.semantic === "POSITION");
-      const normalInput = inputs.find((input) => input.semantic === "NORMAL");
-
-      return {
-        normalInput,
-        positionInput: positionInput || (vertexInput
-          ? { ...vertexInput, source: vertexSources.get(vertexInput.source) }
-          : null),
-        stride
-      };
-    }
-
-    function colladaVectorFromSource(source, index) {
-      if (!source) {
-        return null;
-      }
-
-      const offset = index * source.stride;
-
-      if (offset + 2 >= source.values.length) {
-        return null;
-      }
-
-      return [
-        source.values[offset],
-        source.values[offset + 1],
-        source.values[offset + 2]
-      ];
-    }
-
-    function parseColladaRawGeometryParts(doc, materialColors) {
-      const geometryParts = new Map();
-
-      xmlElements(doc, "geometry").forEach((geometryElement) => {
-        const geometryId = geometryElement.getAttribute("id");
-        const meshElement = firstXmlElement(geometryElement, "mesh");
-
-        if (!geometryId || !meshElement) {
-          return;
-        }
-
-        const sources = colladaSourceArrays(meshElement);
-        const vertexSources = colladaVertexSources(meshElement);
-        const parts = [];
-
-        xmlElements(meshElement, "triangles").forEach((triangles) => {
-          const { normalInput, positionInput, stride } = colladaInputInfo(triangles, vertexSources);
-          const positionSource = sources.get(positionInput?.source);
-          const normalSource = sources.get(normalInput?.source);
-          const indices = parseFloatList(firstXmlElement(triangles, "p")?.textContent).map((value) => value | 0);
-
-          if (!positionInput || !positionSource || indices.length < stride * 3) {
+        materials.forEach((material) => {
+          if (!material) {
             return;
           }
 
-          const positions = [];
-          const normals = [];
-
-          for (let index = 0; index < indices.length; index += stride) {
-            const positionIndex = indices[index + positionInput.offset];
-            const position = colladaVectorFromSource(positionSource, positionIndex);
-
-            if (!position) {
-              continue;
+          Object.values(material).forEach((value) => {
+            if (value?.isTexture) {
+              value.dispose();
             }
-
-            positions.push(...position);
-
-            if (normalInput && normalSource) {
-              const normalIndex = indices[index + normalInput.offset];
-              const normal = colladaVectorFromSource(normalSource, normalIndex);
-
-              if (normal) {
-                normals.push(...normal);
-              }
-            }
-          }
-
-          if (positions.length > 0) {
-            parts.push({
-              color: materialColors.get(triangles.getAttribute("material")) || "#2f7d3f",
-              normals: normals.length === positions.length ? normals : null,
-              positions
-            });
-          }
-        });
-
-        geometryParts.set(geometryId, parts);
-      });
-
-      return geometryParts;
-    }
-
-    function colladaNodeMatrix(nodeElement) {
-      const matrixElement = firstXmlElement(nodeElement, "matrix");
-      const values = parseFloatList(matrixElement?.textContent);
-
-      if (values.length !== 16) {
-        return new THREE.Matrix4();
-      }
-
-      return new THREE.Matrix4().set(
-        values[0], values[1], values[2], values[3],
-        values[4], values[5], values[6], values[7],
-        values[8], values[9], values[10], values[11],
-        values[12], values[13], values[14], values[15]
-      );
-    }
-
-    function transformedColladaPart(rawPart, matrix) {
-      const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix);
-      const position = new THREE.Vector3();
-      const normal = new THREE.Vector3();
-      const positions = [];
-      const normals = [];
-
-      for (let index = 0; index < rawPart.positions.length; index += 3) {
-        position
-          .set(rawPart.positions[index], rawPart.positions[index + 1], rawPart.positions[index + 2])
-          .applyMatrix4(matrix);
-        positions.push(position.x, position.z, -position.y);
-
-        if (rawPart.normals) {
-          normal
-            .set(rawPart.normals[index], rawPart.normals[index + 1], rawPart.normals[index + 2])
-            .applyMatrix3(normalMatrix)
-            .normalize();
-          normals.push(normal.x, normal.z, -normal.y);
-        }
-      }
-
-      const geometry = new THREE.BufferGeometry();
-      geometry.userData.persistentGeometry = true;
-      geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-
-      if (normals.length === positions.length) {
-        geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-      } else {
-        geometry.computeVertexNormals();
-      }
-
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
-      return {
-        color: rawPart.color,
-        geometry
-      };
-    }
-
-    function parseColladaModel(text) {
-      if (typeof DOMParser !== "function" || typeof text !== "string" || !text.trim()) {
-        return null;
-      }
-
-      const doc = new DOMParser().parseFromString(text, "application/xml");
-      const materialColors = colladaMaterialColors(doc);
-      const rawGeometryParts = parseColladaRawGeometryParts(doc, materialColors);
-      const parts = [];
-      const instances = xmlElements(doc, "instance_geometry");
-
-      instances.forEach((instance) => {
-        const geometryId = stripColladaRef(instance.getAttribute("url"));
-        const rawParts = rawGeometryParts.get(geometryId) || [];
-        const matrix = colladaNodeMatrix(instance.parentElement);
-
-        rawParts.forEach((rawPart) => {
-          parts.push(transformedColladaPart(rawPart, matrix));
-        });
-      });
-
-      if (parts.length === 0) {
-        rawGeometryParts.forEach((rawParts) => {
-          rawParts.forEach((rawPart) => {
-            parts.push(transformedColladaPart(rawPart, new THREE.Matrix4()));
           });
+          material.dispose?.();
         });
-      }
+      });
 
       if (parts.length === 0) {
         return null;
       }
 
       const bounds = new THREE.Box3();
+
       parts.forEach((part) => {
         if (part.geometry.boundingBox) {
           bounds.union(part.geometry.boundingBox);
         }
       });
 
-      return {
-        bounds,
-        parts
-      };
-    }
-
-    function modelUrlIsGlb(url) {
-      return /\.glb(?:[?#]|$)/i.test(String(url || ""));
-    }
-
-    function parseGlbChunks(arrayBuffer) {
-      if (!(arrayBuffer instanceof ArrayBuffer) || arrayBuffer.byteLength < 20) {
-        return null;
-      }
-
-      const view = new DataView(arrayBuffer);
-      const glbMagic = 0x46546c67;
-      const jsonChunkType = 0x4e4f534a;
-      const binChunkType = 0x004e4942;
-
-      if (view.getUint32(0, true) !== glbMagic || view.getUint32(4, true) !== 2) {
-        return null;
-      }
-
-      const declaredLength = view.getUint32(8, true);
-      const length = Math.min(declaredLength, arrayBuffer.byteLength);
-      let offset = 12;
-      let json = null;
-      let bin = null;
-
-      while (offset + 8 <= length) {
-        const chunkLength = view.getUint32(offset, true);
-        const chunkType = view.getUint32(offset + 4, true);
-        const chunkOffset = offset + 8;
-        const chunkEnd = chunkOffset + chunkLength;
-
-        if (chunkEnd > length) {
-          return null;
-        }
-
-        if (chunkType === jsonChunkType) {
-          const text = new TextDecoder().decode(
-            new Uint8Array(arrayBuffer, chunkOffset, chunkLength)
-          );
-          json = JSON.parse(text.trim());
-        } else if (chunkType === binChunkType) {
-          bin = arrayBuffer.slice(chunkOffset, chunkEnd);
-        }
-
-        offset = chunkEnd;
-      }
-
-      return json && bin ? { bin, json } : null;
-    }
-
-    function gltfComponentInfo(componentType) {
-      switch (componentType) {
-        case 5120:
-          return { byteSize: 1, read: (view, offset) => view.getInt8(offset) };
-        case 5121:
-          return { byteSize: 1, read: (view, offset) => view.getUint8(offset) };
-        case 5122:
-          return { byteSize: 2, read: (view, offset) => view.getInt16(offset, true) };
-        case 5123:
-          return { byteSize: 2, read: (view, offset) => view.getUint16(offset, true) };
-        case 5125:
-          return { byteSize: 4, read: (view, offset) => view.getUint32(offset, true) };
-        case 5126:
-          return { byteSize: 4, read: (view, offset) => view.getFloat32(offset, true) };
-        default:
-          return null;
-      }
-    }
-
-    function gltfAccessorItemSize(type) {
-      return {
-        SCALAR: 1,
-        VEC2: 2,
-        VEC3: 3,
-        VEC4: 4,
-        MAT2: 4,
-        MAT3: 9,
-        MAT4: 16
-      }[type] || 1;
-    }
-
-    function normalizeGltfComponent(value, componentType) {
-      switch (componentType) {
-        case 5120:
-          return Math.max(value / 127, -1);
-        case 5121:
-          return value / 255;
-        case 5122:
-          return Math.max(value / 32767, -1);
-        case 5123:
-          return value / 65535;
-        default:
-          return value;
-      }
-    }
-
-    function gltfAccessorReader(gltf, binBuffer, accessorIndex) {
-      const accessor = gltf.accessors?.[accessorIndex];
-      const bufferView = gltf.bufferViews?.[accessor?.bufferView];
-      const component = gltfComponentInfo(accessor?.componentType);
-
-      if (!accessor || !bufferView || !component) {
-        return null;
-      }
-
-      const itemSize = gltfAccessorItemSize(accessor.type);
-      const view = new DataView(binBuffer);
-      const byteOffset = (bufferView.byteOffset || 0) + (accessor.byteOffset || 0);
-      const byteStride = bufferView.byteStride || component.byteSize * itemSize;
-      const normalized = accessor.normalized === true;
-
-      return {
-        count: accessor.count || 0,
-        itemSize,
-        get(index, componentIndex = 0) {
-          const offset = byteOffset + index * byteStride + componentIndex * component.byteSize;
-
-          if (offset < 0 || offset + component.byteSize > binBuffer.byteLength) {
-            return 0;
-          }
-
-          const value = component.read(view, offset);
-          return normalized ? normalizeGltfComponent(value, accessor.componentType) : value;
-        }
-      };
-    }
-
-    function gltfMaterialColor(gltf, primitive) {
-      const material = gltf.materials?.[primitive?.material];
-      const color = material?.pbrMetallicRoughness?.baseColorFactor;
-
-      return colorHexFromFloats(color, terrainColor("tree"));
-    }
-
-    function gltfNodeMatrix(node) {
-      if (Array.isArray(node?.matrix) && node.matrix.length === 16) {
-        return new THREE.Matrix4().fromArray(node.matrix);
-      }
-
-      const translation = Array.isArray(node?.translation) ? node.translation : [0, 0, 0];
-      const rotation = Array.isArray(node?.rotation) ? node.rotation : [0, 0, 0, 1];
-      const scale = Array.isArray(node?.scale) ? node.scale : [1, 1, 1];
-
-      return new THREE.Matrix4().compose(
-        new THREE.Vector3(translation[0] || 0, translation[1] || 0, translation[2] || 0),
-        new THREE.Quaternion(
-          rotation[0] || 0,
-          rotation[1] || 0,
-          rotation[2] || 0,
-          rotation[3] === undefined ? 1 : rotation[3]
-        ),
-        new THREE.Vector3(
-          scale[0] === undefined ? 1 : scale[0],
-          scale[1] === undefined ? 1 : scale[1],
-          scale[2] === undefined ? 1 : scale[2]
-        )
-      );
-    }
-
-    function transformedGltfPrimitivePart(gltf, binBuffer, primitive, matrix) {
-      if (!primitive || (primitive.mode ?? 4) !== 4) {
-        return null;
-      }
-
-      const positionReader = gltfAccessorReader(gltf, binBuffer, primitive.attributes?.POSITION);
-      const normalReader = gltfAccessorReader(gltf, binBuffer, primitive.attributes?.NORMAL);
-      const indexReader = primitive.indices === undefined
-        ? null
-        : gltfAccessorReader(gltf, binBuffer, primitive.indices);
-
-      if (!positionReader) {
-        return null;
-      }
-
-      const vertexCount = indexReader?.count || positionReader.count;
-      const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix);
-      const position = new THREE.Vector3();
-      const normal = new THREE.Vector3();
-      const positions = [];
-      const normals = [];
-
-      for (let index = 0; index < vertexCount; index += 1) {
-        const vertexIndex = indexReader ? indexReader.get(index, 0) : index;
-
-        position
-          .set(
-            positionReader.get(vertexIndex, 0),
-            positionReader.get(vertexIndex, 1),
-            positionReader.get(vertexIndex, 2)
-          )
-          .applyMatrix4(matrix);
-        positions.push(position.x, position.y, position.z);
-
-        if (normalReader) {
-          normal
-            .set(
-              normalReader.get(vertexIndex, 0),
-              normalReader.get(vertexIndex, 1),
-              normalReader.get(vertexIndex, 2)
-            )
-            .applyMatrix3(normalMatrix)
-            .normalize();
-          normals.push(normal.x, normal.y, normal.z);
-        }
-      }
-
-      if (positions.length < 9) {
-        return null;
-      }
-
-      const geometry = new THREE.BufferGeometry();
-      geometry.userData.persistentGeometry = true;
-      geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-
-      if (normals.length === positions.length) {
-        geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-      } else {
-        geometry.computeVertexNormals();
-      }
-
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
-      return {
-        color: gltfMaterialColor(gltf, primitive),
-        geometry
-      };
-    }
-
-    function parseGlbModel(arrayBuffer) {
-      const chunks = parseGlbChunks(arrayBuffer);
-
-      if (!chunks) {
-        return null;
-      }
-
-      const { bin, json: gltf } = chunks;
-      const parts = [];
-
-      function addMeshParts(meshIndex, matrix) {
-        const mesh = gltf.meshes?.[meshIndex];
-
-        if (!mesh || !Array.isArray(mesh.primitives)) {
-          return;
-        }
-
-        mesh.primitives.forEach((primitive) => {
-          const part = transformedGltfPrimitivePart(gltf, bin, primitive, matrix);
-
-          if (part) {
-            parts.push(part);
-          }
-        });
-      }
-
-      function visitNode(nodeIndex, parentMatrix) {
-        const node = gltf.nodes?.[nodeIndex];
-
-        if (!node) {
-          return;
-        }
-
-        const matrix = parentMatrix.clone().multiply(gltfNodeMatrix(node));
-
-        if (node.mesh !== undefined) {
-          addMeshParts(node.mesh, matrix);
-        }
-
-        if (Array.isArray(node.children)) {
-          node.children.forEach((childIndex) => visitNode(childIndex, matrix));
-        }
-      }
-
-      const scene = gltf.scenes?.[gltf.scene ?? 0];
-      const rootNodes = Array.isArray(scene?.nodes) ? scene.nodes : [];
-
-      if (rootNodes.length > 0) {
-        rootNodes.forEach((nodeIndex) => visitNode(nodeIndex, new THREE.Matrix4()));
-      } else if (Array.isArray(gltf.nodes)) {
-        gltf.nodes.forEach((node, index) => {
-          if (node?.mesh !== undefined) {
-            visitNode(index, new THREE.Matrix4());
-          }
-        });
-      } else if (Array.isArray(gltf.meshes)) {
-        gltf.meshes.forEach((mesh, index) => addMeshParts(index, new THREE.Matrix4()));
-      }
-
-      if (parts.length === 0) {
-        return null;
-      }
-
-      const bounds = new THREE.Box3();
-      parts.forEach((part) => {
-        if (part.geometry.boundingBox) {
-          bounds.union(part.geometry.boundingBox);
-        }
-      });
-
-      return {
-        bounds,
-        parts
-      };
+      return { bounds, parts };
     }
 
     function parseModelAsset(url, data) {
-      if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-        const arrayBuffer = data instanceof ArrayBuffer
-          ? data
-          : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-        return parseGlbModel(arrayBuffer);
+      if (!GLTFLoaderClass || !(data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
+        return Promise.resolve(null);
       }
 
-      if (typeof data === "string" && !modelUrlIsGlb(url)) {
-        return parseColladaModel(data);
-      }
+      const arrayBuffer = data instanceof ArrayBuffer
+        ? data
+        : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
 
-      return null;
+      return new Promise((resolve) => {
+        try {
+          new GLTFLoaderClass().parse(
+            arrayBuffer,
+            "",
+            (gltf) => resolve(extractModelFromGltf(gltf)),
+            (error) => {
+              console.warn(`Model parse failed for ${url}`, error);
+              resolve(null);
+            }
+          );
+        } catch (error) {
+          console.warn(`Model parse failed for ${url}`, error);
+          resolve(null);
+        }
+      });
     }
+
+    const MODEL_RETRY_DELAY_MS = 8000;
 
     function requestModelAsset(url) {
       if (!url || !THREE) {
@@ -1629,50 +1160,60 @@
         return cached.model;
       }
 
-      if (cached?.status === "loading" || cached?.status === "failed") {
+      if (cached?.status === "loading") {
         return null;
       }
 
-      const cachedData = app.modelTextCache?.get(url);
+      if (cached?.status === "failed") {
+        // Transient failures retry instead of poisoning the URL forever.
+        if (performance.now() - cached.failedAtMs < MODEL_RETRY_DELAY_MS) {
+          return null;
+        }
 
-      if (cachedData instanceof ArrayBuffer || ArrayBuffer.isView(cachedData) || typeof cachedData === "string") {
-        const model = parseModelAsset(url, cachedData);
-        modelAssetCache.set(url, model ? { status: "ready", model } : { status: "failed" });
-        return model;
+        modelAssetCache.delete(url);
+
+        if (app.modelTextCache?.get(url) === null) {
+          app.modelTextCache.delete(url);
+        }
       }
 
-      if (cachedData === null) {
-        modelAssetCache.set(url, { status: "failed" });
+      const finalizeModel = (model) => {
+        modelAssetCache.set(
+          url,
+          model
+            ? { status: "ready", model }
+            : { status: "failed", failedAtMs: performance.now() }
+        );
+        invalidateSceneCache();
+
+        if (typeof app.render === "function") {
+          window.requestAnimationFrame((now) => (app.renderOncePerFrame || app.render)(now));
+        }
+      };
+
+      const cachedData = app.modelTextCache?.get(url);
+
+      if (cachedData instanceof ArrayBuffer || ArrayBuffer.isView(cachedData)) {
+        modelAssetCache.set(url, {
+          status: "loading",
+          promise: parseModelAsset(url, cachedData).then(finalizeModel)
+        });
         return null;
       }
 
       const promise = fetch(url)
-        .then((response) => {
-          if (!response.ok) {
-            return null;
-          }
-
-          return modelUrlIsGlb(url) ? response.arrayBuffer() : response.text();
-        })
+        .then((response) => (response.ok ? response.arrayBuffer() : null))
         .then((data) => {
-          if (app.modelTextCache) {
+          if (data && app.modelTextCache) {
             app.modelTextCache.set(url, data);
           }
 
-          const model = parseModelAsset(url, data);
-          modelAssetCache.set(url, model ? { status: "ready", model } : { status: "failed" });
-          invalidateSceneCache();
-
-          if (typeof app.render === "function") {
-            window.requestAnimationFrame((now) => (app.renderOncePerFrame || app.render)(now));
-          }
+          return data ? parseModelAsset(url, data) : null;
         })
-        .catch(() => {
-          if (app.modelTextCache) {
-            app.modelTextCache.set(url, null);
-          }
-          modelAssetCache.set(url, { status: "failed" });
-          invalidateSceneCache();
+        .then(finalizeModel)
+        .catch((error) => {
+          console.warn(`Model load failed for ${url}`, error);
+          finalizeModel(null);
         });
 
       modelAssetCache.set(url, { status: "loading", promise });
@@ -2833,28 +2374,6 @@
       return {
         sourceCount,
         mergedCount
-      };
-    }
-
-    function optimizeWholeWorldFlyoverScene() {
-      // World-view play merges per room (renderWorldViewRoomGroups) so the
-      // global pass stays flyover-only.
-      if (!app.isFlyoverMode || app.flyoverWholeWorld !== true) {
-        return;
-      }
-
-      scene.updateMatrixWorld(true);
-      edgeScene.updateMatrixWorld(true);
-      const meshStats = mergeImmediateSceneObjects(scene, "mesh");
-      const edgeStats = mergeImmediateSceneObjects(edgeScene, "line");
-
-      app.flyoverSceneBatchStats = {
-        meshSourceObjects: meshStats.sourceCount,
-        meshMergedObjects: meshStats.mergedCount,
-        edgeSourceObjects: edgeStats.sourceCount,
-        edgeMergedObjects: edgeStats.mergedCount,
-        sceneObjects: scene.children.length,
-        edgeObjects: edgeScene.children.length
       };
     }
 
@@ -7461,7 +6980,7 @@
     }
 
     function flyoverFadeAnimationSignature(now) {
-      if (!app.isFlyoverMode) {
+      if (!app.isFlyoverMode && !isWorldViewPlayMode()) {
         return "";
       }
 
@@ -7602,8 +7121,6 @@
         lastHeight = height;
         threeCanvas.width = width;
         threeCanvas.height = height;
-        compositeCanvas.width = width;
-        compositeCanvas.height = height;
         renderer.setSize(width, height, false);
       }
 
@@ -8613,14 +8130,120 @@
       return { group, edgeGroup, signature };
     }
 
+    function worldViewRoomBrightness(view, now) {
+      let brightness = view.brightness;
+
+      if (usesRoomGroupWorld() && app.flyoverRoomFadeIns instanceof Map) {
+        const startMs = app.flyoverRoomFadeIns.get(view.levelId);
+
+        if (Number.isFinite(startMs)) {
+          const durationMs = Math.max(1, Number(app.flyoverRoomFadeDurationMs) || 900);
+          const progress = clamp01((now - startMs) / durationMs);
+
+          if (progress >= 1) {
+            app.flyoverRoomFadeIns.delete(view.levelId);
+          } else {
+            const eased = app.easeInOutQuad ? app.easeInOutQuad(progress) : progress;
+
+            // Quantized so each fade step rebuilds the room group once.
+            brightness *= Math.round(eased * 6) / 6;
+          }
+        }
+      }
+
+      return flyoverLevelBrightness(view.levelId, brightness);
+    }
+
+    function disposeWorldConsolidation() {
+      if (!worldConsolidation) {
+        return;
+      }
+
+      worldConsolidation.objects.forEach((object) => {
+        object.parent?.remove(object);
+        object.geometry?.dispose();
+      });
+      worldConsolidation = null;
+    }
+
+    function buildConsolidatedObjects(container, kind, targetScene) {
+      const batches = new Map();
+      const children = [];
+
+      container.traverse((child) => {
+        const isBatchable = kind === "mesh" ? child.isMesh : child.isLineSegments;
+
+        if (
+          !isBatchable ||
+          !child.geometry?.attributes?.position ||
+          !child.material ||
+          Array.isArray(child.material)
+        ) {
+          return;
+        }
+
+        children.push(child);
+      });
+
+      children.forEach((child) => {
+        const key = [
+          kind,
+          child.material.uuid,
+          child.castShadow ? 1 : 0,
+          child.receiveShadow ? 1 : 0,
+          child.renderOrder || 0,
+          attributeBatchSignature(child.geometry)
+        ].join(":");
+
+        if (!batches.has(key)) {
+          batches.set(key, []);
+        }
+
+        batches.get(key).push(child);
+      });
+
+      const objects = [];
+
+      batches.forEach((batch) => {
+        const geometry = mergeGeometryBatch(batch);
+
+        if (!geometry) {
+          return;
+        }
+
+        const first = batch[0];
+        const merged =
+          kind === "mesh"
+            ? new THREE.Mesh(geometry, first.material)
+            : new THREE.LineSegments(geometry, first.material);
+
+        merged.castShadow = first.castShadow;
+        merged.receiveShadow = first.receiveShadow;
+        merged.renderOrder = first.renderOrder;
+        // Survives disposeSceneChildren across rebuilds; freed explicitly by
+        // disposeWorldConsolidation.
+        markPersistentGeometry(geometry);
+
+        if (kind === "line") {
+          merged.userData.edgeBasePosition = new THREE.Vector3(0, 0, 0);
+        }
+
+        objects.push({ object: merged, targetScene });
+      });
+
+      return objects;
+    }
+
     function renderWorldViewRoomGroups(now, views) {
       const activeLevelIds = new Set();
+      const consolidationParts = [];
+      let allRoomsReady = true;
 
       views
         .slice()
         .sort((a, b) => b.distance - a.distance)
         .forEach((view) => {
-          const brightness = flyoverLevelBrightness(view.levelId, view.brightness);
+          const brightness = worldViewRoomBrightness(view, now);
           const signature = worldViewRoomSignature(view, brightness);
           let entry = worldViewRoomGroups.get(view.levelId);
 
@@ -8631,9 +8254,11 @@
 
             entry = buildWorldViewRoomEntry(view, brightness, signature, now);
             worldViewRoomGroups.set(view.levelId, entry);
+            allRoomsReady = false;
           }
 
           activeLevelIds.add(view.levelId);
+          consolidationParts.push(`${view.levelId}@${view.offset.x},${view.offset.z}:${entry.signature}`);
           entry.group.position.set(view.offset.x, 0, view.offset.z);
           entry.edgeGroup.position.set(view.offset.x, 0, view.offset.z);
           entry.edgeGroup.userData.edgeBasePosition.set(view.offset.x, 0, view.offset.z);
@@ -8647,12 +8272,49 @@
           worldViewRoomGroups.delete(levelId);
         }
       });
+
+      // Flyover flight renders the whole world continuously; once the reveal
+      // has settled, consolidate the per-room groups into a handful of merged
+      // meshes so steady-state flight costs ~30 draw calls instead of ~1500.
+      if (!(app.isFlyoverMode && app.flyoverWholeWorld === true)) {
+        disposeWorldConsolidation();
+        return;
+      }
+
+      const fadesPending =
+        app.flyoverRoomFadeIns instanceof Map && app.flyoverRoomFadeIns.size > 0;
+
+      if (!allRoomsReady || fadesPending || views.length === 0) {
+        disposeWorldConsolidation();
+        return;
+      }
+
+      const consolidationSignature = consolidationParts.join("|");
+
+      if (!worldConsolidation || worldConsolidation.signature !== consolidationSignature) {
+        disposeWorldConsolidation();
+        scene.updateMatrixWorld(true);
+        edgeScene.updateMatrixWorld(true);
+        worldConsolidation = {
+          signature: consolidationSignature,
+          objects: buildConsolidatedObjects(scene, "mesh", scene).concat(
+            buildConsolidatedObjects(edgeScene, "line", edgeScene)
+          )
+        };
+      }
+
+      // Swap the individual groups out for the consolidated snapshot; the
+      // groups stay cached for the next time the world changes.
+      detachWorldViewRoomGroups();
+      worldConsolidation.objects.forEach(({ object, targetScene }) => {
+        targetScene.add(object);
+      });
     }
 
     function renderSurroundingLevelViews(now, views) {
       renderFlyoverDepartingLevelViews(now);
 
-      if (isWorldViewPlayMode()) {
+      if (usesRoomGroupWorld()) {
         renderWorldViewRoomGroups(now, views);
         return;
       }
@@ -9553,15 +9215,15 @@
         return;
       }
 
-      compositeCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
-      compositeCtx.drawImage(threeCanvas, 0, 0);
+      app.sceneCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
+      app.sceneCtx.drawImage(threeCanvas, 0, 0);
 
       if (edgeOutlinesEnabled()) {
         biasEdgeSceneTowardCamera();
         renderer.setClearColor("#000000", 0);
         renderer.clear(true, false, false);
         renderer.render(edgeScene, camera);
-        drawToonOutlineOverlay(compositeCtx);
+        drawToonOutlineOverlay(app.sceneCtx);
       }
 
       const totalRenderInfo = renderer.info?.render
@@ -9581,8 +9243,6 @@
         renderedAtMs: performance.now()
       };
 
-      app.sceneCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
-      app.sceneCtx.drawImage(compositeCanvas, 0, 0);
       app.sceneCanvas.__pixelGameTextureVersion =
         (app.sceneCanvas.__pixelGameTextureVersion || 0) + 1;
     }
@@ -9671,8 +9331,7 @@
       }
 
       if (!forceRender && hasRenderedScene && signature === lastSceneSignature) {
-        app.sceneCtx.clearRect(0, 0, app.boardRect.width, app.boardRect.height);
-        app.sceneCtx.drawImage(compositeCanvas, 0, 0);
+        // sceneCanvas already holds this exact frame; nothing to redraw.
         return true;
       }
 
@@ -9713,7 +9372,6 @@
       }
 
       addEditorHoverHighlight();
-      optimizeWholeWorldFlyoverScene();
       renderSceneToComposite(shouldUpdateShadowMap);
       lastSceneSignature = forceRender ? "" : signature;
       lastSceneContentSignature = forceRender ? "" : contentSignature;
@@ -9738,6 +9396,7 @@
         editorHoverRenderFrameId = 0;
       }
 
+      disposeWorldConsolidation();
       disposeWorldViewRoomGroups();
       disposeScene();
       geometryCache.forEach((geometry) => geometry.dispose());
@@ -9775,6 +9434,18 @@
     app.threeRendererReady = import(threeModuleUrl)
       .then((module) => {
         THREE = module;
+        // The loader resolves its bare "three" import through the page's
+        // importmap to the same /vendor/three.module.js instance. Models
+        // degrade to fallback shapes if it can't load.
+        return import(gltfLoaderModuleUrl)
+          .then((loaderModule) => {
+            GLTFLoaderClass = loaderModule.GLTFLoader || null;
+          })
+          .catch(() => {
+            GLTFLoaderClass = null;
+          });
+      })
+      .then(() => {
         renderer = new THREE.WebGLRenderer({
           // alpha is load-bearing: the edge-outline overlay pass clears the
           // drawing buffer to transparent before compositing onto the 2D canvas.

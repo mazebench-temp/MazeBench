@@ -206,6 +206,7 @@ function normalizeRenderOptions(payload) {
     gameId: String(payload.gameId || "maze"),
     height: Number(payload.height || 512),
     levelId: String(payload.levelId || "level_HxI"),
+    view: Number(payload.view || 1),
     width: Number(payload.width || 512),
     yaw: Number(payload.yaw || 0)
   };
@@ -244,9 +245,12 @@ async function createRenderSession(payload) {
       deviceScaleFactor: 1,
       viewport: { width: options.width, height: options.height }
     });
+    // Pin the classic 3x3 neighborhood so benchmark observations stay
+    // stable regardless of the browser default (whole-world view).
+    const viewRings = Number.isFinite(Number(options.view)) ? Number(options.view) : 1;
     const levelUrl = `http://127.0.0.1:${server.port}/play/${encodeURIComponent(
       options.gameId
-    )}/${encodeURIComponent(options.levelId)}`;
+    )}/${encodeURIComponent(options.levelId)}?view=${encodeURIComponent(viewRings)}`;
 
     await page.addInitScript(() => {
       window.__PIXEL_GAME_DEBUG__ = true;

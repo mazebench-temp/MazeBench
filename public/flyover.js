@@ -835,6 +835,8 @@
     const now = performance.now();
     let releasedAny = false;
 
+    const currentCoordinates = app.parseWorldLevelId?.(app.currentLevelId);
+
     app.flyoverPendingRenderableLevelIds.forEach((levelId) => {
       if (!app.cachedHorizontalNeighborLevelState?.(levelId)) {
         return;
@@ -844,10 +846,24 @@
         releasedAny = true;
         app.flyoverRenderableLevelIds.add(levelId);
 
-        if (
-          levelId !== app.currentLevelId &&
-          flyoverLevelIdWithinRadius(levelId, app.currentLevelId)
-        ) {
+        if (levelId === app.currentLevelId) {
+          return;
+        }
+
+        if (app.flyoverWholeWorld === true) {
+          // Whole world: every room fades in, staggered outward from the
+          // current room so the world reveals as a slow ripple.
+          const coordinates = app.parseWorldLevelId?.(levelId);
+          const distance =
+            coordinates && currentCoordinates
+              ? Math.max(
+                  Math.abs(coordinates.columnIndex - currentCoordinates.columnIndex),
+                  Math.abs(coordinates.rowIndex - currentCoordinates.rowIndex)
+                )
+              : 0;
+
+          app.flyoverRoomFadeIns.set(levelId, now + Math.min(3000, distance * 130));
+        } else if (flyoverLevelIdWithinRadius(levelId, app.currentLevelId)) {
           app.flyoverRoomFadeIns.set(levelId, now);
         }
       }
@@ -1029,8 +1045,12 @@
 
   function waitForInitialFlyoverWindow(timeoutMs = 7200) {
     const startedAt = performance.now();
-    const preloadRadius = Math.min(8, visibleFlyoverRadius() + 4);
-    const waitTimeoutMs = app.flyoverWholeWorld === true ? Math.max(timeoutMs, 45000) : timeoutMs;
+    // Whole world: reveal as soon as the immediate neighborhood is in and
+    // let the remaining rooms stream in with staggered fade-ins, instead of
+    // blocking the first frame on hundreds of level fetches.
+    const preloadRadius =
+      app.flyoverWholeWorld === true ? 2 : Math.min(8, visibleFlyoverRadius() + 4);
+    const waitTimeoutMs = app.flyoverWholeWorld === true ? Math.max(timeoutMs, 15000) : timeoutMs;
 
     return new Promise((resolve) => {
       function poll() {

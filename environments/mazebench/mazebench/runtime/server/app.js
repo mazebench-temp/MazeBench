@@ -54,6 +54,19 @@ PUBLIC_FILE_ROUTES.set(
   "/vendor/three.core.js",
   path.join(ROOT_DIR, "node_modules", "three", "build", "three.core.js")
 );
+PUBLIC_FILE_ROUTES.set(
+  "/vendor/GLTFLoader.js",
+  path.join(ROOT_DIR, "node_modules", "three", "examples", "jsm", "loaders", "GLTFLoader.js")
+);
+// GLTFLoader's relative "../utils/x.js" imports resolve against /vendor/.
+PUBLIC_FILE_ROUTES.set(
+  "/utils/BufferGeometryUtils.js",
+  path.join(ROOT_DIR, "node_modules", "three", "examples", "jsm", "utils", "BufferGeometryUtils.js")
+);
+PUBLIC_FILE_ROUTES.set(
+  "/utils/SkeletonUtils.js",
+  path.join(ROOT_DIR, "node_modules", "three", "examples", "jsm", "utils", "SkeletonUtils.js")
+);
 
 function buildGameAssetUrl(gameId, relativePath) {
   const encodedPath = relativePath

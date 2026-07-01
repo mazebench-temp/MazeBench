@@ -17,6 +17,7 @@ function createPageRenderer({
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(title)}</title>
+    <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body class="${escapeHtml(bodyClass)}">
