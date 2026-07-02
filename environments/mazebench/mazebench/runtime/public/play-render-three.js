@@ -8727,11 +8727,420 @@
         return;
       }
 
-      worldConsolidation.objects.forEach((object) => {
+      worldConsolidation.objects.forEach(({ object }) => {
         object.parent?.remove(object);
         object.geometry?.dispose();
       });
+      // Snapshot restores mint their own materials/textures (they are not in
+      // the shared caches); free them with the consolidation.
+      worldConsolidation.ownedMaterials?.forEach((material) => material.dispose());
+      worldConsolidation.ownedTextures?.forEach((texture) => texture.dispose());
       worldConsolidation = null;
+    }
+
+    // ---- World snapshot: serialized consolidated geometry ----
+    // A host page can bake the consolidated world at build time and restore
+    // it here in a few milliseconds instead of meshing 256 rooms. Positions
+    // quantize to a shared uint16 grid (meshes and edge lines stay exactly
+    // coincident); normals to int8. Dequantization is free: it rides the
+    // object's position/scale transform.
+    const WORLD_SNAPSHOT_FORMAT = 1;
+
+    function alignOffset(value, alignment) {
+      return Math.ceil(value / alignment) * alignment;
+    }
+
+    function serializeWorldConsolidation() {
+      if (!worldConsolidation || !THREE) {
+        return null;
+      }
+
+      const entries = [];
+      let minX = Infinity;
+      let minY = Infinity;
+      let minZ = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let maxZ = -Infinity;
+
+      worldConsolidation.objects.forEach(({ object, targetScene }) => {
+        const position = object.geometry?.attributes?.position;
+
+        if (!position || Array.isArray(object.material)) {
+          return;
+        }
+
+        const array = position.array;
+
+        for (let i = 0; i < array.length; i += 3) {
+          if (array[i] < minX) minX = array[i];
+          if (array[i] > maxX) maxX = array[i];
+          if (array[i + 1] < minY) minY = array[i + 1];
+          if (array[i + 1] > maxY) maxY = array[i + 1];
+          if (array[i + 2] < minZ) minZ = array[i + 2];
+          if (array[i + 2] > maxZ) maxZ = array[i + 2];
+        }
+
+        entries.push({ object, targetScene });
+      });
+
+      if (!entries.length) {
+        return null;
+      }
+
+      const spanX = Math.max(1e-6, maxX - minX);
+      const spanY = Math.max(1e-6, maxY - minY);
+      const spanZ = Math.max(1e-6, maxZ - minZ);
+      const sharedMeta = { textures: {}, images: {} };
+      const objects = [];
+      let byteLength = 0;
+
+      const sections = entries.map(({ object, targetScene }) => {
+        const geometry = object.geometry;
+        const position = geometry.attributes.position;
+        const normal = geometry.attributes.normal || null;
+        const uv = geometry.attributes.uv || null;
+        const vertexCount = position.count;
+        const material = object.material;
+        let materialDescriptor;
+
+        if (material.isMeshLambertMaterial && !material.map) {
+          materialDescriptor = {
+            strategy: "lambert",
+            color: `#${material.color.getHexString()}`,
+            opacity: material.opacity,
+            transparent: material.transparent === true,
+            depthWrite: material.depthWrite !== false,
+            doubleSide: material.side === THREE.DoubleSide,
+            flatShading: material.flatShading === true,
+            emissive: material.emissive ? `#${material.emissive.getHexString()}` : null,
+            emissiveIntensity: material.emissiveIntensity ?? 1,
+            polygonOffset: material.polygonOffset === true,
+            polygonOffsetFactor: material.polygonOffsetFactor || 0,
+            polygonOffsetUnits: material.polygonOffsetUnits || 0
+          };
+        } else if (material.isLineBasicMaterial && !material.map) {
+          materialDescriptor = {
+            strategy: "line",
+            color: `#${material.color.getHexString()}`,
+            opacity: material.opacity
+          };
+        } else {
+          materialDescriptor = {
+            strategy: "json",
+            json: material.toJSON(sharedMeta)
+          };
+        }
+
+        const positionOffset = alignOffset(byteLength, 2);
+        byteLength = positionOffset + vertexCount * 3 * 2;
+        let normalOffset = null;
+
+        if (object.isMesh && normal) {
+          normalOffset = alignOffset(byteLength, 1);
+          byteLength = normalOffset + vertexCount * 3;
+        }
+
+        let uvOffset = null;
+
+        if (uv) {
+          uvOffset = alignOffset(byteLength, 4);
+          byteLength = uvOffset + vertexCount * 2 * 4;
+        }
+
+        return {
+          object,
+          targetScene,
+          geometry,
+          position,
+          normal,
+          uv,
+          vertexCount,
+          materialDescriptor,
+          positionOffset,
+          normalOffset,
+          uvOffset
+        };
+      });
+
+      const buffer = new ArrayBuffer(byteLength);
+
+      sections.forEach((section) => {
+        const { object, targetScene, position, normal, uv, vertexCount } = section;
+        const quantized = new Uint16Array(buffer, section.positionOffset, vertexCount * 3);
+        const source = position.array;
+        let localMinX = Infinity;
+        let localMinY = Infinity;
+        let localMinZ = Infinity;
+        let localMaxX = -Infinity;
+        let localMaxY = -Infinity;
+        let localMaxZ = -Infinity;
+
+        for (let i = 0; i < source.length; i += 3) {
+          const nx = (source[i] - minX) / spanX;
+          const ny = (source[i + 1] - minY) / spanY;
+          const nz = (source[i + 2] - minZ) / spanZ;
+
+          quantized[i] = Math.round(Math.max(0, Math.min(1, nx)) * 65535);
+          quantized[i + 1] = Math.round(Math.max(0, Math.min(1, ny)) * 65535);
+          quantized[i + 2] = Math.round(Math.max(0, Math.min(1, nz)) * 65535);
+
+          if (nx < localMinX) localMinX = nx;
+          if (ny < localMinY) localMinY = ny;
+          if (nz < localMinZ) localMinZ = nz;
+          if (nx > localMaxX) localMaxX = nx;
+          if (ny > localMaxY) localMaxY = ny;
+          if (nz > localMaxZ) localMaxZ = nz;
+        }
+
+        if (section.normalOffset !== null && normal) {
+          const packed = new Int8Array(buffer, section.normalOffset, vertexCount * 3);
+          const normals = normal.array;
+
+          for (let i = 0; i < normals.length; i += 1) {
+            packed[i] = Math.round(Math.max(-1, Math.min(1, normals[i])) * 127);
+          }
+        }
+
+        if (section.uvOffset !== null && uv) {
+          new Float32Array(buffer, section.uvOffset, vertexCount * 2).set(uv.array);
+        }
+
+        const centerX = (localMinX + localMaxX) / 2;
+        const centerY = (localMinY + localMaxY) / 2;
+        const centerZ = (localMinZ + localMaxZ) / 2;
+        const radius =
+          Math.sqrt(
+            (localMaxX - localMinX) ** 2 +
+              (localMaxY - localMinY) ** 2 +
+              (localMaxZ - localMinZ) ** 2
+          ) / 2;
+
+        objects.push({
+          kind: object.isMesh ? "mesh" : "line",
+          target: targetScene === edgeScene ? "edge" : "scene",
+          vertexCount,
+          positionOffset: section.positionOffset,
+          normalOffset: section.normalOffset,
+          uvOffset: section.uvOffset,
+          castShadow: object.castShadow === true,
+          receiveShadow: object.receiveShadow === true,
+          renderOrder: object.renderOrder || 0,
+          boundingSphere: { center: [centerX, centerY, centerZ], radius },
+          material: section.materialDescriptor
+        });
+      });
+
+      return {
+        manifest: {
+          version: WORLD_SNAPSHOT_FORMAT,
+          byteLength: buffer.byteLength,
+          bounds: { min: [minX, minY, minZ], span: [spanX, spanY, spanZ] },
+          objects,
+          textures: Object.values(sharedMeta.textures),
+          images: Object.values(sharedMeta.images),
+          stats: {
+            objectCount: objects.length,
+            vertexCount: objects.reduce((sum, entry) => sum + entry.vertexCount, 0)
+          }
+        },
+        buffer
+      };
+    }
+
+    async function restoreWorldConsolidation(manifest, buffer) {
+      if (!THREE || !renderer || !manifest || manifest.version !== WORLD_SNAPSHOT_FORMAT) {
+        return false;
+      }
+
+      // Manifest and binary travel as two files; a mixed-version cache pair
+      // (fresh .json + stale .bin) must fail closed into the live build.
+      if (manifest.byteLength !== buffer.byteLength) {
+        return false;
+      }
+
+      let jsonMaterialsById = null;
+      const ownedMaterials = [];
+      const ownedTextures = [];
+
+      if (manifest.objects.some((entry) => entry.material?.strategy === "json")) {
+        const textureDefs = manifest.textures || [];
+        const imageDefs = manifest.images || [];
+        const images = {};
+
+        await Promise.all(
+          imageDefs.map(
+            (imageDef) =>
+              new Promise((resolve) => {
+                const image = new Image();
+                image.onload = () => {
+                  images[imageDef.uuid] = image;
+                  resolve();
+                };
+                image.onerror = () => resolve();
+                image.src = imageDef.url;
+              })
+          )
+        );
+
+        const textures = {};
+
+        textureDefs.forEach((textureDef) => {
+          const texture = new THREE.Texture(images[textureDef.image] || undefined);
+
+          if (textureDef.uuid) texture.uuid = textureDef.uuid;
+          if (textureDef.mapping !== undefined) texture.mapping = textureDef.mapping;
+          if (textureDef.channel !== undefined) texture.channel = textureDef.channel;
+          if (textureDef.magFilter !== undefined) texture.magFilter = textureDef.magFilter;
+          if (textureDef.minFilter !== undefined) texture.minFilter = textureDef.minFilter;
+          if (textureDef.colorSpace !== undefined) texture.colorSpace = textureDef.colorSpace;
+          if (textureDef.flipY !== undefined) texture.flipY = textureDef.flipY;
+          if (textureDef.format !== undefined) texture.format = textureDef.format;
+          if (textureDef.type !== undefined) texture.type = textureDef.type;
+          if (textureDef.anisotropy !== undefined) texture.anisotropy = textureDef.anisotropy;
+          if (textureDef.generateMipmaps !== undefined) texture.generateMipmaps = textureDef.generateMipmaps;
+          if (textureDef.premultiplyAlpha !== undefined) texture.premultiplyAlpha = textureDef.premultiplyAlpha;
+          if (textureDef.unpackAlignment !== undefined) texture.unpackAlignment = textureDef.unpackAlignment;
+          if (Array.isArray(textureDef.wrap)) {
+            texture.wrapS = textureDef.wrap[0];
+            texture.wrapT = textureDef.wrap[1];
+          }
+          if (Array.isArray(textureDef.repeat)) texture.repeat.fromArray(textureDef.repeat);
+          if (Array.isArray(textureDef.offset)) texture.offset.fromArray(textureDef.offset);
+          if (Array.isArray(textureDef.center)) texture.center.fromArray(textureDef.center);
+          if (textureDef.rotation !== undefined) texture.rotation = textureDef.rotation;
+          texture.needsUpdate = true;
+          textures[textureDef.uuid] = texture;
+          ownedTextures.push(texture);
+        });
+
+        const loader = new THREE.MaterialLoader();
+        loader.setTextures(textures);
+        jsonMaterialsById = new Map();
+
+        manifest.objects.forEach((entry) => {
+          if (entry.material?.strategy === "json" && !jsonMaterialsById.has(entry.material.json.uuid)) {
+            const parsed = loader.parse(entry.material.json);
+            jsonMaterialsById.set(entry.material.json.uuid, parsed);
+            ownedMaterials.push(parsed);
+          }
+        });
+      }
+
+      disposeWorldConsolidation();
+
+      const [minX, minY, minZ] = manifest.bounds.min;
+      const [spanX, spanY, spanZ] = manifest.bounds.span;
+      const objects = manifest.objects.map((entry) => {
+        const geometry = new THREE.BufferGeometry();
+
+        geometry.setAttribute(
+          "position",
+          new THREE.BufferAttribute(
+            new Uint16Array(buffer, entry.positionOffset, entry.vertexCount * 3),
+            3,
+            true
+          )
+        );
+
+        if (entry.normalOffset !== null && entry.normalOffset !== undefined) {
+          geometry.setAttribute(
+            "normal",
+            new THREE.BufferAttribute(
+              new Int8Array(buffer, entry.normalOffset, entry.vertexCount * 3),
+              3,
+              true
+            )
+          );
+        }
+
+        if (entry.uvOffset !== null && entry.uvOffset !== undefined) {
+          geometry.setAttribute(
+            "uv",
+            new THREE.BufferAttribute(
+              new Float32Array(buffer, entry.uvOffset, entry.vertexCount * 2),
+              2
+            )
+          );
+        }
+
+        geometry.boundingSphere = new THREE.Sphere(
+          new THREE.Vector3(...entry.boundingSphere.center),
+          entry.boundingSphere.radius
+        );
+        markPersistentGeometry(geometry);
+
+        const descriptor = entry.material || {};
+        let objectMaterial;
+
+        if (descriptor.strategy === "line") {
+          objectMaterial = lineMaterial(descriptor.color, descriptor.opacity);
+        } else if (descriptor.strategy === "json" && jsonMaterialsById) {
+          objectMaterial = jsonMaterialsById.get(descriptor.json.uuid);
+        } else {
+          const options = {
+            color: descriptor.color,
+            flatShading: descriptor.flatShading === true,
+            opacity: descriptor.opacity ?? 1,
+            transparent: descriptor.transparent === true,
+            depthWrite: descriptor.depthWrite !== false
+          };
+
+          if (descriptor.emissive) {
+            options.emissive = descriptor.emissive;
+            options.emissiveIntensity = descriptor.emissiveIntensity ?? 1;
+          }
+
+          objectMaterial = new THREE.MeshLambertMaterial(options);
+          ownedMaterials.push(objectMaterial);
+
+          if (descriptor.doubleSide) {
+            objectMaterial.side = THREE.DoubleSide;
+          }
+
+          if (descriptor.polygonOffset) {
+            objectMaterial.polygonOffset = true;
+            objectMaterial.polygonOffsetFactor = descriptor.polygonOffsetFactor;
+            objectMaterial.polygonOffsetUnits = descriptor.polygonOffsetUnits;
+          }
+        }
+
+        const object =
+          entry.kind === "mesh"
+            ? new THREE.Mesh(geometry, objectMaterial)
+            : new THREE.LineSegments(geometry, objectMaterial);
+
+        object.castShadow = entry.castShadow === true;
+        object.receiveShadow = entry.receiveShadow === true;
+        object.renderOrder = entry.renderOrder || 0;
+        // Dequantization rides the object transform: normalized [0,1]
+        // attribute values scale/translate back into world space.
+        object.position.set(minX, minY, minZ);
+        object.scale.set(spanX, spanY, spanZ);
+
+        if (entry.kind === "line") {
+          // biasEdgeSceneTowardCamera resets edge objects to this base each
+          // pass; it must equal the dequantization offset, not the origin.
+          object.userData.edgeBasePosition = new THREE.Vector3(minX, minY, minZ);
+        }
+
+        return {
+          object,
+          // scene/edgeScene may not exist yet when a snapshot restores at
+          // boot; resolve the actual Scene at attach time from the kind.
+          targetKind: entry.target === "edge" ? "edge" : "scene"
+        };
+      });
+
+      worldConsolidation = {
+        signature: `snapshot:${manifest.contentKey || ""}`,
+        fromSnapshot: true,
+        objects,
+        ownedMaterials,
+        ownedTextures
+      };
+      invalidateSceneCache();
+      return true;
     }
 
     function buildConsolidatedObjects(container, kind, targetScene) {
@@ -8803,6 +9212,28 @@
     }
 
     function renderWorldViewRoomGroups(now, views) {
+      // Snapshot-backed vista: the merged world was restored from a baked
+      // snapshot, so there are no per-room groups to build — just keep the
+      // snapshot objects attached. PLAY clears worldViewConsolidate, which
+      // routes back through the normal path and disposes the snapshot.
+      if (
+        worldConsolidation?.fromSnapshot &&
+        !app.isFlyoverMode &&
+        app.worldViewConsolidate === true &&
+        isWorldViewPlayMode()
+      ) {
+        worldViewRoomBuildPending = false;
+        detachWorldViewRoomGroups();
+        worldConsolidation.objects.forEach((entry) => {
+          const target = entry.targetKind === "edge" ? edgeScene : scene;
+
+          if (target && entry.object.parent !== target) {
+            target.add(entry.object);
+          }
+        });
+        return;
+      }
+
       const activeLevelIds = new Set();
       const consolidationParts = [];
       const isWideLevelTransition =
@@ -10181,6 +10612,8 @@
       useLevelPreviewCamera,
       invalidateSceneCache,
       prewarmAdjacentLevelTransition,
+      serializeWorldConsolidation,
+      restoreWorldConsolidation,
       renderScene,
       renderHoverFrame,
       dispose: disposeRenderer,
