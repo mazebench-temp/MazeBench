@@ -397,65 +397,6 @@
     }
 
     let neighborArrivalRenderTimeoutId = 0;
-    let worldViewFadeTickTimeoutId = 0;
-
-    function scheduleWorldViewFadeTicks() {
-      if (
-        !(app.flyoverRoomFadeIns instanceof Map) ||
-        app.flyoverRoomFadeIns.size === 0 ||
-        worldViewFadeTickTimeoutId
-      ) {
-        return;
-      }
-
-      worldViewFadeTickTimeoutId = window.setTimeout(() => {
-        worldViewFadeTickTimeoutId = 0;
-
-        if (
-          !app.isTransitioningLevel &&
-          !app.isPlanningWorldAction &&
-          !app.worldActionAnimation &&
-          typeof app.render === "function"
-        ) {
-          app.render();
-        }
-
-        scheduleWorldViewFadeTicks();
-      }, 120);
-    }
-
-    function registerWorldViewRoomFade(levelId) {
-      // Play-mode world view: arriving rooms fade in staggered outward from
-      // the current room, mirroring the flyover reveal ripple.
-      if (
-        app.isFlyoverMode ||
-        !levelId ||
-        Math.floor(Number(app.playSurroundingRadius) || 1) <= 1
-      ) {
-        return;
-      }
-
-      if (!(app.flyoverRoomFadeIns instanceof Map)) {
-        app.flyoverRoomFadeIns = new Map();
-      }
-
-      if (app.flyoverRoomFadeIns.has(levelId)) {
-        return;
-      }
-
-      const coordinates = parseWorldLevelId(levelId);
-      const currentCoordinates = parseWorldLevelId(app.currentLevelId);
-      const distance =
-        coordinates && currentCoordinates
-          ? Math.max(
-              Math.abs(coordinates.columnIndex - currentCoordinates.columnIndex),
-              Math.abs(coordinates.rowIndex - currentCoordinates.rowIndex)
-            )
-          : 0;
-
-      app.flyoverRoomFadeIns.set(levelId, performance.now() + Math.min(3000, distance * 130));
-      scheduleWorldViewFadeTicks();
-    }
 
     function scheduleNeighborArrivalRender() {
       // Neighbor states can arrive in bursts (hundreds in world view);
@@ -499,9 +440,7 @@
           idlePrepare: true,
           preloadAssets: app.preloadQueuedNeighborAssets === true
         })
-          .then((loadedState) => {
-            registerWorldViewRoomFade(loadedState?.levelId || levelId);
-
+          .then(() => {
             if (!app.deferNeighborLoadRenders) {
               scheduleNeighborArrivalRender();
             }

@@ -92,6 +92,22 @@
     const modelAssetCache = new Map();
     const outlineOffsetCache = new Map();
     const levelStateSignatureCache = new WeakMap();
+    // Level-state signatures are large per-tile strings; comparing or joining
+    // them per room per frame is expensive at world scale. Interning them to
+    // short tokens keeps equality checks exact while making the per-frame
+    // strings tiny.
+    const signatureTokenCache = new Map();
+
+    function signatureToken(signature) {
+      let token = signatureTokenCache.get(signature);
+
+      if (token === undefined) {
+        token = `s${signatureTokenCache.size + 1}`;
+        signatureTokenCache.set(signature, token);
+      }
+
+      return token;
+    }
     const groupLabelTextureCache = new Map();
     const groupLabelMaterialCache = new Map();
     const polycubeFaceCellsCache = new Map();
@@ -103,6 +119,9 @@
     const trackedStaticActorCodes = new Map();
     // World-view play: merged per-room groups cached across scene rebuilds.
     const worldViewRoomGroups = new Map();
+    // Set when the per-frame room-group build budget ran out; drives
+    // follow-up renders until the whole world has been built.
+    let worldViewRoomBuildPending = false;
     // Flyover whole-world: one consolidated snapshot of all room groups,
     // rebuilt only when the world settles after changes.
     let worldConsolidation = null;
@@ -6980,7 +6999,7 @@
     }
 
     function flyoverFadeAnimationSignature(now) {
-      if (!app.isFlyoverMode && !isWorldViewPlayMode()) {
+      if (!app.isFlyoverMode) {
         return "";
       }
 
@@ -7067,10 +7086,10 @@
       ];
 
       surroundingViews.forEach((view) => {
-        parts.push(`neighbor:${view.dx},${view.dy}:${levelStateSignature(view.levelState)}`);
+        parts.push(`neighbor:${view.dx},${view.dy}:${signatureToken(levelStateSignature(view.levelState))}`);
       });
 
-      parts.push(terrainScanSignature());
+      parts.push(signatureToken(terrainScanSignature()));
 
       app.state.actors.forEach((actor) => {
         parts.push(actorSignature(actor));
@@ -7100,10 +7119,10 @@
       ];
 
       surroundingViews.forEach((view) => {
-        parts.push(`neighbor:${view.dx},${view.dy}:${levelStateSignature(view.levelState)}`);
+        parts.push(`neighbor:${view.dx},${view.dy}:${signatureToken(levelStateSignature(view.levelState))}`);
       });
 
-      parts.push(terrainScanSignature());
+      parts.push(signatureToken(terrainScanSignature()));
 
       app.state.actors.forEach((actor) => {
         parts.push(actorSignature(actor));
@@ -7607,6 +7626,49 @@
       return flyoverLevelBrightness(app.currentLevelId, 1);
     }
 
+    // World level ids wrap around the grid, so a wide radius revisits the
+    // same room at multiple coordinates. The grid is static per world, so the
+    // deduped nearest-copy coordinate list is cached per anchor level.
+    const worldNeighborCoordsCache = new Map();
+
+    function worldNeighborCoords(levelId, radius) {
+      const key = `${levelId}:${radius}`;
+      let coords = worldNeighborCoordsCache.get(key);
+
+      if (coords) {
+        return coords;
+      }
+
+      const byLevelId = new Map();
+
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (dx === 0 && dy === 0) {
+            continue;
+          }
+
+          const neighborLevelId = app.adjacentWorldLevelId?.(levelId, dx, dy);
+
+          if (!neighborLevelId || neighborLevelId === levelId) {
+            continue;
+          }
+
+          const distance = Math.hypot(dx, dy);
+          const existing = byLevelId.get(neighborLevelId);
+
+          if (existing && existing.distance <= distance) {
+            continue;
+          }
+
+          byLevelId.set(neighborLevelId, { dx, dy, levelId: neighborLevelId, distance });
+        }
+      }
+
+      coords = Array.from(byLevelId.values());
+      worldNeighborCoordsCache.set(key, coords);
+      return coords;
+    }
+
     function surroundingLevelBrightness(dx, dy) {
       if (app.isFlyoverMode) {
         return 1;
@@ -7653,50 +7715,38 @@
 
       const currentState = runtimeLevelState();
       const views = [];
-      const radius = surroundingLevelRadius();
 
-      for (let dy = -radius; dy <= radius; dy += 1) {
-        for (let dx = -radius; dx <= radius; dx += 1) {
-          if (dx === 0 && dy === 0) {
-            continue;
-          }
+      worldNeighborCoords(app.currentLevelId, surroundingLevelRadius()).forEach((coord) => {
+        const levelId = coord.levelId;
+        const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
 
-          const levelId = app.adjacentWorldLevelId?.(app.currentLevelId, dx, dy);
-
-          if (!levelId) {
-            continue;
-          }
-
-          const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
-
-          if (!levelState) {
-            app.queueHorizontalNeighborLevelState?.(levelId);
-            continue;
-          }
-
-          if (
-            app.isFlyoverMode &&
-            app.flyoverRenderableLevelIds instanceof Set &&
-            !app.flyoverRenderableLevelIds.has(levelId)
-          ) {
-            continue;
-          }
-
-          if (!levelState.width || !levelState.height) {
-            continue;
-          }
-
-          views.push({
-            dx,
-            dy,
-            levelId,
-            levelState,
-            offset: surroundingLevelOffset(dx, dy, levelState, currentState),
-            brightness: surroundingLevelBrightness(dx, dy),
-            distance: Math.hypot(dx, dy)
-          });
+        if (!levelState) {
+          app.queueHorizontalNeighborLevelState?.(levelId);
+          return;
         }
-      }
+
+        if (
+          app.isFlyoverMode &&
+          app.flyoverRenderableLevelIds instanceof Set &&
+          !app.flyoverRenderableLevelIds.has(levelId)
+        ) {
+          return;
+        }
+
+        if (!levelState.width || !levelState.height) {
+          return;
+        }
+
+        views.push({
+          dx: coord.dx,
+          dy: coord.dy,
+          levelId,
+          levelState,
+          offset: surroundingLevelOffset(coord.dx, coord.dy, levelState, currentState),
+          brightness: surroundingLevelBrightness(coord.dx, coord.dy),
+          distance: coord.distance
+        });
+      });
 
       return views;
     }
@@ -8065,7 +8115,7 @@
     function worldViewRoomSignature(view, brightness) {
       return [
         view.levelId,
-        levelStateSignature(view.levelState),
+        signatureToken(levelStateSignature(view.levelState)),
         Math.round(brightness * 1000),
         edgeOutlinesEnabled() ? 1 : 0
       ].join(":");
@@ -8080,6 +8130,14 @@
           }
         });
       });
+    }
+
+    function attachWorldViewRoomEntry(entry, view) {
+      entry.group.position.set(view.offset.x, 0, view.offset.z);
+      entry.edgeGroup.position.set(view.offset.x, 0, view.offset.z);
+      entry.edgeGroup.userData.edgeBasePosition.set(view.offset.x, 0, view.offset.z);
+      scene.add(entry.group);
+      edgeScene.add(entry.edgeGroup);
     }
 
     function detachWorldViewRoomGroups() {
@@ -8133,7 +8191,10 @@
     function worldViewRoomBrightness(view, now) {
       let brightness = view.brightness;
 
-      if (usesRoomGroupWorld() && app.flyoverRoomFadeIns instanceof Map) {
+      // Quantized fade-ins rebuild the room group on every step, so they are
+      // reserved for flyover where the whole world is on screen. Play mode
+      // streams rooms in at final brightness; they are off-screen anyway.
+      if (app.isFlyoverMode && app.flyoverRoomFadeIns instanceof Map) {
         const startMs = app.flyoverRoomFadeIns.get(view.levelId);
 
         if (Number.isFinite(startMs)) {
@@ -8241,7 +8302,15 @@
         !app.isFlyoverMode &&
         app.levelTransition?.transitionData?.kind === "adjacent-scene" &&
         isWorldViewPlayMode();
+      // Play mode builds missing room groups nearest-first within a per-frame
+      // budget so the world streams in without blocking the frame. Flyover
+      // keeps synchronous builds: its reveal choreography expects every room
+      // to appear on the frame its fade starts.
+      const buildBudgetMs = app.isFlyoverMode ? Infinity : isWideLevelTransition ? 3 : 8;
+      const pendingBuilds = [];
       let allRoomsReady = true;
+
+      worldViewRoomBuildPending = false;
 
       views
         .slice()
@@ -8249,26 +8318,45 @@
         .forEach((view) => {
           const brightness = worldViewRoomBrightness(view, now);
           const signature = worldViewRoomSignature(view, brightness);
-          let entry = worldViewRoomGroups.get(view.levelId);
-
-          if (!entry || (!isWideLevelTransition && entry.signature !== signature)) {
-            if (entry) {
-              disposeWorldViewRoomEntry(entry);
-            }
-
-            entry = buildWorldViewRoomEntry(view, brightness, signature, now);
-            worldViewRoomGroups.set(view.levelId, entry);
-            allRoomsReady = false;
-          }
+          const entry = worldViewRoomGroups.get(view.levelId);
 
           activeLevelIds.add(view.levelId);
+
+          if (!entry || (!isWideLevelTransition && entry.signature !== signature)) {
+            pendingBuilds.push({ view, brightness, signature });
+
+            if (!entry) {
+              return;
+            }
+          }
+
+          attachWorldViewRoomEntry(entry, view);
           consolidationParts.push(`${view.levelId}@${view.offset.x},${view.offset.z}:${entry.signature}`);
-          entry.group.position.set(view.offset.x, 0, view.offset.z);
-          entry.edgeGroup.position.set(view.offset.x, 0, view.offset.z);
-          entry.edgeGroup.userData.edgeBasePosition.set(view.offset.x, 0, view.offset.z);
-          scene.add(entry.group);
-          edgeScene.add(entry.edgeGroup);
         });
+
+      const buildStart = performance.now();
+
+      pendingBuilds.sort((a, b) => a.view.distance - b.view.distance);
+
+      for (const pending of pendingBuilds) {
+        if (performance.now() - buildStart > buildBudgetMs) {
+          worldViewRoomBuildPending = true;
+          allRoomsReady = false;
+          break;
+        }
+
+        const previous = worldViewRoomGroups.get(pending.view.levelId);
+
+        if (previous) {
+          disposeWorldViewRoomEntry(previous);
+        }
+
+        const entry = buildWorldViewRoomEntry(pending.view, pending.brightness, pending.signature, now);
+
+        worldViewRoomGroups.set(pending.view.levelId, entry);
+        attachWorldViewRoomEntry(entry, pending.view);
+        allRoomsReady = false;
+      }
 
       worldViewRoomGroups.forEach((entry, levelId) => {
         if (!activeLevelIds.has(levelId)) {
@@ -8277,18 +8365,18 @@
         }
       });
 
-      // Flyover flight and wide play-mode transitions render the whole world
-      // continuously; consolidate per-room groups into a handful of merged
-      // meshes once the set is stable.
-      if (!(app.isFlyoverMode && app.flyoverWholeWorld === true) && !isWideLevelTransition) {
+      // Only flyover flight consolidates the whole world into merged meshes:
+      // its camera sees every room at once, so draw-call count dominates.
+      // Play mode (including wide transitions) keeps per-room groups so the
+      // camera frustum culls off-screen rooms instead of drawing a merged
+      // world-sized mesh every frame.
+      if (!(app.isFlyoverMode && app.flyoverWholeWorld === true)) {
         disposeWorldConsolidation();
         return;
       }
 
       const fadesPending =
-        !isWideLevelTransition &&
-        app.flyoverRoomFadeIns instanceof Map &&
-        app.flyoverRoomFadeIns.size > 0;
+        app.flyoverRoomFadeIns instanceof Map && app.flyoverRoomFadeIns.size > 0;
 
       if (!allRoomsReady || fadesPending || views.length === 0) {
         disposeWorldConsolidation();
@@ -8439,68 +8527,42 @@
       };
     }
 
-    function transitionLevelIdForCoord(coord, transition, outgoingState, incomingState) {
-      const fromOutgoing = app.adjacentWorldLevelId?.(outgoingState.levelId, coord.x, coord.y);
-
-      if (fromOutgoing) {
-        return fromOutgoing;
-      }
-
-      return app.adjacentWorldLevelId?.(
-        incomingState.levelId,
-        coord.x - transition.dx,
-        coord.y - transition.dy
-      );
-    }
-
-    function transitionLevelStateForCoord(coord, transition, outgoingState, incomingState) {
-      if (coord.x === 0 && coord.y === 0) {
-        return outgoingState;
-      }
-
-      if (coord.x === transition.dx && coord.y === transition.dy) {
-        return incomingState;
-      }
-
-      const levelId = transitionLevelIdForCoord(coord, transition, outgoingState, incomingState);
-
-      if (!levelId) {
-        return null;
-      }
-
-      const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
-
-      if (!levelState) {
-        app.queueHorizontalNeighborLevelState?.(levelId);
-      }
-
-      return levelState;
-    }
-
     function transitionSurroundingLevelViews(transition, outgoingState, incomingState, incomingOffset, progress) {
-      const coords = new Map();
       const radius = surroundingLevelRadius();
+      // Union of both neighborhoods, deduped to the nearest copy of each
+      // room (world level ids wrap around the grid).
+      const candidatesByLevelId = new Map();
 
-      for (let y = -radius; y <= radius; y += 1) {
-        for (let x = -radius; x <= radius; x += 1) {
-          coords.set(`${x},${y}`, { x, y });
-          coords.set(`${transition.dx + x},${transition.dy + y}`, {
-            x: transition.dx + x,
-            y: transition.dy + y
-          });
-        }
-      }
-
-      const views = [];
-
-      coords.forEach((coord) => {
-        const isOutgoingRoom = coord.x === 0 && coord.y === 0;
-        const isIncomingRoom = coord.x === transition.dx && coord.y === transition.dy;
-
-        if (isOutgoingRoom || isIncomingRoom) {
+      const addCandidate = (levelId, x, y) => {
+        if (
+          !levelId ||
+          levelId === outgoingState.levelId ||
+          levelId === incomingState.levelId
+        ) {
           return;
         }
 
+        const distance = Math.hypot(x - progress * transition.dx, y - progress * transition.dy);
+        const existing = candidatesByLevelId.get(levelId);
+
+        if (existing && existing.distance <= distance) {
+          return;
+        }
+
+        candidatesByLevelId.set(levelId, { levelId, x, y, distance });
+      };
+
+      worldNeighborCoords(outgoingState.levelId, radius).forEach((coord) => {
+        addCandidate(coord.levelId, coord.dx, coord.dy);
+      });
+      worldNeighborCoords(incomingState.levelId, radius).forEach((coord) => {
+        addCandidate(coord.levelId, coord.dx + transition.dx, coord.dy + transition.dy);
+      });
+
+      const views = [];
+
+      candidatesByLevelId.forEach((candidate) => {
+        const coord = { x: candidate.x, y: candidate.y };
         const inOutgoingNeighborhood = Math.abs(coord.x) <= radius && Math.abs(coord.y) <= radius;
         const inIncomingNeighborhood =
           Math.abs(coord.x - transition.dx) <= radius &&
@@ -8518,17 +8580,14 @@
           return;
         }
 
-        const levelState = transitionLevelStateForCoord(coord, transition, outgoingState, incomingState);
+        const levelState = app.cachedHorizontalNeighborLevelState?.(candidate.levelId);
 
-        if (!levelState?.width || !levelState?.height) {
+        if (!levelState) {
+          app.queueHorizontalNeighborLevelState?.(candidate.levelId);
           return;
         }
 
-        const levelId =
-          levelState.levelId ||
-          transitionLevelIdForCoord(coord, transition, outgoingState, incomingState);
-
-        if (!levelId) {
+        if (!levelState.width || !levelState.height) {
           return;
         }
 
@@ -8547,12 +8606,12 @@
           coord,
           dx: coord.x,
           dy: coord.y,
-          levelId,
+          levelId: candidate.levelId,
           levelState,
           offset,
           brightness: neighboringRoomBrightness,
           alpha,
-          distance: Math.hypot(coord.x - progress * transition.dx, coord.y - progress * transition.dy)
+          distance: candidate.distance
         });
       });
 
@@ -9346,6 +9405,7 @@
       const contentChanged =
         forceRender ||
         !hasRenderedScene ||
+        worldViewRoomBuildPending ||
         contentSignature !== lastSceneContentSignature;
       const shadowAnimationChanged = !app.isFlyoverMode && hasShadowAffectingAnimation();
       let shadowSignature = lastShadowSceneSignature;
@@ -9358,7 +9418,12 @@
           shadowSignature !== lastShadowSceneSignature;
       }
 
-      if (!forceRender && hasRenderedScene && signature === lastSceneSignature) {
+      if (
+        !forceRender &&
+        hasRenderedScene &&
+        !worldViewRoomBuildPending &&
+        signature === lastSceneSignature
+      ) {
         // sceneCanvas already holds this exact frame; nothing to redraw.
         return true;
       }
@@ -9371,6 +9436,8 @@
       }
 
       resetScene();
+      // Re-set by renderWorldViewRoomGroups when the build budget runs out.
+      worldViewRoomBuildPending = false;
 
       if (app.worldActionAnimation) {
         renderWorldActionAnimation(now);
@@ -9405,6 +9472,13 @@
       lastSceneContentSignature = forceRender ? "" : contentSignature;
       lastShadowSceneSignature = shouldUpdateShadowMap ? shadowSignature : lastShadowSceneSignature;
       hasRenderedScene = true;
+
+      if (worldViewRoomBuildPending) {
+        // The room-group build budget ran out; keep rendering frames until
+        // the remaining rooms have been built in the background.
+        window.requestAnimationFrame((frameNow) => (app.renderOncePerFrame || app.render)(frameNow));
+      }
+
       return true;
     }
 
