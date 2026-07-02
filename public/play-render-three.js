@@ -155,6 +155,7 @@
       lastShadowSceneSignature = "";
       hasRenderedScene = false;
       terrainScanCacheState = null;
+      worldViewRoomSignatureMemo.clear();
     }
 
     function renderOffsetX() {
@@ -2309,62 +2310,147 @@
         return null;
       }
 
-      const attributeMeta = new Map();
-      const attributeValues = new Map();
+      // Batch keys guarantee identical attribute sets (attributeBatchSignature),
+      // so sizes can be summed up front and every attribute written straight
+      // into one preallocated array — no clone()/toNonIndexed()/applyMatrix4()
+      // intermediates. Indexed children are expanded through their index.
+      const first = children[0].geometry;
+      const attributeNames = Object.keys(first.attributes);
+      const merged = new Map();
+      let vertexCount = 0;
 
       children.forEach((child) => {
-        const sourceGeometry = child.geometry.index
-          ? child.geometry.toNonIndexed()
-          : child.geometry.clone();
+        const geometry = child.geometry;
+        vertexCount += geometry.index ? geometry.index.count : geometry.attributes.position.count;
+      });
 
-        sourceGeometry.applyMatrix4(child.matrixWorld);
-        Object.keys(sourceGeometry.attributes).forEach((name) => {
-          const attribute = sourceGeometry.getAttribute(name);
+      attributeNames.forEach((name) => {
+        const attribute = first.getAttribute(name);
 
-          if (!attribute) {
-            return;
-          }
-
-          if (!attributeMeta.has(name)) {
-            attributeMeta.set(name, {
-              ArrayType: attribute.array.constructor,
-              itemSize: attribute.itemSize,
-              normalized: attribute.normalized
-            });
-            attributeValues.set(name, []);
-          }
-
-          // Collect the typed arrays and concatenate once at the end;
-          // push(...array) overflows the argument limit on large batches.
-          attributeValues.get(name).push(attribute.array);
+        merged.set(name, {
+          array: new attribute.array.constructor(vertexCount * attribute.itemSize),
+          itemSize: attribute.itemSize,
+          normalized: attribute.normalized
         });
-        sourceGeometry.dispose();
+      });
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let minZ = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let maxZ = -Infinity;
+      let vertexOffset = 0;
+
+      children.forEach((child) => {
+        const geometry = child.geometry;
+        const index = geometry.index ? geometry.index.array : null;
+        const count = index ? index.length : geometry.attributes.position.count;
+        const e = child.matrixWorld.elements;
+        const translationOnly =
+          e[0] === 1 && e[5] === 1 && e[10] === 1 && e[15] === 1 &&
+          e[1] === 0 && e[2] === 0 && e[3] === 0 &&
+          e[4] === 0 && e[6] === 0 && e[7] === 0 &&
+          e[8] === 0 && e[9] === 0 && e[11] === 0;
+        const rotates = !translationOnly;
+        // Inverse-transpose for normals so rotated/scaled children (model
+        // props) light correctly; identity for the translation-only fast
+        // path that covers all room-block geometry.
+        const n = rotates
+          ? new THREE.Matrix3().getNormalMatrix(child.matrixWorld).elements
+          : null;
+
+        attributeNames.forEach((name) => {
+          const source = geometry.getAttribute(name);
+          const sourceArray = source.array;
+          const itemSize = source.itemSize;
+          const target = merged.get(name).array;
+          const targetBase = vertexOffset * itemSize;
+          const isPosition = name === "position";
+          const isNormal = name === "normal";
+
+          for (let i = 0; i < count; i += 1) {
+            const si = (index ? index[i] : i) * itemSize;
+            const ti = targetBase + i * itemSize;
+
+            if (isPosition && itemSize === 3) {
+              const x = sourceArray[si];
+              const y = sourceArray[si + 1];
+              const z = sourceArray[si + 2];
+              let wx;
+              let wy;
+              let wz;
+
+              if (rotates) {
+                wx = e[0] * x + e[4] * y + e[8] * z + e[12];
+                wy = e[1] * x + e[5] * y + e[9] * z + e[13];
+                wz = e[2] * x + e[6] * y + e[10] * z + e[14];
+              } else {
+                wx = x + e[12];
+                wy = y + e[13];
+                wz = z + e[14];
+              }
+
+              target[ti] = wx;
+              target[ti + 1] = wy;
+              target[ti + 2] = wz;
+
+              if (wx < minX) minX = wx;
+              if (wy < minY) minY = wy;
+              if (wz < minZ) minZ = wz;
+              if (wx > maxX) maxX = wx;
+              if (wy > maxY) maxY = wy;
+              if (wz > maxZ) maxZ = wz;
+            } else if (isNormal && itemSize === 3 && rotates) {
+              const x = sourceArray[si];
+              const y = sourceArray[si + 1];
+              const z = sourceArray[si + 2];
+              let nx = n[0] * x + n[3] * y + n[6] * z;
+              let ny = n[1] * x + n[4] * y + n[7] * z;
+              let nz = n[2] * x + n[5] * y + n[8] * z;
+              const length = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+
+              target[ti] = nx / length;
+              target[ti + 1] = ny / length;
+              target[ti + 2] = nz / length;
+            } else {
+              for (let c = 0; c < itemSize; c += 1) {
+                target[ti + c] = sourceArray[si + c];
+              }
+            }
+          }
+        });
+
+        vertexOffset += count;
       });
 
       const geometry = new THREE.BufferGeometry();
 
-      attributeValues.forEach((arrays, name) => {
-        const meta = attributeMeta.get(name);
-        let totalLength = 0;
-
-        arrays.forEach((array) => {
-          totalLength += array.length;
-        });
-
-        const merged = new meta.ArrayType(totalLength);
-        let offset = 0;
-
-        arrays.forEach((array) => {
-          merged.set(array, offset);
-          offset += array.length;
-        });
-
+      merged.forEach((entry, name) => {
         geometry.setAttribute(
           name,
-          new THREE.BufferAttribute(merged, meta.itemSize, meta.normalized)
+          new THREE.BufferAttribute(entry.array, entry.itemSize, entry.normalized)
         );
       });
-      geometry.computeBoundingSphere();
+
+      // Box-derived sphere: slightly conservative (safer culling), skips
+      // computeBoundingSphere's extra full pass over the merged positions.
+      if (vertexCount > 0 && Number.isFinite(minX)) {
+        const center = new THREE.Vector3(
+          (minX + maxX) / 2,
+          (minY + maxY) / 2,
+          (minZ + maxZ) / 2
+        );
+        const radius =
+          Math.sqrt(
+            (maxX - minX) ** 2 + (maxY - minY) ** 2 + (maxZ - minZ) ** 2
+          ) / 2;
+
+        geometry.boundingSphere = new THREE.Sphere(center, radius);
+      } else {
+        geometry.computeBoundingSphere();
+      }
+
       return geometry;
     }
 
@@ -2600,6 +2686,13 @@
       // the side quads directly. This is the hottest geometry builder in
       // full-world room meshing.
       const positions = [];
+      const normals = [];
+
+      const pushQuadNormal = (nx, ny, nz) => {
+        for (let i = 0; i < 6; i += 1) {
+          normals.push(nx, ny, nz);
+        }
+      };
 
       cells.forEach((cell) => {
         // Top cap (y = 0), normal +Y — same winding as componentTopPlaneGeometry.
@@ -2609,6 +2702,7 @@
           [cell.right, 0, cell.bottom],
           [cell.right, 0, cell.top]
         ]);
+        pushQuadNormal(0, 1, 0);
         // Bottom cap (y = -height), normal -Y.
         pushQuadPositions(positions, [
           [cell.left, -height, cell.top],
@@ -2616,11 +2710,14 @@
           [cell.right, -height, cell.bottom],
           [cell.left, -height, cell.bottom]
         ]);
+        pushQuadNormal(0, -1, 0);
       });
 
       // One outward-facing quad per boundary segment (outer loops are wound
       // clockwise in XZ by orderedBoundaryLoops, holes counter-clockwise, so
-      // the same vertex order faces away from the solid for both).
+      // the same vertex order faces away from the solid for both). Outward
+      // normal for a segment heading (dx, dz) is (dz, 0, -dx) — matches the
+      // quad winding's cross product: north edges (+X heading) face -Z.
       orderedBoundaryLoops(cells).forEach((loop) => {
         for (let index = 0; index < loop.length - 1; index += 1) {
           const from = loop[index];
@@ -2632,12 +2729,16 @@
             [to.x, -height, to.z],
             [from.x, -height, from.z]
           ]);
+
+          const dx = Math.sign(to.x - from.x);
+          const dz = Math.sign(to.z - from.z);
+          pushQuadNormal(dz, 0, -dx);
         }
       });
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      geometry.computeVertexNormals();
+      geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
 
       if (cacheKey) {
         cacheGeometry(cacheKey, geometry);
@@ -2650,11 +2751,23 @@
       return `${x},${y},${z}`;
     }
 
+    // Same voxels array flows through polycubeGeometry, polycubeEdgeGeometry
+    // and collectPolycubeFaceCells in a single build; derive its signature
+    // once. Voxel arrays are built fresh per region and never mutated after.
+    const polycubeVoxelSignatureMemo = new WeakMap();
+
     function polycubeVoxelSignature(voxels) {
-      return voxels
-        .map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z))
-        .sort()
-        .join("|");
+      let signature = polycubeVoxelSignatureMemo.get(voxels);
+
+      if (signature === undefined) {
+        signature = voxels
+          .map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z))
+          .sort()
+          .join("|");
+        polycubeVoxelSignatureMemo.set(voxels, signature);
+      }
+
+      return signature;
     }
 
     function polycubeFaceKey(kind, plane) {
@@ -2939,38 +3052,62 @@
       }
 
       const positions = [];
+      const normals = [];
+      const faceNormals = {
+        top: [0, 1, 0],
+        bottom: [0, -1, 0],
+        xplus: [1, 0, 0],
+        xminus: [-1, 0, 0],
+        zplus: [0, 0, 1],
+        zminus: [0, 0, -1]
+      };
 
       collectPolycubeFaceCells(voxels).forEach((faceGroup) => {
+        const [nx, ny, nz] = faceNormals[faceGroup.kind] || [0, 1, 0];
+
         faceGroup.cells.forEach((cellKey) => {
           const [a, b] = cellKey.split(",").map(Number);
           addPolycubeFaceQuad(positions, faceGroup.kind, faceGroup.plane, a, b);
+
+          for (let i = 0; i < 6; i += 1) {
+            normals.push(nx, ny, nz);
+          }
         });
       });
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      geometry.computeVertexNormals();
+      geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
       cacheGeometry(cacheKey, geometry);
       return geometry;
     }
 
     function polycubeEdgeSegmentKey(from, to) {
-      const keyParts = [from, to].map((point) =>
-        point.map((value) => Math.round(value * 1000)).join(",")
-      ).sort();
+      // Order-insensitive without array/map/sort allocations — this runs for
+      // every candidate edge segment in every polycube build.
+      const ax = Math.round(from[0] * 1000);
+      const ay = Math.round(from[1] * 1000);
+      const az = Math.round(from[2] * 1000);
+      const bx = Math.round(to[0] * 1000);
+      const by = Math.round(to[1] * 1000);
+      const bz = Math.round(to[2] * 1000);
 
-      return `${keyParts[0]}:${keyParts[1]}`;
+      if (ax < bx || (ax === bx && (ay < by || (ay === by && az <= bz)))) {
+        return ax + "," + ay + "," + az + ":" + bx + "," + by + "," + bz;
+      }
+
+      return bx + "," + by + "," + bz + ":" + ax + "," + ay + "," + az;
     }
 
-    function addPolycubeEdgeSegment(positions, seenSegments, from, to) {
-      const key = polycubeEdgeSegmentKey(from, to);
+    function addPolycubeEdgeSegment(positions, seenSegments, from, to, key = null) {
+      const segmentKey = key || polycubeEdgeSegmentKey(from, to);
 
-      if (seenSegments.has(key)) {
+      if (seenSegments.has(segmentKey)) {
         return;
       }
 
-      seenSegments.add(key);
-      positions.push(...from, ...to);
+      seenSegments.add(segmentKey);
+      positions.push(from[0], from[1], from[2], to[0], to[1], to[2]);
     }
 
     function addPolycubeSuppressedEdge(suppressedEdges, from, to) {
@@ -3223,8 +3360,9 @@
       suppressedEdges,
       options = {}
     ) {
+      const hasIceCover = Boolean(options?.iceSlopeCoveredTopFaceCells);
       const visibleCells =
-        faceGroup.kind === "top" && options?.iceSlopeCoveredTopFaceCells
+        faceGroup.kind === "top" && hasIceCover
           ? new Set(
               Array.from(faceGroup.cells).filter(
                 (cellKey) => !options.iceSlopeCoveredTopFaceCells.has(`${faceGroup.plane}:${cellKey}`)
@@ -3232,55 +3370,84 @@
             )
           : faceGroup.cells;
 
-      faceGroup.cells.forEach((cellKey) => {
-        if (!visibleCells.has(cellKey)) {
-          return;
-        }
+      // Packed-integer mirror of visibleCells so the 4-neighbor tests in the
+      // hot loop are integer Set lookups instead of template-string builds.
+      // Cells parse once here instead of per string key.
+      const packCell = (a, b) => (a + 512) * 4096 + (b + 512);
+      const visiblePacked = new Set();
+      const parsedCells = [];
 
-        const [a, b] = cellKey.split(",").map(Number);
-        const coveredTopCellKeyForSideFace = () => {
-          if (
-            !options?.iceSlopeCoveredTopFaceCells ||
-            !["xplus", "xminus", "zplus", "zminus"].includes(faceGroup.kind)
-          ) {
-            return null;
-          }
+      visibleCells.forEach((cellKey) => {
+        const comma = cellKey.indexOf(",");
+        const a = Number(cellKey.slice(0, comma));
+        const b = Number(cellKey.slice(comma + 1));
 
+        visiblePacked.add(packCell(a, b));
+        parsedCells.push(a, b);
+      });
+
+      const isSideFace =
+        faceGroup.kind === "xplus" ||
+        faceGroup.kind === "xminus" ||
+        faceGroup.kind === "zplus" ||
+        faceGroup.kind === "zminus";
+
+      for (let cellIndex = 0; cellIndex < parsedCells.length; cellIndex += 2) {
+        const a = parsedCells[cellIndex];
+        const b = parsedCells[cellIndex + 1];
+        let sideFaceCoveredTopCellKey = null;
+
+        if (hasIceCover && isSideFace) {
           if (faceGroup.kind === "xplus" || faceGroup.kind === "xminus") {
             const x = faceGroup.kind === "xplus" ? faceGroup.plane - 1 : faceGroup.plane;
-            return `${b + 1}:${x},${a}`;
+            sideFaceCoveredTopCellKey = `${b + 1}:${x},${a}`;
+          } else {
+            const y = faceGroup.kind === "zplus" ? faceGroup.plane - 1 : faceGroup.plane;
+            sideFaceCoveredTopCellKey = `${b + 1}:${a},${y}`;
+          }
+        }
+
+        // Neighbor deltas: [da, db, fromA, fromB, toA, toB]
+        for (let n = 0; n < 4; n += 1) {
+          let neighborPacked;
+          let fromA;
+          let fromB;
+          let toA;
+          let toB;
+
+          if (n === 0) {
+            neighborPacked = packCell(a - 1, b);
+            fromA = a; fromB = b; toA = a; toB = b + 1;
+          } else if (n === 1) {
+            neighborPacked = packCell(a + 1, b);
+            fromA = a + 1; fromB = b; toA = a + 1; toB = b + 1;
+          } else if (n === 2) {
+            neighborPacked = packCell(a, b - 1);
+            fromA = a; fromB = b; toA = a + 1; toB = b;
+          } else {
+            neighborPacked = packCell(a, b + 1);
+            fromA = a; fromB = b + 1; toA = a + 1; toB = b + 1;
           }
 
-          const y = faceGroup.kind === "zplus" ? faceGroup.plane - 1 : faceGroup.plane;
-          return `${b + 1}:${a},${y}`;
-        };
-        const sideFaceCoveredTopCellKey = coveredTopCellKeyForSideFace();
-        const neighbors = [
-          { key: `${a - 1},${b}`, from: [a, b], to: [a, b + 1] },
-          { key: `${a + 1},${b}`, from: [a + 1, b], to: [a + 1, b + 1] },
-          { key: `${a},${b - 1}`, from: [a, b], to: [a + 1, b] },
-          { key: `${a},${b + 1}`, from: [a, b + 1], to: [a + 1, b + 1] }
-        ];
-
-        neighbors.forEach((edge) => {
-          if (visibleCells.has(edge.key)) {
-            return;
+          if (visiblePacked.has(neighborPacked)) {
+            continue;
           }
 
           if (
             sideFaceCoveredTopCellKey &&
-            edge.from[1] === b + 1 &&
-            edge.to[1] === b + 1 &&
+            fromB === b + 1 &&
+            toB === b + 1 &&
             options.iceSlopeCoveredTopFaceCells.has(sideFaceCoveredTopCellKey)
           ) {
-            return;
+            continue;
           }
 
-          const from = polycubePointForFace(faceGroup.kind, faceGroup.plane, edge.from[0], edge.from[1]);
-          const to = polycubePointForFace(faceGroup.kind, faceGroup.plane, edge.to[0], edge.to[1]);
+          const from = polycubePointForFace(faceGroup.kind, faceGroup.plane, fromA, fromB);
+          const to = polycubePointForFace(faceGroup.kind, faceGroup.plane, toA, toB);
+          const segmentKey = polycubeEdgeSegmentKey(from, to);
 
-          if (suppressedEdges.has(polycubeEdgeSegmentKey(from, to))) {
-            return;
+          if (suppressedEdges.has(segmentKey)) {
+            continue;
           }
 
           if (
@@ -3291,22 +3458,59 @@
               options
             )
           ) {
-            return;
+            continue;
           }
 
-          addPolycubeEdgeSegment(
-            positions,
-            seenSegments,
-            from,
-            to
-          );
-        });
-      });
+          addPolycubeEdgeSegment(positions, seenSegments, from, to, segmentKey);
+        }
+      }
+    }
+
+    // state -> boolean: does this level contain any ice slope? Ice-slope
+    // contact signatures are expensive and run before the edge-geometry
+    // cache lookup, so rooms without slopes (the vast majority) pay for
+    // nothing. WeakMap self-evicts with the state object.
+    const iceSlopePresenceMemo = new WeakMap();
+
+    function stateHasIceSlopes(state) {
+      if (!state?.terrain) {
+        return false;
+      }
+
+      let has = iceSlopePresenceMemo.get(state);
+
+      if (has === undefined) {
+        has = false;
+
+        outer: for (let y = 0; y < state.height; y += 1) {
+          for (let x = 0; x < state.width; x += 1) {
+            if (renderTerrainLayersAt(x, y, state).some((layer) => layer?.type === "ice_slope")) {
+              has = true;
+              break outer;
+            }
+          }
+        }
+
+        iceSlopePresenceMemo.set(state, has);
+      }
+
+      return has;
     }
 
     function polycubeEdgeGeometry(voxels, options = {}) {
-      const suppressIceSlopeSideContacts = options?.suppressIceSlopeContacts === true;
-      const suppressIceSlopeTopContacts = options?.suppressIceSlopeTopContacts === true;
+      const wantsIceSideContacts = options?.suppressIceSlopeContacts === true;
+      const wantsIceTopContacts = options?.suppressIceSlopeTopContacts === true;
+      // Slope contacts can only exist when this room or a boundary neighbor
+      // actually contains an ice slope; skip the per-voxel signature work
+      // entirely otherwise.
+      const anyIceNearby =
+        (wantsIceSideContacts || wantsIceTopContacts) &&
+        (stateHasIceSlopes(renderState()) ||
+          [[-1, 0], [1, 0], [0, -1], [0, 1]].some(([dx, dy]) =>
+            stateHasIceSlopes(neighborLevelStateForBoundary(dx, dy))
+          ));
+      const suppressIceSlopeSideContacts = wantsIceSideContacts && anyIceNearby;
+      const suppressIceSlopeTopContacts = wantsIceTopContacts && anyIceNearby;
       const iceSlopeContactSignature = suppressIceSlopeSideContacts || suppressIceSlopeTopContacts
         ? iceSlopeContactSignatureForVoxels(voxels, options.now, {
             includeSideContacts: suppressIceSlopeSideContacts,
@@ -4858,12 +5062,47 @@
       return merged;
     }
 
-    function terrainPieceDescriptorsAt(x, y, now = performance.now()) {
-      const descriptors = renderTerrainLayersAt(x, y)
-        .map((layer) => terrainPieceDescriptorForLayer(layer, x, y, now))
-        .filter(Boolean);
+    // preparedState -> Map(tileIndex -> descriptors). Neighbor/world rooms
+    // are static (no animations; raised sets baked at prepare time), so their
+    // per-tile descriptors are pure functions of the prepared state. The
+    // polycube edge pass re-samples tiles 4-5x each; memoizing collapses
+    // ~330k computations per full-world build to one per tile. WeakMap
+    // self-evicts when a prepared state is replaced.
+    const terrainPieceDescriptorMemo = new WeakMap();
 
-      return mergeStackedTerrainPieces(descriptors, x, y);
+    function terrainPieceDescriptorsAt(x, y, now = performance.now()) {
+      const state = renderState();
+      const cacheable = activeRenderContext?.role === "neighbor" && state?.terrain;
+      let byTile = null;
+
+      if (cacheable) {
+        byTile = terrainPieceDescriptorMemo.get(state);
+
+        if (!byTile) {
+          byTile = new Map();
+          terrainPieceDescriptorMemo.set(state, byTile);
+        }
+
+        const hit = byTile.get(y * state.width + x);
+
+        if (hit) {
+          return hit;
+        }
+      }
+
+      const descriptors = mergeStackedTerrainPieces(
+        renderTerrainLayersAt(x, y)
+          .map((layer) => terrainPieceDescriptorForLayer(layer, x, y, now))
+          .filter(Boolean),
+        x,
+        y
+      );
+
+      if (byTile) {
+        byTile.set(y * state.width + x, descriptors);
+      }
+
+      return descriptors;
     }
 
     function shouldOutlineTerrainRegion(descriptor) {
@@ -8342,14 +8581,44 @@
         .join(",");
     }
 
+    const worldViewRoomSignatureMemo = new Map();
+
     function worldViewRoomSignature(view, brightness) {
-      return [
+      // While builds stream, this runs for every view every frame; the
+      // boundary token derivation dominates. All inputs are captured in the
+      // memo key: state identity, brightness, edge toggle, and the neighbor
+      // cache version (bumped by rememberHorizontalNeighborLevelState).
+      const bKey = Math.round(brightness * 1000);
+      const edges = edgeOutlinesEnabled() ? 1 : 0;
+      const version = app.horizontalNeighborStatesVersion || 0;
+      const hit = worldViewRoomSignatureMemo.get(view.levelId);
+
+      if (
+        hit &&
+        hit.bKey === bKey &&
+        hit.edges === edges &&
+        hit.version === version &&
+        hit.state === view.levelState
+      ) {
+        return hit.value;
+      }
+
+      const value = [
         view.levelId,
         signatureToken(levelStateSignature(view.levelState)),
-        Math.round(brightness * 1000),
-        edgeOutlinesEnabled() ? 1 : 0,
+        bKey,
+        edges,
         boundaryNeighborStatesToken(view.levelId)
       ].join(":");
+
+      worldViewRoomSignatureMemo.set(view.levelId, {
+        bKey,
+        edges,
+        version,
+        state: view.levelState,
+        value
+      });
+      return value;
     }
 
     function disposeWorldViewRoomEntry(entry) {
@@ -8544,7 +8813,15 @@
       // budget so the world streams in without blocking the frame. Flyover
       // keeps synchronous builds: its reveal choreography expects every room
       // to appear on the frame its fade starts.
-      const buildBudgetMs = app.isFlyoverMode ? Infinity : isWideLevelTransition ? 3 : 32;
+      // Hosts that prime every level state up front (mazebench.com home
+      // vista) opt into one synchronous whole-world build; play mode keeps
+      // the per-frame budget so frames never block.
+      const buildBudgetMs =
+        app.isFlyoverMode || app.worldViewSynchronousBuild === true
+          ? Infinity
+          : isWideLevelTransition
+            ? 3
+            : 32;
       const pendingBuilds = [];
       let allRoomsReady = true;
 
@@ -8599,7 +8876,12 @@
         // seams and need a full re-mesh per neighbor arrival (up to 5 builds
         // per frontier room). Wait for its neighbors instead — the fetch
         // stream keeps frames coming, so it builds once, correctly.
-        if (pending.awaitingNeighbors && !app.isFlyoverMode && !previous) {
+        if (
+          pending.awaitingNeighbors &&
+          !app.isFlyoverMode &&
+          app.worldViewSynchronousBuild !== true &&
+          !previous
+        ) {
           worldViewRoomBuildPending = true;
           allRoomsReady = false;
           continue;
@@ -8623,12 +8905,16 @@
         }
       });
 
-      // Only flyover flight consolidates the whole world into merged meshes:
-      // its camera sees every room at once, so draw-call count dominates.
-      // Play mode (including wide transitions) keeps per-room groups so the
-      // camera frustum culls off-screen rooms instead of drawing a merged
-      // world-sized mesh every frame.
-      if (!(app.isFlyoverMode && app.flyoverWholeWorld === true)) {
+      // Flyover flight and host-flagged static world vistas (mazebench.com
+      // home) consolidate into merged meshes: their camera sees every room
+      // at once, so draw-call count dominates and frustum culling of
+      // per-room groups buys nothing. Play mode (including wide transitions)
+      // keeps per-room groups so the camera frustum culls off-screen rooms.
+      const wantsWorldConsolidation =
+        (app.isFlyoverMode && app.flyoverWholeWorld === true) ||
+        (!app.isFlyoverMode && app.worldViewConsolidate === true && isWorldViewPlayMode());
+
+      if (!wantsWorldConsolidation) {
         disposeWorldConsolidation();
         return;
       }

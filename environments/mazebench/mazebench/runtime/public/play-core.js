@@ -134,6 +134,10 @@
       worldColumns: playRules.normalizeAxisValues(playData?.worldColumns, defaultWorldAxis),
       worldRows: playRules.normalizeAxisValues(playData?.worldRows, defaultWorldAxis),
       isFlyoverMode: playData?.flyover === true,
+      // Host pages (e.g. the mazebench.com home vista) can opt into the
+      // flyover-style full-bleed canvas measurement without the rest of
+      // flyover's camera/input semantics.
+      hostFullBleedView: playData?.hostFullBleedView === true,
       flyoverRadius: Math.max(1, Math.min(6, Number(playData?.flyoverRadius) || 3)),
       canvas,
       enableCameraControls:
@@ -324,6 +328,10 @@
       }
 
       app.horizontalNeighborLevelStates.set(levelState.levelId, storedLevelState);
+      // Cheap freshness counter so render-side caches keyed on neighbor
+      // availability (e.g. world-view room signatures) can invalidate
+      // without re-deriving tokens per frame.
+      app.horizontalNeighborStatesVersion = (app.horizontalNeighborStatesVersion || 0) + 1;
       return storedLevelState;
     }
 
@@ -374,6 +382,14 @@
           }
 
           const levelState = await response.json();
+
+          // A bulk priming (e.g. the world bundle) may have landed while this
+          // request was in flight; keep the already-prepared state so room
+          // signatures keyed on state identity stay stable.
+          const alreadyPrepared = app.horizontalNeighborLevelStates.get(levelId);
+          if (alreadyPrepared && typeof alreadyPrepared.then !== "function") {
+            return alreadyPrepared;
+          }
 
           if (options.idlePrepare === true) {
             await waitForIdleSlot();
@@ -3031,7 +3047,7 @@
     }
 
     function setupCanvas() {
-      if (app.isFlyoverMode && app.mazeFrame) {
+      if ((app.isFlyoverMode || app.hostFullBleedView === true) && app.mazeFrame) {
         const rect = app.mazeFrame.getBoundingClientRect();
         const width = Math.max(1, Math.round(rect.width || window.innerWidth || app.boardRect.width));
         const height = Math.max(1, Math.round(rect.height || window.innerHeight || app.boardRect.height));
@@ -3062,7 +3078,7 @@
     }
 
     function syncPlayLayout() {
-      if (app.isFlyoverMode && app.playStage && app.mazeFrame) {
+      if ((app.isFlyoverMode || app.hostFullBleedView === true) && app.playStage && app.mazeFrame) {
         const width = Math.max(1, app.playStage.clientWidth || window.innerWidth || app.viewportRect.width);
         const height = Math.max(1, app.playStage.clientHeight || window.innerHeight || app.viewportRect.height);
 
