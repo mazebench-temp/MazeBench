@@ -949,6 +949,12 @@
     }
 
     function material(color, opacity = 1, variants = null) {
+      // Vector-boot vista: every solid body (blocks, floors, GLB props, frozen
+      // actors) renders near-black so only the light-blue edges read. The
+      // background color is left alone.
+      if (useHomeVectorTheme() && color !== "#050608") {
+        color = HOME_BLOCK_COLOR;
+      }
       return cachedMaterialForRenderColor(renderContextColor(color), opacity, variants);
     }
 
@@ -1022,7 +1028,39 @@
       });
     }
 
+    // ---- Home "vector boot" theme (black blocks, light-blue edges) ----
+    // Active only on the home vista: the home page and the snapshot bake set
+    // app.homeVectorTheme; live gameplay never does, so play keeps its normal
+    // palette. Blocks render near-black and every edge line renders light blue.
+    const HOME_BLOCK_COLOR = "#080a12";
+    const HOME_EDGE_COLOR = "#6fdcff";
+
+    // The per-room PLAY groups are meshed while the home vista is showing
+    // (idle warmup) and are reused for gameplay, which must keep normal
+    // colors. Suspend the theme while those groups build so only the vista
+    // presentation itself (the merged snapshot + the live anchor room) is
+    // themed, never the play geometry.
+    let homeThemeSuspendDepth = 0;
+
+    function useHomeVectorTheme() {
+      if (app.homeVectorTheme !== true) return false;
+      // During the offline bake every room IS the vista snapshot, so the
+      // play-group suspend (which keeps live gameplay normal) must not apply.
+      if (app.bakingSnapshot === true) return true;
+      return homeThemeSuspendDepth === 0;
+    }
+
+    function edgeColor() {
+      return useHomeVectorTheme() ? HOME_EDGE_COLOR : "#000000";
+    }
+
     function lineMaterial(color = "#000000", opacity = 1) {
+      // On the home vista every edge line is drawn with the "draw-on" reveal
+      // material so the blue wireframe traces in from the rear on load.
+      if (useHomeVectorTheme()) {
+        return revealLineMaterial(color, opacity);
+      }
+
       const alpha = Math.max(0, Math.min(1, opacity));
       const key = `${color}:${Math.round(alpha * 1000)}`;
 
@@ -1062,6 +1100,180 @@
       }
 
       return lineMaterialCache.get(key);
+    }
+
+    // ---- Home vista "draw-on" edge reveal --------------------------------
+    // The blue wireframe literally traces in from the rear of the world: a
+    // per-vertex world-space coordinate (projected onto the camera's forward
+    // heading) is compared against a moving front line each frame. Everything
+    // past the front is discarded, so long edges grow along their length while
+    // near edges pop in last — the 3D echo of the vector-boot grid.
+    const homeEdgeReveal = {
+      active: false,
+      startMs: 0,
+      durationMs: 2200,
+      uReveal: { value: 1 },
+      // THREE is imported asynchronously (null at closure init), so the sweep
+      // vector is created lazily once THREE is ready.
+      uSweepDir: { value: null },
+      uSweepMin: { value: 0 },
+      uSweepMax: { value: 1 },
+      uBand: { value: 1 }
+    };
+    const revealLineMaterialCache = new Map();
+
+    function ensureSweepVector() {
+      if (!homeEdgeReveal.uSweepDir.value && THREE) {
+        homeEdgeReveal.uSweepDir.value = new THREE.Vector3(0, 0, 1);
+      }
+      return homeEdgeReveal.uSweepDir.value;
+    }
+
+    function revealLineMaterial(color, opacity = 1) {
+      const alpha = Math.max(0, Math.min(1, opacity));
+      const key = `${color}:${Math.round(alpha * 1000)}`;
+
+      if (!revealLineMaterialCache.has(key)) {
+        const material = new THREE.LineBasicMaterial({
+          color,
+          depthTest: true,
+          depthWrite: false,
+          linewidth: 1,
+          opacity: alpha,
+          transparent: alpha < 0.999
+        });
+
+        material.onBeforeCompile = (shader) => {
+          // Share the reveal uniforms across every edge material so one driver
+          // frame updates them all at once.
+          ensureSweepVector();
+          shader.uniforms.uReveal = homeEdgeReveal.uReveal;
+          shader.uniforms.uSweepDir = homeEdgeReveal.uSweepDir;
+          shader.uniforms.uSweepMin = homeEdgeReveal.uSweepMin;
+          shader.uniforms.uSweepMax = homeEdgeReveal.uSweepMax;
+          shader.uniforms.uBand = homeEdgeReveal.uBand;
+
+          shader.vertexShader = shader.vertexShader
+            .replace(
+              "#include <common>",
+              "#include <common>\nvarying float vEdgeSweep;\nuniform vec3 uSweepDir;"
+            )
+            .replace(
+              "#include <begin_vertex>",
+              "#include <begin_vertex>\nvec3 edgeWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;\nvEdgeSweep = dot( edgeWorld, uSweepDir );"
+            )
+            .replace(
+              "#include <project_vertex>",
+              [
+                "vec4 mvPosition = modelViewMatrix * vec4( transformed, 1.0 );",
+                `float edgePullBias = ${edgeDepthBias.toFixed(4)};`,
+                "if ( isPerspectiveMatrix( projectionMatrix ) ) {",
+                "  float edgeViewDistance = max( length( mvPosition.xyz ), 0.0001 );",
+                "  float edgePull = max( edgePullBias, edgeViewDistance * 0.0015 );",
+                "  mvPosition.xyz *= max( edgeViewDistance - edgePull, 0.0 ) / edgeViewDistance;",
+                "} else {",
+                "  mvPosition.z += edgePullBias;",
+                "}",
+                "gl_Position = projectionMatrix * mvPosition;"
+              ].join("\n")
+            );
+
+          shader.fragmentShader = shader.fragmentShader
+            .replace(
+              "#include <common>",
+              "#include <common>\nvarying float vEdgeSweep;\nuniform float uReveal;\nuniform float uSweepMin;\nuniform float uSweepMax;\nuniform float uBand;"
+            )
+            .replace(
+              "#include <clipping_planes_fragment>",
+              // uReveal <= 0 hides EVERY edge unconditionally — the sweep
+              // bounds may still be at their defaults when the world is first
+              // primed hidden (they are computed once the reveal begins), so
+              // don't rely on them for the fully-off state.
+              "#include <clipping_planes_fragment>\nif ( uReveal <= 0.0 ) discard;\nfloat edgeFront = mix( uSweepMax + uBand, uSweepMin - uBand, uReveal );\nif ( vEdgeSweep < edgeFront ) discard;"
+            );
+        };
+
+        revealLineMaterialCache.set(key, material);
+      }
+
+      return revealLineMaterialCache.get(key);
+    }
+
+    function primeHomeEdgeReveal() {
+      // Hide every edge before the first vista frame so nothing flashes in
+      // fully-drawn ahead of the animation.
+      homeEdgeReveal.active = false;
+      homeEdgeReveal.uReveal.value = 0;
+    }
+
+    function beginHomeEdgeReveal(options = {}) {
+      if (!THREE || !camera || !edgeScene) {
+        homeEdgeReveal.uReveal.value = 1;
+        return;
+      }
+
+      const forward = new THREE.Vector3();
+      camera.getWorldDirection(forward);
+      const dir = new THREE.Vector3(forward.x, 0, forward.z);
+      if (dir.lengthSq() < 1e-6) {
+        dir.set(0, 0, 1);
+      }
+      dir.normalize();
+
+      const box = new THREE.Box3().setFromObject(edgeScene);
+      if (box.isEmpty()) {
+        homeEdgeReveal.uReveal.value = 1;
+        return;
+      }
+
+      // "Rear" is the far end along the camera heading (largest projection);
+      // reveal sweeps from there toward the near edge.
+      let sMin = Infinity;
+      let sMax = -Infinity;
+      const xs = [box.min.x, box.max.x];
+      const zs = [box.min.z, box.max.z];
+      for (let i = 0; i < 2; i += 1) {
+        for (let j = 0; j < 2; j += 1) {
+          const s = xs[i] * dir.x + zs[j] * dir.z;
+          if (s < sMin) sMin = s;
+          if (s > sMax) sMax = s;
+        }
+      }
+
+      ensureSweepVector().copy(dir);
+      homeEdgeReveal.uSweepMin.value = sMin;
+      homeEdgeReveal.uSweepMax.value = sMax;
+      homeEdgeReveal.uBand.value = Math.max(1, (sMax - sMin) * 0.05);
+      homeEdgeReveal.durationMs = Math.max(200, Number(options.durationMs) || 2200);
+      homeEdgeReveal.startMs = performance.now();
+      homeEdgeReveal.uReveal.value = 0;
+      homeEdgeReveal.active = true;
+
+      const step = (now) => {
+        if (!homeEdgeReveal.active) {
+          return;
+        }
+        const raw = (now - homeEdgeReveal.startMs) / homeEdgeReveal.durationMs;
+        const p = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+        // smoothstep so the front eases in and settles.
+        homeEdgeReveal.uReveal.value = p * p * (3 - 2 * p);
+        invalidateSceneCache();
+        (app.renderOncePerFrame || app.render)(now);
+        if (p < 1) {
+          window.requestAnimationFrame(step);
+        } else {
+          homeEdgeReveal.uReveal.value = 1;
+          homeEdgeReveal.active = false;
+          invalidateSceneCache();
+          (app.renderOncePerFrame || app.render)(performance.now());
+        }
+      };
+      window.requestAnimationFrame(step);
+    }
+
+    function cancelHomeEdgeReveal() {
+      homeEdgeReveal.active = false;
+      homeEdgeReveal.uReveal.value = 1;
     }
 
     function imageTexture(url) {
@@ -2334,7 +2546,7 @@
         return null;
       }
 
-      const edges = new THREE.LineSegments(edgeGeometry || edgeGeometryFor(geometry, threshold), lineMaterial("#000000", lineOpacity));
+      const edges = new THREE.LineSegments(edgeGeometry || edgeGeometryFor(geometry, threshold), lineMaterial(edgeColor(), lineOpacity));
       edges.position.copy(position);
 
       if (scale) {
@@ -3944,6 +4156,10 @@
     }
 
     function terrainColor(type) {
+      if (useHomeVectorTheme()) {
+        return type === "hole" || type === "empty" ? "#050608" : HOME_BLOCK_COLOR;
+      }
+
       if (type === "wall") {
         return "#23262c";
       }
@@ -4059,6 +4275,10 @@
     }
 
     function actorColor(actor) {
+      if (useHomeVectorTheme()) {
+        return HOME_BLOCK_COLOR;
+      }
+
       if (actor.type === "player" || actor.type === "circle_player") {
         return "#5aa95c";
       }
@@ -5440,7 +5660,7 @@
 
         const edges = new THREE.LineSegments(
           edgeGeometryFor(part.geometry, 28),
-          lineMaterial("#000000", edgeOpacity)
+          lineMaterial(edgeColor(), edgeOpacity)
         );
 
         edges.position.copy(placement.position);
@@ -6518,7 +6738,7 @@
       model.parts.forEach((part) => {
         const edges = new THREE.LineSegments(
           edgeGeometryFor(part.geometry, 28),
-          lineMaterial("#000000", edgeOpacity)
+          lineMaterial(edgeColor(), edgeOpacity)
         );
 
         edges.position.set(-placement.center.x, -model.bounds.min.y, -placement.center.z);
@@ -6672,7 +6892,7 @@
 
       const edges = new THREE.LineSegments(
         edgeGeometryFor(geometry, threshold),
-        lineMaterial("#000000", lineOpacity)
+        lineMaterial(edgeColor(), lineOpacity)
       );
 
       edges.position.copy(position);
@@ -7362,7 +7582,8 @@
           app.levelTransition ||
           app.gateAnimationFrameId !== null ||
           app.orangeWallAnimationFrameId !== null ||
-          app.playerLiftAnimationFrameId !== null
+          app.playerLiftAnimationFrameId !== null ||
+          homeEdgeReveal.active
       );
     }
 
@@ -8817,6 +9038,8 @@
       scene = group;
       edgeScene = edgeGroup;
 
+      // These groups are the PLAY representation; never theme them.
+      homeThemeSuspendDepth += 1;
       try {
         renderLevelStateAt(view.levelState, { x: 0, z: 0 }, {
           role: "neighbor",
@@ -8826,6 +9049,7 @@
           hidePlayers: true
         }, now);
       } finally {
+        homeThemeSuspendDepth -= 1;
         scene = previousScene;
         edgeScene = previousEdgeScene;
       }
@@ -10742,6 +10966,8 @@
         app.worldShadowFadeMs = 0;
 
         const now = performance.now();
+        // Compile the PLAY-look programs, never the themed vista look.
+        homeThemeSuspendDepth += 1;
         resetScene();
         const views = surroundingLevelViews();
         renderSurroundingLevelViews(now, views);
@@ -10759,6 +10985,7 @@
       } catch (error) {
         // Never let a prewarm failure disturb the vista.
       } finally {
+        if (homeThemeSuspendDepth > 0) homeThemeSuspendDepth -= 1;
         Object.assign(worldShadowFade, savedFade);
         app.worldViewConsolidate = saved.consolidate;
         app.worldViewUniformBrightness = saved.uniform;
@@ -11038,6 +11265,9 @@
       warmWorldViewRoomGroups,
       preloadModelAssets,
       prewarmPlayLookShaders,
+      primeHomeEdgeReveal,
+      beginHomeEdgeReveal,
+      cancelHomeEdgeReveal,
       renderScene,
       renderHoverFrame,
       dispose: disposeRenderer,
