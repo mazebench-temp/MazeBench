@@ -1,7 +1,14 @@
 (function () {
   const modules = window.PlayModules || (window.PlayModules = {});
-  const threeModuleUrl = "/vendor/three.module.js";
-  const gltfLoaderModuleUrl = "/vendor/GLTFLoader.js";
+  const playConfig = window.__MAZEBENCH_PLAY_CONFIG__ || {};
+  function assetUrl(path) {
+    const version = playConfig.assetVersion || "";
+    if (!version) return path;
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}v=${encodeURIComponent(version)}`;
+  }
+  const threeModuleUrl = assetUrl("/vendor/three.module.js");
+  const gltfLoaderModuleUrl = assetUrl("/vendor/GLTFLoader.js");
 
   modules.registerThreeRenderFunctions = function registerThreeRenderFunctions(app) {
     const threeCanvas = document.createElement("canvas");
@@ -13,6 +20,7 @@
     let ambientLight = null;
     let keyLight = null;
     let GLTFLoaderClass = null;
+    let gltfLoaderClassPromise = null;
     let raycaster = null;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -405,13 +413,13 @@
 
     function createCameraForMode() {
       if (!THREE) {
-        return;
+        return false;
       }
 
       camera = cameraIsPerspective()
         ? new THREE.PerspectiveCamera(34, 1, 1, perspectiveCameraFarPlane())
         : new THREE.OrthographicCamera();
-      syncRendererSize();
+      return syncRendererSize();
     }
 
     function setCameraMode(mode) {
@@ -481,15 +489,16 @@
 
       debugCameraActive = true;
 
+      let cameraReady = false;
       if (
         cameraMode !== requestedMode ||
         (requestedMode === "perspective" && !camera?.isPerspectiveCamera) ||
         (requestedMode === "isometric" && !camera?.isOrthographicCamera)
       ) {
         cameraMode = requestedMode;
-        createCameraForMode();
+        cameraReady = createCameraForMode();
       } else {
-        syncRendererSize();
+        cameraReady = syncRendererSize();
       }
 
       if (Number.isFinite(options.yaw)) {
@@ -525,7 +534,8 @@
       // Hosts driving the camera every frame (e.g. the mazebench.com home
       // flyby) render via renderOncePerFrame themselves; skipRender avoids a
       // second full render plus per-frame DOM writes.
-      if (options.skipRender === true) {
+      if (options.skipRender === true || !cameraReady) {
+        updateCameraModeToggle();
         updateCameraDirectionMapper();
         return;
       }
@@ -1528,9 +1538,31 @@
       return { bounds, parts };
     }
 
-    function parseModelAsset(url, data) {
-      if (!GLTFLoaderClass || !(data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
-        return Promise.resolve(null);
+    function ensureGltfLoaderClass() {
+      if (GLTFLoaderClass) {
+        return Promise.resolve(GLTFLoaderClass);
+      }
+      if (gltfLoaderClassPromise) {
+        return gltfLoaderClassPromise;
+      }
+
+      gltfLoaderClassPromise = import(gltfLoaderModuleUrl)
+        .then((loaderModule) => {
+          GLTFLoaderClass = loaderModule.GLTFLoader || null;
+          return GLTFLoaderClass;
+        })
+        .catch(() => {
+          GLTFLoaderClass = null;
+          return null;
+        });
+
+      return gltfLoaderClassPromise;
+    }
+
+    async function parseModelAsset(url, data) {
+      const Loader = await ensureGltfLoaderClass();
+      if (!Loader || !(data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
+        return null;
       }
 
       const arrayBuffer = data instanceof ArrayBuffer
@@ -1539,7 +1571,7 @@
 
       return new Promise((resolve) => {
         try {
-          new GLTFLoaderClass().parse(
+          new Loader().parse(
             arrayBuffer,
             "",
             (gltf) => resolve(extractModelFromGltf(gltf)),
@@ -2255,11 +2287,13 @@
         return runtimeLevelState();
       }
 
-      const levelState = app.cachedHorizontalNeighborLevelState?.(neighborLevelId);
+	      const levelState = app.cachedHorizontalNeighborLevelState?.(neighborLevelId);
 
-      if (!levelState) {
-        app.queueHorizontalNeighborLevelState?.(neighborLevelId);
-      }
+	      if (!levelState) {
+	        if (app.worldViewVistaMode !== true) {
+	          app.queueHorizontalNeighborLevelState?.(neighborLevelId);
+	        }
+	      }
 
       return levelState || null;
     }
@@ -7841,6 +7875,10 @@
     }
 
     function syncRendererSize() {
+      if (!renderer || !camera) {
+        return false;
+      }
+
       const width = app.boardRect.width;
       const height = app.boardRect.height;
 
@@ -7867,6 +7905,7 @@
       }
 
       camera.updateProjectionMatrix();
+      return true;
     }
 
     function oneLayerCameraWorldHeight() {
@@ -8524,10 +8563,10 @@
       };
     }
 
-    function surroundingLevelViews() {
-      if (!shouldRenderSurroundingLevels()) {
-        return [];
-      }
+	    function surroundingLevelViews() {
+	      if (!shouldRenderSurroundingLevels()) {
+	        return [];
+	      }
 
       if (app.isFlyoverMode && typeof app.flyoverSurroundingLevelViews === "function") {
         const flyoverViews = app.flyoverSurroundingLevelViews();
@@ -8540,14 +8579,16 @@
       const currentState = runtimeLevelState();
       const views = [];
 
-      worldNeighborCoords(app.currentLevelId, surroundingLevelRadius()).forEach((coord) => {
-        const levelId = coord.levelId;
-        const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
+	      worldNeighborCoords(app.currentLevelId, surroundingLevelRadius()).forEach((coord) => {
+	        const levelId = coord.levelId;
+	        const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
 
-        if (!levelState) {
-          app.queueHorizontalNeighborLevelState?.(levelId, { priority: coord.distance });
-          return;
-        }
+	        if (!levelState) {
+	          if (app.worldViewVistaMode !== true) {
+	            app.queueHorizontalNeighborLevelState?.(levelId, { priority: coord.distance });
+	          }
+	          return;
+	        }
 
         if (
           app.isFlyoverMode &&
@@ -11285,16 +11326,6 @@
     app.threeRendererReady = import(threeModuleUrl)
       .then((module) => {
         THREE = module;
-        // The loader resolves its bare "three" import through the page's
-        // importmap to the same /vendor/three.module.js instance. Models
-        // degrade to fallback shapes if it can't load.
-        return import(gltfLoaderModuleUrl)
-          .then((loaderModule) => {
-            GLTFLoaderClass = loaderModule.GLTFLoader || null;
-          })
-          .catch(() => {
-            GLTFLoaderClass = null;
-          });
       })
       .then(() => {
         renderer = new THREE.WebGLRenderer({
@@ -11360,6 +11391,7 @@
       renderScene,
       renderHoverFrame,
       dispose: disposeRenderer,
+      isReady: () => Boolean(THREE && renderer && camera && scene && edgeScene),
       getRenderStats: () => ({ ...(app.threeRenderStats || {}) }),
       usesDirectCanvas: () => app.flyoverDirectCanvas === true,
       threeCanvas

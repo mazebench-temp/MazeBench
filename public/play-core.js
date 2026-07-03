@@ -244,7 +244,11 @@
     app.horizontalNeighborActiveLoads = 0;
     app.horizontalNeighborQueueFrameId = 0;
     app.horizontalNeighborLoadConcurrency = app.isFlyoverMode ? 4 : 8;
-    app.deferNeighborLoadRenders = false;
+    app.deferNeighborLoadRenders = playData?.deferNeighborLoadRenders === true;
+    app.worldViewConsolidate = playData?.worldViewConsolidate === true;
+    app.worldViewUniformBrightness = playData?.worldViewUniformBrightness === true;
+    app.worldViewVistaMode = playData?.worldViewVistaMode === true;
+    app.homeVectorTheme = playData?.homeVectorTheme === true;
 
     function parseWorldLevelId(levelId) {
       return playRules.parseWorldLevelId(levelId, app.worldColumns, app.worldRows);
@@ -510,6 +514,10 @@
     }
 
     function syncHorizontalNeighborLevelStates() {
+      if (app.worldViewVistaMode === true) {
+        return;
+      }
+
       const radius = app.isFlyoverMode
         ? app.flyoverRadius
         : Math.max(1, Math.min(26, Math.floor(Number(app.playSurroundingRadius) || 1)));
@@ -2263,7 +2271,9 @@
       const neighborLevelState = cachedHorizontalNeighborLevelState(neighborLevelId);
 
       if (!neighborLevelState) {
-        queueHorizontalNeighborLevelState(neighborLevelId);
+        if (app.worldViewVistaMode !== true) {
+          queueHorizontalNeighborLevelState(neighborLevelId);
+        }
         return null;
       }
 
