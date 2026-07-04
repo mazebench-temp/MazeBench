@@ -255,6 +255,7 @@
     app.worldViewConsolidate = playData?.worldViewConsolidate === true;
     app.worldViewUniformBrightness = playData?.worldViewUniformBrightness === true;
     app.worldViewVistaMode = playData?.worldViewVistaMode === true;
+    app.worldViewDetachedVista = playData?.worldViewDetachedVista === true;
     app.homeVectorTheme = playData?.homeVectorTheme === true;
 
     function parseWorldLevelId(levelId) {

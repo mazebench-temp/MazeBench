@@ -71,7 +71,6 @@
     const debugCameraTiltHoldDurationMs = 500;
     const debugCameraMinZoom = 0.55;
     const debugCameraMaxZoom = 10;
-    const debugCameraZoomStep = 1.14;
     const neighboringRoomBrightness = 0.62;
     const geometryCache = new Map();
     const edgeGeometryCache = new Map();
@@ -888,12 +887,6 @@
         }
         debugCameraTargetYaw += yawStep;
         durationMs = 260;
-      } else if (matchesCameraControl(event, "zoomIn", ["q"])) {
-        debugCameraTargetZoom = clampDebugCameraZoom(debugCameraTargetZoom * debugCameraZoomStep);
-        durationMs = 140;
-      } else if (matchesCameraControl(event, "zoomOut", ["e"])) {
-        debugCameraTargetZoom = clampDebugCameraZoom(debugCameraTargetZoom / debugCameraZoomStep);
-        durationMs = 140;
       } else {
         handled = false;
       }
@@ -1285,8 +1278,18 @@
     }
 
     function beginHomeEdgeReveal(options = {}) {
+      const onComplete = typeof options.onComplete === "function" ? options.onComplete : null;
+      const complete = () => {
+        if (!onComplete) return;
+        try {
+          onComplete();
+        } catch {
+          // Reveal completion callbacks are best-effort.
+        }
+      };
       if (!THREE || !camera || !edgeScene) {
         homeEdgeReveal.uReveal.value = 1;
+        complete();
         return;
       }
 
@@ -1301,6 +1304,7 @@
       const box = new THREE.Box3().setFromObject(edgeScene);
       if (box.isEmpty()) {
         homeEdgeReveal.uReveal.value = 1;
+        complete();
         return;
       }
 
@@ -1344,6 +1348,7 @@
           homeEdgeReveal.active = false;
           invalidateSceneCache();
           (app.renderOncePerFrame || app.render)(performance.now());
+          complete();
         }
       };
       window.requestAnimationFrame(step);
@@ -7808,6 +7813,7 @@
         // the content once for those few rooms to re-mesh at the new value.
         `vector-glow:${Math.round(currentVectorGlow() * 32)}`,
         app.worldViewVistaMode === true ? "vista-anchor" : "live-anchor",
+        app.worldViewDetachedVista === true ? "detached-vista" : "room-vista",
         app.isFlyoverMode ? "flyover-selection" : "no-flyover-selection",
         transition
           ? [
@@ -8566,7 +8572,7 @@
 
       worldViewRoomGroups.forEach((entry) => {
         if (entry.group?.parent) {
-          applyWorldViewRoomShadow(entry, factor);
+          applyWorldViewRoomShadow(entry, worldViewRoomEntryShadowFactor(entry, factor));
         }
       });
     }
@@ -8609,8 +8615,27 @@
 
       const currentState = runtimeLevelState();
       const views = [];
+      const detachedVista = app.worldViewVistaMode === true && app.worldViewDetachedVista === true;
 
-	      worldNeighborCoords(app.currentLevelId, surroundingLevelRadius()).forEach((coord) => {
+      if (detachedVista) {
+        const anchorState =
+          app.cachedHorizontalNeighborLevelState?.(app.currentLevelId) ||
+          currentState;
+
+        if (anchorState?.width && anchorState?.height) {
+          views.push({
+            dx: 0,
+            dy: 0,
+            levelId: app.currentLevelId,
+            levelState: anchorState,
+            offset: { x: 0, z: 0 },
+            brightness: 1,
+            distance: 0
+          });
+        }
+      }
+
+      worldNeighborCoords(app.currentLevelId, surroundingLevelRadius()).forEach((coord) => {
 	        const levelId = coord.levelId;
 	        const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
 
@@ -9107,11 +9132,21 @@
     }
 
     function attachWorldViewRoomEntry(entry, view) {
+      entry.detachedVistaAnchor =
+        app.worldViewVistaMode === true &&
+        app.worldViewDetachedVista === true &&
+        String(view.levelId || "") === String(app.currentLevelId || "") &&
+        Number(view.dx || 0) === 0 &&
+        Number(view.dy || 0) === 0;
       entry.group.position.set(view.offset.x, 0, view.offset.z);
       entry.edgeGroup.position.set(view.offset.x, 0, view.offset.z);
       entry.edgeGroup.userData.edgeBasePosition.set(view.offset.x, 0, view.offset.z);
       scene.add(entry.group);
       edgeScene.add(entry.edgeGroup);
+    }
+
+    function worldViewRoomEntryShadowFactor(entry, fallbackFactor) {
+      return entry.detachedVistaAnchor === true ? 1 : fallbackFactor;
     }
 
     // Dim a room group by swapping its meshes onto the dimmed twins of their
@@ -9959,7 +9994,8 @@
       // meshing on top of the flight tween. Missing rooms finish streaming
       // in after landing — the landing render invalidates the cache anyway.
       const cameraFlightActive =
-        Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0;
+        Boolean(app.cameraFlightFitOptions) ||
+        (Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0);
       const buildBudgetMs =
         app.isFlyoverMode || app.worldViewSynchronousBuild === true
           ? Infinity
@@ -10004,7 +10040,7 @@
           attachWorldViewRoomEntry(entry, view);
 
           if (!legacyBrightnessBuilds) {
-            applyWorldViewRoomShadow(entry, shadowFactor);
+            applyWorldViewRoomShadow(entry, worldViewRoomEntryShadowFactor(entry, shadowFactor));
           }
 
           consolidationParts.push(`${view.levelId}@${view.offset.x},${view.offset.z}:${entry.signature}`);
@@ -10058,7 +10094,7 @@
         attachWorldViewRoomEntry(entry, pending.view);
 
         if (!legacyBrightnessBuilds) {
-          applyWorldViewRoomShadow(entry, shadowFactor);
+          applyWorldViewRoomShadow(entry, worldViewRoomEntryShadowFactor(entry, shadowFactor));
         }
 
         allRoomsReady = false;
@@ -11323,10 +11359,10 @@
             addTerrainRegions(now);
             renderActorsForCurrentContext(now);
           });
-        } else if (app.worldViewVistaMode === true) {
-          // Home-vista anchor room: render through the neighbor path so it
-          // is indistinguishable from the baked snapshot rooms — no floor
-          // grid, no tile-top details, no player avatar, frozen actors.
+        } else if (app.worldViewVistaMode === true && app.worldViewDetachedVista !== true) {
+          // Legacy anchored vista: render the technical anchor as a room.
+          // Detached menu vistas draw it through surroundingLevelViews instead
+          // so the menu is not conceptually "inside" any room.
           renderLevelStateAt(renderState(), { x: 0, z: 0 }, {
             role: "neighbor",
             brightness: 1,
@@ -11352,7 +11388,8 @@
       // settled frame afterwards refreshes it. This is the biggest per-frame
       // saving during the vista→play dive.
       const cameraFlightInProgress =
-        Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0;
+        Boolean(app.cameraFlightFitOptions) ||
+        (Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0);
       const deferShadowMap =
         worldViewRoomBuildPending ||
         (!app.isFlyoverMode && (worldShadowAnimating() || cameraFlightInProgress));
