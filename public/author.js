@@ -968,6 +968,20 @@
       // Hide the edges, render the black vector-boot frame while the cover
       // is still up, then lift the cover into the sweep. The sweep sizes its
       // own duration to the room, so small boards finish quickly.
+      const reducedMotion =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+      if (!reducedMotion && typeof renderer.setDebugCameraView === "function") {
+        // Start pulled back at a vista-like low angle; the editor's resting
+        // framing IS the debug camera at (yaw 0, tilt 0.22, zoom 1), so the
+        // post-sweep swoop lands exactly on the normal editor view.
+        renderer.setDebugCameraView({
+          yaw: 0,
+          tilt: 1.15,
+          zoom: 0.55,
+          mode: "perspective",
+          skipRender: true
+        });
+      }
       renderer.primeHomeEdgeReveal?.();
       renderer.invalidateSceneCache?.();
       app.render();
@@ -976,7 +990,20 @@
       renderer.beginHomeEdgeReveal({
         onComplete: () => {
           timing.sweepDoneAtMs = Math.round(performance.now());
-          meltEditorVectorLook(app);
+          // Swoop down into the editing view while the glow melts into the
+          // normal palette — the same construction-then-dive the play routes
+          // land with.
+          const swoopMs = reducedMotion ? 0 : 700;
+          if (swoopMs > 0) {
+            renderer.setDebugCameraView({
+              yaw: 0,
+              tilt: 0.22,
+              zoom: 1,
+              animate: true,
+              durationMs: swoopMs
+            });
+          }
+          meltEditorVectorLook(app, reducedMotion ? 220 : swoopMs);
         }
       });
     } catch {
@@ -985,17 +1012,17 @@
     }
   }
 
-  function meltEditorVectorLook(app) {
+  function meltEditorVectorLook(app, durationMs = 450) {
     const renderer = app.threeRenderer;
-    const durationMs = 450;
     const startedAt = performance.now();
     const step = (now) => {
-      const raw = (now - startedAt) / durationMs;
+      const raw = (now - startedAt) / Math.max(1, durationMs);
       const progress = raw < 0 ? 0 : raw > 1 ? 1 : raw;
       const eased = progress * progress * (3 - 2 * progress);
       app.vectorGlowAmount = 1 - eased;
       renderer?.invalidateSceneCache?.();
-      app.render();
+      // Coalesce with the camera swoop's own per-frame renders.
+      (app.renderOncePerFrame || app.render)(now);
       if (progress < 1) {
         window.requestAnimationFrame(step);
         return;
