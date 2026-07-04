@@ -44,6 +44,7 @@
     let activeRenderContext = null;
     let cameraEstimateOverride = null;
     let editorHoverTarget = null;
+    let editorHoverHighlightMesh = null;
     let editorHoverRenderFrameId = 0;
     let editorHighlightMaterial = null;
     let editorPickMaterial = null;
@@ -4754,7 +4755,23 @@
       return editorHighlightMaterial;
     }
 
+    function clearEditorHoverHighlight() {
+      if (!editorHoverHighlightMesh) {
+        return;
+      }
+
+      editorHoverHighlightMesh.parent?.remove(editorHoverHighlightMesh);
+
+      if (editorHoverHighlightMesh.geometry && !cachedGeometryHas(editorHoverHighlightMesh.geometry)) {
+        editorHoverHighlightMesh.geometry.dispose();
+      }
+
+      editorHoverHighlightMesh = null;
+    }
+
     function addEditorHoverHighlight() {
+      clearEditorHoverHighlight();
+
       if (!editorHoverTarget || !THREE) {
         return;
       }
@@ -4823,6 +4840,7 @@
       highlight.position.copy(position);
       highlight.castShadow = false;
       highlight.receiveShadow = false;
+      editorHoverHighlightMesh = highlight;
       scene.add(highlight);
     }
 
@@ -7291,6 +7309,7 @@
     }
 
     function disposeScene() {
+      clearEditorHoverHighlight();
       disposeSceneChildren(scene);
       disposeSceneChildren(edgeScene);
       playerLiftMarkerMeshes.clear();
@@ -11330,6 +11349,7 @@
           applyWorldShadowGlowSwapPass(now);
         }
         fitCameraToScene(editorSurroundingFitOptions() || cameraFlightFitOptions() || flyoverFitOptions() || {});
+        addEditorHoverHighlight();
         renderSceneToComposite(false);
         lastSceneSignature = signature;
         return true;
