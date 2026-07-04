@@ -1271,6 +1271,11 @@
       return revealLineMaterialCache.get(key);
     }
 
+    // Sweep speed for the default reveal duration, in ms per world unit of
+    // depth along the camera heading. Calibrated so the 16x16 bench world
+    // (span ~16384 units at the vista heading) keeps its tuned ~2200ms sweep.
+    const HOME_EDGE_REVEAL_MS_PER_UNIT = 2200 / 16384;
+
     function primeHomeEdgeReveal() {
       // Hide every edge before the first vista frame so nothing flashes in
       // fully-drawn ahead of the animation.
@@ -1327,7 +1332,17 @@
       homeEdgeReveal.uSweepMin.value = sMin;
       homeEdgeReveal.uSweepMax.value = sMax;
       homeEdgeReveal.uBand.value = Math.max(1, (sMax - sMin) * 0.05);
-      homeEdgeReveal.durationMs = Math.max(200, Number(options.durationMs) || 2200);
+      // Constant sweep SPEED, not constant duration: the default scales with
+      // the world's depth along the camera heading, so a 3x3 custom world
+      // finishes proportionally sooner than the 16x16 bench world (which
+      // stays at its tuned ~2200ms). Clamped so tiny scenes still read as a
+      // reveal and oversized ones never drag.
+      const sweepSpan = sMax - sMin;
+      const scaledDurationMs = Math.max(
+        550,
+        Math.min(2600, sweepSpan * HOME_EDGE_REVEAL_MS_PER_UNIT)
+      );
+      homeEdgeReveal.durationMs = Math.max(200, Number(options.durationMs) || scaledDurationMs);
       homeEdgeReveal.startMs = performance.now();
       homeEdgeReveal.uReveal.value = 0;
       homeEdgeReveal.active = true;

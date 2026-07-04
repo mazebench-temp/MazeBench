@@ -114,6 +114,12 @@
     preloadedTokens: new Set(),
     sceneFrameId: null
   };
+  // MazeBench editor boot: when the host page exposes a MARK_READY hook, the
+  // first canvas frames render in the home "vector boot" look (black blocks,
+  // blue edges primed hidden), the loading cover lifts over that frame, the
+  // edge sweep traces the room in, then the glow melts into editor colors.
+  // pending -> armed (theme applied before first mesh) -> running -> done.
+  const editorBootReveal = { state: "pending" };
   const palettePreviewRenderer = {
     previewsByToken: new Map(),
     promise: null
@@ -841,6 +847,16 @@
       modules.registerGameplayFunctions(app);
     }
     app.isEditorRenderApp = true;
+    if (
+      editorBootReveal.state === "pending" &&
+      typeof window.__MAZEBENCH_AUTHOR_MARK_READY__ === "function"
+    ) {
+      // Theme BEFORE the first mesh so the initial frame is already the
+      // vector look — no colored flash under the loading cover.
+      editorBootReveal.state = "armed";
+      app.homeVectorTheme = true;
+      app.vectorGlowAmount = 1;
+    }
     editorRenderer.app = app;
     return app;
   }
@@ -893,6 +909,11 @@
 
     app.render();
 
+    if (editorBootReveal.state === "armed") {
+      editorBootReveal.state = "running";
+      runEditorBootReveal(app);
+    }
+
     // Only re-run the image preload pass when the board introduces a token
     // whose imagery has not been preloaded successfully yet.
     const boardTokens = boardImageTokens();
@@ -913,6 +934,82 @@
         }
       })
       .catch(() => {});
+  }
+
+  function markAuthorPageReady() {
+    try {
+      window.__MAZEBENCH_AUTHOR_MARK_READY__?.();
+      window.__MAZEJAM_AUTHOR_MARK_READY__?.();
+    } catch {
+      // The cover's own fallback timer still lifts it.
+    }
+  }
+
+  async function runEditorBootReveal(app) {
+    const timing = (window.__MAZEBENCH_AUTHOR_BOOT__ = window.__MAZEBENCH_AUTHOR_BOOT__ || {});
+    const finishLook = () => {
+      editorBootReveal.state = "done";
+      timing.fallbackAtMs = Math.round(performance.now());
+      app.homeVectorTheme = false;
+      app.vectorGlowAmount = 0;
+      app.threeRenderer?.invalidateSceneCache?.();
+      app.render();
+    };
+    try {
+      if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
+        await app.threeRendererReady;
+      }
+      const renderer = app.threeRenderer;
+      if (!renderer || typeof renderer.beginHomeEdgeReveal !== "function") {
+        finishLook();
+        markAuthorPageReady();
+        return;
+      }
+      // Hide the edges, render the black vector-boot frame while the cover
+      // is still up, then lift the cover into the sweep. The sweep sizes its
+      // own duration to the room, so small boards finish quickly.
+      renderer.primeHomeEdgeReveal?.();
+      renderer.invalidateSceneCache?.();
+      app.render();
+      markAuthorPageReady();
+      timing.sweepStartedAtMs = Math.round(performance.now());
+      renderer.beginHomeEdgeReveal({
+        onComplete: () => {
+          timing.sweepDoneAtMs = Math.round(performance.now());
+          meltEditorVectorLook(app);
+        }
+      });
+    } catch {
+      finishLook();
+      markAuthorPageReady();
+    }
+  }
+
+  function meltEditorVectorLook(app) {
+    const renderer = app.threeRenderer;
+    const durationMs = 450;
+    const startedAt = performance.now();
+    const step = (now) => {
+      const raw = (now - startedAt) / durationMs;
+      const progress = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+      const eased = progress * progress * (3 - 2 * progress);
+      app.vectorGlowAmount = 1 - eased;
+      renderer?.invalidateSceneCache?.();
+      app.render();
+      if (progress < 1) {
+        window.requestAnimationFrame(step);
+        return;
+      }
+      editorBootReveal.state = "done";
+      if (window.__MAZEBENCH_AUTHOR_BOOT__) {
+        window.__MAZEBENCH_AUTHOR_BOOT__.meltDoneAtMs = Math.round(performance.now());
+      }
+      app.homeVectorTheme = false;
+      app.vectorGlowAmount = 0;
+      renderer?.invalidateSceneCache?.();
+      app.render();
+    };
+    window.requestAnimationFrame(step);
   }
 
   function scheduleEditorSceneRender() {
