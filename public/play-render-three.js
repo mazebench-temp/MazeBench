@@ -294,7 +294,14 @@
     }
 
     function isWorldViewPlayMode() {
-      return !app.isFlyoverMode && !isEditorRenderMode() && playSurroundingRadius() > 1;
+      // The world editor opts INTO the optimized room-group world view via
+      // app.editorWorldView so authors see the whole world around the room
+      // they are editing, exactly like play mode renders it.
+      return (
+        !app.isFlyoverMode &&
+        (app.editorWorldView === true || !isEditorRenderMode()) &&
+        playSurroundingRadius() > 1
+      );
     }
 
     function usesRoomGroupWorld() {

@@ -860,6 +860,11 @@
       modules.registerGameplayFunctions(app);
     }
     app.isEditorRenderApp = true;
+    // Render the WHOLE world around the edited room through the same
+    // optimized room-group path play mode uses (cached merged groups per
+    // room, distance dimming, cheap redraws while painting).
+    app.editorWorldView = true;
+    app.playSurroundingRadius = 26;
     // Diagnostic handle, matching the other __MAZEBENCH_* globals.
     window.__MAZEBENCH_AUTHOR_APP__ = app;
     if (
@@ -965,38 +970,67 @@
     const finishLook = () => {
       editorBootReveal.state = "done";
       timing.fallbackAtMs = Math.round(performance.now());
+      app.cameraFlightFitOptions = null;
+      app.worldViewUniformBrightness = false;
       app.homeVectorTheme = false;
       app.vectorGlowAmount = 0;
+      app.threeRenderer?.setDebugCameraView?.({
+        yaw: 0,
+        tilt: 0.22,
+        zoom: 1,
+        mode: "perspective",
+        skipRender: true
+      });
       app.threeRenderer?.invalidateSceneCache?.();
       app.render();
+      revealEditorWorld();
     };
     try {
       if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
         await app.threeRendererReady;
       }
       const renderer = app.threeRenderer;
-      if (!renderer || typeof renderer.beginHomeEdgeReveal !== "function") {
+      const reducedMotion =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+      if (
+        !renderer ||
+        typeof renderer.beginHomeEdgeReveal !== "function" ||
+        typeof renderer.setDebugCameraView !== "function" ||
+        reducedMotion
+      ) {
         finishLook();
         markAuthorPageReady();
         return;
       }
-      // Hide the edges, render the black vector-boot frame while the cover
-      // is still up, then lift the cover into the sweep. The sweep sizes its
-      // own duration to the room, so small boards finish quickly.
-      const reducedMotion =
-        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-      if (!reducedMotion && typeof renderer.setDebugCameraView === "function") {
-        // Start pulled back at a vista-like low angle; the editor's resting
-        // framing IS the debug camera at (yaw 0, tilt 0.22, zoom 1), so the
-        // post-sweep swoop lands exactly on the normal editor view.
-        renderer.setDebugCameraView({
-          yaw: 0,
-          tilt: 1.15,
-          zoom: 0.55,
-          mode: "perspective",
-          skipRender: true
-        });
+      // The whole world takes part in the boot: neighbor states go in FIRST
+      // so the vector-boot frame (rendered behind the loading cover) meshes
+      // every room, the camera starts far out over the world's center, and
+      // the glow sweep traces the entire world in.
+      const primedStates = primeEditorWorldNeighbors();
+      // Every GLB the world references loads BEHIND the loading cover
+      // (capped so a broken asset can't strand it) — a model arriving
+      // mid-sweep would re-mesh the world and stutter the glow.
+      if (typeof renderer.whenLevelStateModelsReady === "function") {
+        await Promise.race([
+          Promise.all(
+            primedStates.map((levelState) =>
+              renderer.whenLevelStateModelsReady(levelState).catch(() => null)
+            )
+          ),
+          sleepMs(6000)
+        ]);
       }
+      app.worldViewUniformBrightness = true;
+      // Same vista vantage as the play routes: room fit at HOME_PAN
+      // tilt/zoom (the dive itself brings in the world-frame fit, exactly
+      // like flyCameraToRoom's "home-overview" source frame).
+      renderer.setDebugCameraView({
+        yaw: 0,
+        tilt: 1.3,
+        zoom: 0.2,
+        mode: "perspective",
+        skipRender: true
+      });
       renderer.primeHomeEdgeReveal?.();
       renderer.invalidateSceneCache?.();
       app.render();
@@ -1005,20 +1039,14 @@
       renderer.beginHomeEdgeReveal({
         onComplete: () => {
           timing.sweepDoneAtMs = Math.round(performance.now());
-          // Swoop down into the editing view while the glow melts into the
-          // normal palette — the same construction-then-dive the play routes
+          // Dive from the world vista down onto the edited room while the
+          // glow melts — the same construction-then-dive the play routes
           // land with.
-          const swoopMs = reducedMotion ? 0 : 700;
-          if (swoopMs > 0) {
-            renderer.setDebugCameraView({
-              yaw: 0,
-              tilt: 0.22,
-              zoom: 1,
-              animate: true,
-              durationMs: swoopMs
-            });
-          }
-          meltEditorVectorLook(app, reducedMotion ? 220 : swoopMs);
+          editorDiveIntoRoom(app, () => {
+            editorBootReveal.state = "done";
+            timing.meltDoneAtMs = Math.round(performance.now());
+            revealEditorWorld();
+          });
         }
       });
     } catch {
@@ -1027,32 +1055,6 @@
     }
   }
 
-  function meltEditorVectorLook(app, durationMs = 450) {
-    const renderer = app.threeRenderer;
-    const startedAt = performance.now();
-    const step = (now) => {
-      const raw = (now - startedAt) / Math.max(1, durationMs);
-      const progress = raw < 0 ? 0 : raw > 1 ? 1 : raw;
-      const eased = progress * progress * (3 - 2 * progress);
-      app.vectorGlowAmount = 1 - eased;
-      renderer?.invalidateSceneCache?.();
-      // Coalesce with the camera swoop's own per-frame renders.
-      (app.renderOncePerFrame || app.render)(now);
-      if (progress < 1) {
-        window.requestAnimationFrame(step);
-        return;
-      }
-      editorBootReveal.state = "done";
-      if (window.__MAZEBENCH_AUTHOR_BOOT__) {
-        window.__MAZEBENCH_AUTHOR_BOOT__.meltDoneAtMs = Math.round(performance.now());
-      }
-      app.homeVectorTheme = false;
-      app.vectorGlowAmount = 0;
-      renderer?.invalidateSceneCache?.();
-      app.render();
-    };
-    window.requestAnimationFrame(step);
-  }
 
   function scheduleEditorSceneRender() {
     if (editorRenderer.sceneFrameId !== null) {
@@ -1506,6 +1508,7 @@
     inventory.hidden = !open;
     document.getElementById("hotbar-backpack")?.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
+      renderPalettePreviews(); // Memoized; covers opening before the boot chain gets there.
       renderInventoryDetail();
     } else {
       stopDemoScene();
@@ -2019,10 +2022,226 @@
   function scheduleCurrentLevelThumbRefresh(delayMs = 700) {
     window.clearTimeout(currentLevelThumbTimer);
     currentLevelThumbTimer = window.setTimeout(() => {
+      // Keep adjacent rooms' seam edges in sync with the room being painted.
+      refreshCurrentRoomNeighborState();
       renderLevelThumbFromCells(state.levelId, state.cells, state.width, state.height).catch(
         () => {}
       );
     }, delayMs);
+  }
+
+  // Feed every room of the world into the editor app's neighbor cache so
+  // the world view can mesh them (the editor already has all cells locally).
+  // Runs after the boot melt so cached room groups never bake the vector
+  // boot theme; safe to call repeatedly.
+  let editorWorldNeighborsPrimed = false;
+
+  function neighborStateForLevel(levelId, cells, width, height, label) {
+    return buildPlayData({
+      cameraView: { width, height },
+      cells: cells.map((row) => row.slice()),
+      editorRender: true,
+      gameId: authorData.game.id,
+      height,
+      includeGems: true,
+      levelId,
+      levelLabel: label || levelId,
+      width,
+      worldColumns,
+      worldRows
+    });
+  }
+
+  function refreshCurrentRoomNeighborState() {
+    const app = editorRenderer.app;
+    if (
+      !editorWorldNeighborsPrimed ||
+      !app ||
+      typeof app.rememberHorizontalNeighborLevelState !== "function"
+    ) {
+      return;
+    }
+    app.rememberHorizontalNeighborLevelState(
+      neighborStateForLevel(state.levelId, state.cells, state.width, state.height)
+    );
+  }
+
+  function primeEditorWorldNeighbors() {
+    const app = editorRenderer.app;
+    if (!app || typeof app.rememberHorizontalNeighborLevelState !== "function") {
+      return [];
+    }
+    const primedStates = [];
+    authorData.existingLevels.forEach((level) => {
+      if (!Array.isArray(level.cells) || !level.cells.length) {
+        return;
+      }
+      const isCurrent = level.id === state.levelId;
+      const levelState = isCurrent
+        ? neighborStateForLevel(state.levelId, state.cells, state.width, state.height)
+        : neighborStateForLevel(
+            level.id,
+            level.cells,
+            level.width || level.cells[0].length,
+            level.height || level.cells.length,
+            level.label
+          );
+      app.rememberHorizontalNeighborLevelState(levelState);
+      primedStates.push(levelState);
+    });
+    editorWorldNeighborsPrimed = true;
+    return primedStates;
+  }
+
+  // World-fit rectangle in world units, relative to the current room's
+  // origin — the same shape play's camera flights feed the renderer.
+  function editorWorldFitOptions(app) {
+    const unit = app.TILE_SIZE || 64;
+    const roomSpan = 16 * unit;
+    const coordinates = parseLevelCoordinates(state.levelId) || { column: "A", row: "A" };
+    const columnIndex = Math.max(0, columnIndexByValue.get(coordinates.column) ?? 0);
+    const rowIndex = Math.max(0, rowIndexByValue.get(coordinates.row) ?? 0);
+    const minX = -columnIndex * roomSpan;
+    const maxX = (worldColumns.length - columnIndex) * roomSpan;
+    const minZ = -rowIndex * roomSpan;
+    const maxZ = (worldRows.length - rowIndex) * roomSpan;
+    return {
+      centerX: (minX + maxX) / 2,
+      centerZ: (minZ + maxZ) / 2,
+      maxX,
+      maxZ,
+      minX,
+      minZ
+    };
+  }
+
+  // The construction-then-dive every other surface plays: the camera starts
+  // far out over the world's center, the glow sweep traces the whole world
+  // in, then the camera dives down onto the room being edited while the
+  // vector look melts into editor colors.
+  function editorDiveIntoRoom(app, onDone) {
+    const rendererApi = app.threeRenderer;
+    const unit = app.TILE_SIZE || 64;
+    const roomSpan = 16 * unit;
+    const worldFit = editorWorldFitOptions(app);
+    const roomFit = {
+      centerX: roomSpan / 2,
+      centerZ: roomSpan / 2,
+      maxX: roomSpan,
+      maxZ: roomSpan,
+      minX: 0,
+      minZ: 0
+    };
+    // Exactly the numbers the draft play route dives with (flyCameraToRoom
+    // from the world vista): 900ms cosine ease, tilt 1.3 -> 0.22, zoom
+    // 0.2 -> 1 interpolated in log space, glow melting alongside, and the
+    // brightness flip + 900ms world-shadow fade kicked at flight start.
+    const durationMs = 900;
+    const startedAt = performance.now();
+    const startTilt = 1.3;
+    const endTilt = 0.22;
+    const lnStartZoom = Math.log(0.2);
+    const lnEndZoom = Math.log(1);
+    app.worldShadowFadeMs = 900;
+    app.worldViewUniformBrightness = false;
+    const land = () => {
+      app.cameraFlightFitOptions = null;
+      app.homeVectorTheme = false;
+      app.vectorGlowAmount = 0;
+      rendererApi?.setDebugCameraView?.({
+        yaw: 0,
+        tilt: endTilt,
+        zoom: 1,
+        mode: "perspective",
+        skipRender: true
+      });
+      rendererApi?.invalidateSceneCache?.();
+      app.render();
+      if (typeof onDone === "function") {
+        onDone();
+      }
+    };
+    const reducedMotion =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    if (reducedMotion || !rendererApi || typeof rendererApi.setDebugCameraView !== "function") {
+      land();
+      return;
+    }
+    const step = (now) => {
+      const raw = (now - startedAt) / durationMs;
+      const progress = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+      // Play's flight easing (cosine ease-in-out), not the quad variant.
+      const eased = 0.5 - Math.cos(Math.PI * progress) / 2;
+      app.cameraFlightFitOptions = {
+        centerX: worldFit.centerX + (roomFit.centerX - worldFit.centerX) * eased,
+        centerZ: worldFit.centerZ + (roomFit.centerZ - worldFit.centerZ) * eased,
+        maxX: worldFit.maxX + (roomFit.maxX - worldFit.maxX) * eased,
+        maxZ: worldFit.maxZ + (roomFit.maxZ - worldFit.maxZ) * eased,
+        minX: worldFit.minX + (roomFit.minX - worldFit.minX) * eased,
+        minZ: worldFit.minZ + (roomFit.minZ - worldFit.minZ) * eased
+      };
+      rendererApi.setDebugCameraView({
+        yaw: 0,
+        tilt: startTilt + (endTilt - startTilt) * eased,
+        zoom: Math.exp(lnStartZoom + (lnEndZoom - lnStartZoom) * eased),
+        mode: "perspective",
+        skipRender: true
+      });
+      app.vectorGlowAmount = 1 - eased;
+      rendererApi.invalidateSceneCache?.();
+      app.render(now);
+      if (progress < 1) {
+        window.requestAnimationFrame(step);
+        return;
+      }
+      land();
+    };
+    window.requestAnimationFrame(step);
+  }
+
+  // Post-boot choreography, staged so nothing competes with the glow sweep:
+  // prime neighbor states, mesh the world's room groups INCREMENTALLY (8ms
+  // slices per frame instead of one synchronous build), then ease the camera
+  // back until the whole world is in frame — and only after that start the
+  // heavy background work (map thumbnails, palette preview renders).
+  let editorWorldRevealStarted = false;
+
+  function revealEditorWorld() {
+    if (editorWorldRevealStarted) {
+      return;
+    }
+    const app = editorRenderer.app;
+    const rendererApi = app?.threeRenderer;
+    if (!app || !rendererApi) {
+      return;
+    }
+    editorWorldRevealStarted = true;
+    primeEditorWorldNeighbors();
+    const warmStartedAt = performance.now();
+    const warmTick = () => {
+      if (!editorRenderer.app) {
+        return;
+      }
+      let done = true;
+      try {
+        done = rendererApi.warmWorldViewRoomGroups?.(8) !== false;
+      } catch {
+        done = true;
+      }
+      if (!done && performance.now() - warmStartedAt < 8000) {
+        window.requestAnimationFrame(warmTick);
+        return;
+      }
+      rendererApi.invalidateSceneCache?.();
+      app.render();
+      window.setTimeout(() => {
+        primeLocalWorldThumbs().catch(() => {});
+      }, 250);
+      window.setTimeout(() => {
+        renderPalettePreviews();
+      }, 1400);
+    };
+    window.requestAnimationFrame(warmTick);
   }
 
   async function primeLocalWorldThumbs() {
@@ -4947,11 +5166,12 @@
       }
     });
 
-    // Populate every world-map tile with a locally rendered thumbnail once
-    // the boot choreography has had time to finish.
+    // Safety net for hosts without the boot reveal (its completion is the
+    // primary trigger): run the staged world reveal — neighbor priming,
+    // incremental warm, camera pull-back, thumbnails, palette previews.
     window.setTimeout(() => {
-      primeLocalWorldThumbs().catch(() => {});
-    }, 2400);
+      revealEditorWorld();
+    }, 6000);
 
     // Publish-time hero: the page's publish flow calls this to compose the
     // social card from a true 3D render of the world's start room.
@@ -5127,7 +5347,9 @@
 
   renderLevelSelectors();
   renderPalette();
-  renderPalettePreviews();
+  // Palette preview renders are deferred to the staged post-boot chain in
+  // revealEditorWorld() so their WebGL work never competes with the glow
+  // sweep (opening the toolbox early also kicks them; see setInventoryOpen).
   renderAll();
   initializeAuthorDisclosures();
   initializeAuthorPageExtras();
