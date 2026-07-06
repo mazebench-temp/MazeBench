@@ -5,8 +5,26 @@ const MAZE_LEVEL_ID_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const MAZE_WORLD_LEVEL_ID_PATTERN = /^level_([A-Z])x([A-Z])$/;
 const MAZE_DEFAULT_LEVEL_ID = "level_HxI";
 
-function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, loadJson, mazeDir }) {
-  const mazeWorldMapPath = path.join(mazeDir, "world_map.json");
+// World-map behavior is per game directory: every "maze family" game (the
+// master maze plus draft/online worlds materialized under games/) carries its
+// own world_parsing.json, world_map.json and levels/. All functions therefore
+// take a gameId (or game) instead of closing over a single maze directory.
+function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, loadJson, gamesDir }) {
+  function gameDirPath(gameId) {
+    return path.join(gamesDir, String(gameId || ""));
+  }
+
+  function worldParsingPath(gameId) {
+    return path.join(gameDirPath(gameId), "world_parsing.json");
+  }
+
+  function worldMapPath(gameId) {
+    return path.join(gameDirPath(gameId), "world_map.json");
+  }
+
+  function isMazeFamilyGameId(gameId) {
+    return gameId === "maze" || fs.existsSync(worldParsingPath(gameId));
+  }
 
   function clampMazeConfigDimension(value, fallback, max = MAZE_LEVEL_ID_LETTERS.length) {
     const numericValue = Number(value);
@@ -39,33 +57,54 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     return Array.from(MAZE_LEVEL_ID_LETTERS.slice(0, length));
   }
 
-  function loadMazeWorldConfig() {
-    const worldParsing = loadJson(path.join(mazeDir, "world_parsing.json"), {}) || {};
+  function worldConfigSignature(gameId) {
+    let stats = null;
+
+    try {
+      stats = fs.statSync(worldParsingPath(gameId));
+    } catch (error) {
+      stats = null;
+    }
+
+    return stats ? `${stats.mtimeMs}:${stats.size}` : "missing";
+  }
+
+  const worldConfigCache = new Map();
+
+  function worldConfigForGame(gameId) {
+    const signature = worldConfigSignature(gameId);
+    const cached = worldConfigCache.get(gameId);
+
+    if (cached && cached.signature === signature) {
+      return cached.config;
+    }
+
+    const worldParsing = loadJson(worldParsingPath(gameId), {}) || {};
     const rules = worldParsing.rules || {};
     const worldSize = normalizeMazeConfigPair(rules.world_size, [26, 26]);
     const levelSize = normalizeMazeConfigPair(rules.level_size, [26, 26]);
     const cameraView = normalizeMazeConfigPair(rules.camera_view, [10, 10], 256);
-
-    return {
+    const config = {
       worldSize,
       levelSize,
       cameraView,
       worldColumns: buildMazeLetterAxis(worldSize.width),
-      worldRows: buildMazeLetterAxis(worldSize.height)
+      worldRows: buildMazeLetterAxis(worldSize.height),
+      gridWidth: levelSize.width,
+      gridHeight: levelSize.height,
+      authorDefaultWidth: levelSize.width,
+      authorDefaultHeight: levelSize.height
     };
-  }
 
-  const mazeWorldConfig = loadMazeWorldConfig();
-  const mazeLevelGridWidth = mazeWorldConfig.levelSize.width;
-  const mazeLevelGridHeight = mazeWorldConfig.levelSize.height;
-  const mazeAuthorDefaultWidth = mazeLevelGridWidth;
-  const mazeAuthorDefaultHeight = mazeLevelGridHeight;
+    worldConfigCache.set(gameId, { signature, config });
+    return config;
+  }
 
   function buildMazeWorldLevelId(column, row) {
     return `level_${column}x${row}`;
   }
 
-  function buildMazeFallbackLevelFileName(levelId, levelFiles = [], worldMap = null) {
+  function buildMazeFallbackLevelFileName(gameId, levelId, levelFiles = [], worldMap = null) {
     const preferredFileName = `${levelId}.txt`;
     const mappedLevel = worldMap?.byFileName?.get(preferredFileName) || null;
 
@@ -111,13 +150,14 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     return null;
   }
 
-  function normalizeMazeWorldPosition(value) {
+  function normalizeMazeWorldPosition(gameId, value) {
     if (!Array.isArray(value) || value.length < 2) {
       return null;
     }
 
-    const column = normalizeMazeWorldAxisValue(value[0], mazeWorldConfig.worldColumns);
-    const row = normalizeMazeWorldAxisValue(value[1], mazeWorldConfig.worldRows);
+    const config = worldConfigForGame(gameId);
+    const column = normalizeMazeWorldAxisValue(value[0], config.worldColumns);
+    const row = normalizeMazeWorldAxisValue(value[1], config.worldRows);
 
     if (!column || !row) {
       return null;
@@ -158,15 +198,16 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     return null;
   }
 
-  function parseMazeWorldLevelId(levelId) {
+  function parseMazeWorldLevelId(gameId, levelId) {
     const match = String(levelId || "").match(MAZE_WORLD_LEVEL_ID_PATTERN);
 
     if (!match) {
       return null;
     }
 
-    const columnIndex = mazeWorldConfig.worldColumns.indexOf(match[1]);
-    const rowIndex = mazeWorldConfig.worldRows.indexOf(match[2]);
+    const config = worldConfigForGame(gameId);
+    const columnIndex = config.worldColumns.indexOf(match[1]);
+    const rowIndex = config.worldRows.indexOf(match[2]);
 
     if (columnIndex === -1 || rowIndex === -1) {
       return null;
@@ -180,12 +221,12 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     };
   }
 
-  function isMazeWorldLevelId(levelId) {
-    return parseMazeWorldLevelId(levelId) !== null;
+  function isMazeWorldLevelId(gameId, levelId) {
+    return parseMazeWorldLevelId(gameId, levelId) !== null;
   }
 
-  function mazeLevelLabel(levelId) {
-    const coordinates = parseMazeWorldLevelId(levelId);
+  function mazeLevelLabel(gameId, levelId) {
+    const coordinates = parseMazeWorldLevelId(gameId, levelId);
 
     if (!coordinates) {
       return `Level ${levelId}`;
@@ -194,10 +235,10 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     return `Level ${coordinates.column}x${coordinates.row}`;
   }
 
-  function buildDefaultMazeWorldMapEntries(levelFiles) {
+  function buildDefaultMazeWorldMapEntries(gameId, levelFiles) {
     return levelFiles
       .map((fileName) => {
-        const coordinates = parseMazeWorldLevelId(path.parse(fileName).name);
+        const coordinates = parseMazeWorldLevelId(gameId, path.parse(fileName).name);
 
         if (!coordinates) {
           return null;
@@ -217,7 +258,7 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
       .sort(compareMazeWorldPositions);
   }
 
-  function sanitizeMazeWorldMapEntries(levelFiles, rawLevels) {
+  function sanitizeMazeWorldMapEntries(gameId, levelFiles, rawLevels) {
     const entries = parseMazeWorldMapEntriesInput(rawLevels);
 
     if (!entries) {
@@ -231,7 +272,7 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
 
     entries.forEach((entry) => {
       const fileName = typeof entry?.fileName === "string" ? entry.fileName.trim() : "";
-      const coordinates = normalizeMazeWorldPosition(entry?.position);
+      const coordinates = normalizeMazeWorldPosition(gameId, entry?.position);
 
       if (!fileName || !validFileNames.has(fileName) || !coordinates) {
         return;
@@ -257,7 +298,7 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     return sanitized.sort(compareMazeWorldPositions);
   }
 
-  function validateMazeWorldMapEntries(levelFiles, rawLevels) {
+  function validateMazeWorldMapEntries(gameId, levelFiles, rawLevels) {
     const entries = parseMazeWorldMapEntriesInput(rawLevels);
 
     if (!entries) {
@@ -284,7 +325,7 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
           throw new Error(`World map file "${fileName}" is listed more than once.`);
         }
 
-        const coordinates = normalizeMazeWorldPosition(entry?.position);
+        const coordinates = normalizeMazeWorldPosition(gameId, entry?.position);
 
         if (!coordinates) {
           throw new Error(`World map entry ${index + 1} has an invalid position.`);
@@ -310,16 +351,16 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
       .sort(compareMazeWorldPositions);
   }
 
-  function loadMazeWorldMapEntries(levelFiles) {
-    if (!fs.existsSync(mazeWorldMapPath)) {
-      return buildDefaultMazeWorldMapEntries(levelFiles);
+  function loadMazeWorldMapEntries(gameId, levelFiles) {
+    if (!fs.existsSync(worldMapPath(gameId))) {
+      return buildDefaultMazeWorldMapEntries(gameId, levelFiles);
     }
 
-    const worldMap = loadJson(mazeWorldMapPath, {}) || {};
-    return sanitizeMazeWorldMapEntries(levelFiles, worldMap.levels);
+    const worldMap = loadJson(worldMapPath(gameId), {}) || {};
+    return sanitizeMazeWorldMapEntries(gameId, levelFiles, worldMap.levels);
   }
 
-  function writeMazeWorldMap(entries) {
+  function writeMazeWorldMap(gameId, entries) {
     const serializedLevels = {};
 
     entries
@@ -330,7 +371,7 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
       });
 
     fs.writeFileSync(
-      mazeWorldMapPath,
+      worldMapPath(gameId),
       JSON.stringify(
         {
           levels: serializedLevels
@@ -342,8 +383,8 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     );
   }
 
-  function buildMazeWorldLevel(levelId, options = {}) {
-    const coordinates = parseMazeWorldLevelId(levelId);
+  function buildMazeWorldLevel(gameId, levelId, options = {}) {
+    const coordinates = parseMazeWorldLevelId(gameId, levelId);
 
     if (!coordinates) {
       return null;
@@ -353,9 +394,10 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
       typeof options.fileName === "string" && options.fileName.length > 0
         ? options.fileName
         : `${levelId}.txt`;
+    const encodedGameId = encodeURIComponent(gameId);
 
     return {
-      authorUrl: `/author/maze/${levelId}`,
+      authorUrl: `/author/${encodedGameId}/${levelId}`,
       column: coordinates.column,
       columnIndex: coordinates.columnIndex,
       fileName,
@@ -363,9 +405,9 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
       id: levelId,
       mapped: Boolean(options.mapped),
       number: levelId,
-      label: mazeLevelLabel(levelId),
+      label: mazeLevelLabel(gameId, levelId),
       previewUrl: options.previewUrl || null,
-      playUrl: `/play/maze/${levelId}`,
+      playUrl: `/play/${encodedGameId}/${levelId}`,
       position: [coordinates.column, coordinates.row],
       row: coordinates.row,
       rowIndex: coordinates.rowIndex
@@ -374,9 +416,9 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
 
   function buildMazeWorldMapState(game) {
     const levelFiles = Array.isArray(game?.levelFiles) ? game.levelFiles : [];
-    const entries = loadMazeWorldMapEntries(levelFiles);
+    const entries = loadMazeWorldMapEntries(game.id, levelFiles);
     const levels = entries.map((entry) =>
-      buildMazeWorldLevel(entry.levelId, {
+      buildMazeWorldLevel(game.id, entry.levelId, {
         fileName: entry.fileName,
         mapped: true,
         previewUrl: buildMazePreviewData(game, entry.fileName).previewUrl
@@ -392,18 +434,22 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
   }
 
   function defaultLevelIdForGame(game) {
-    if (game?.id === "maze") {
+    if (game?.worldMap || isMazeFamilyGameId(game?.id)) {
       if (game.worldMap?.byPosition?.has(MAZE_DEFAULT_LEVEL_ID)) {
         return MAZE_DEFAULT_LEVEL_ID;
       }
 
-      return game.levels?.[0]?.id || MAZE_DEFAULT_LEVEL_ID;
+      return (
+        game.levels?.[0]?.id || (game.id === "maze" ? MAZE_DEFAULT_LEVEL_ID : "level_AxA")
+      );
     }
 
     return game?.levels?.[0]?.id || null;
   }
 
   function buildMazeWorldMapEditorData(game, options = {}) {
+    const config = worldConfigForGame(game.id);
+
     return {
       apiUrl: `/api/world-map/${encodeURIComponent(game.id)}`,
       authorBaseUrl: `/author/${encodeURIComponent(game.id)}`,
@@ -428,31 +474,32 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
       })),
       message: options.message || "World map ready.",
       playBaseUrl: `/play/${encodeURIComponent(game.id)}`,
-      worldColumns: mazeWorldConfig.worldColumns,
-      worldRows: mazeWorldConfig.worldRows
+      worldColumns: config.worldColumns,
+      worldRows: config.worldRows
     };
   }
 
-  function ensureMazeWorldLevelMapped(level) {
-    if (!isMazeWorldLevelId(level?.id)) {
+  function ensureMazeWorldLevelMapped(game, level) {
+    if (!isMazeWorldLevelId(game.id, level?.id)) {
       return;
     }
 
-    const levelFiles = listTopLevelFiles(path.join(mazeDir, "levels"));
-    const existingEntries = loadMazeWorldMapEntries(levelFiles);
+    const levelFiles = listTopLevelFiles(path.join(gameDirPath(game.id), "levels"));
+    const existingEntries = loadMazeWorldMapEntries(game.id, levelFiles);
 
     if (existingEntries.some((entry) => entry.levelId === level.id)) {
       return;
     }
 
-    const coordinates = parseMazeWorldLevelId(level.id);
+    const coordinates = parseMazeWorldLevelId(game.id, level.id);
 
     if (!coordinates) {
       return;
     }
 
     writeMazeWorldMap(
-      validateMazeWorldMapEntries(levelFiles, [
+      game.id,
+      validateMazeWorldMapEntries(game.id, levelFiles, [
         ...existingEntries,
         {
           fileName: level.fileName,
@@ -472,17 +519,14 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     compareMazeWorldPositions,
     defaultLevelIdForGame,
     ensureMazeWorldLevelMapped,
+    isMazeFamilyGameId,
     isMazeWorldLevelId,
     loadMazeWorldMapEntries,
-    mazeAuthorDefaultHeight,
-    mazeAuthorDefaultWidth,
-    mazeLevelGridHeight,
-    mazeLevelGridWidth,
     mazeLevelLabel,
-    mazeWorldConfig,
     normalizeMazeWorldPosition,
     parseMazeWorldLevelId,
     validateMazeWorldMapEntries,
+    worldConfigForGame,
     writeMazeWorldMap
   };
 }

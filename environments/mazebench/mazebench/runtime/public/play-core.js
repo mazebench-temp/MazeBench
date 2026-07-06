@@ -49,9 +49,16 @@
         return null;
       }
 
-      const normalizedColumn = ((columnIndex % columns.length) + columns.length) % columns.length;
-      const normalizedRow = ((rowIndex % rows.length) + rows.length) % rows.length;
-      return `level_${columns[normalizedColumn]}x${rows[normalizedRow]}`;
+      if (
+        columnIndex < 0 ||
+        rowIndex < 0 ||
+        columnIndex >= columns.length ||
+        rowIndex >= rows.length
+      ) {
+        return null;
+      }
+
+      return `level_${columns[columnIndex]}x${rows[rowIndex]}`;
     }
 
     function adjacentWorldLevelId(levelId, dx, dy, worldColumns = DEFAULT_WORLD_AXIS, worldRows = DEFAULT_WORLD_AXIS) {
@@ -244,7 +251,12 @@
     app.horizontalNeighborActiveLoads = 0;
     app.horizontalNeighborQueueFrameId = 0;
     app.horizontalNeighborLoadConcurrency = app.isFlyoverMode ? 4 : 8;
-    app.deferNeighborLoadRenders = false;
+    app.deferNeighborLoadRenders = playData?.deferNeighborLoadRenders === true;
+    app.worldViewConsolidate = playData?.worldViewConsolidate === true;
+    app.worldViewUniformBrightness = playData?.worldViewUniformBrightness === true;
+    app.worldViewVistaMode = playData?.worldViewVistaMode === true;
+    app.worldViewDetachedVista = playData?.worldViewDetachedVista === true;
+    app.homeVectorTheme = playData?.homeVectorTheme === true;
 
     function parseWorldLevelId(levelId) {
       return playRules.parseWorldLevelId(levelId, app.worldColumns, app.worldRows);
@@ -510,12 +522,16 @@
     }
 
     function syncHorizontalNeighborLevelStates() {
+      if (app.worldViewVistaMode === true) {
+        return;
+      }
+
       const radius = app.isFlyoverMode
         ? app.flyoverRadius
         : Math.max(1, Math.min(26, Math.floor(Number(app.playSurroundingRadius) || 1)));
-      // World level ids wrap around the grid, so a wide radius revisits the
-      // same room at multiple coordinates. Queue each room once, at the
-      // priority of its nearest copy, so fetches stream outward.
+      // A wide radius can still reach the same room through overlapping
+      // windows during transitions. Queue each room once, at the priority of
+      // its nearest copy, so fetches stream outward.
       const priorities = new Map();
 
       for (let dy = -radius; dy <= radius; dy += 1) {
@@ -2260,10 +2276,17 @@
       }
 
       const neighborLevelId = adjacentWorldLevelId(app.currentLevelId, x < 0 ? -1 : 1, 0);
+
+      if (!neighborLevelId) {
+        return null;
+      }
+
       const neighborLevelState = cachedHorizontalNeighborLevelState(neighborLevelId);
 
       if (!neighborLevelState) {
-        queueHorizontalNeighborLevelState(neighborLevelId);
+        if (app.worldViewVistaMode !== true) {
+          queueHorizontalNeighborLevelState(neighborLevelId);
+        }
         return null;
       }
 

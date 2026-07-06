@@ -5,6 +5,39 @@ coding agent (Codex CLI or Claude Code), and through Prime Intellect Verifiers
 v1. The Verifiers integration includes both normal multi-turn chat-model runs
 and Codex CLI runs.
 
+## The local site: Play, Build, and Agent modes
+
+`npm run dev` serves the full site at `http://localhost:3000` with three modes
+on the home page:
+
+- **Play Mode** (`/play`) — play the master world (the 256-room world agents
+  are benchmarked on), any local draft world, or downloaded online worlds.
+- **Build Mode** (`/build`) — make and save your own worlds **locally, without
+  publishing anywhere**. Each draft world is a real game directory under
+  `games/draft-*` (gitignored), so the level editor (`/author/<world>/<level>`),
+  world-map editor, play page, flyover, and the agent runner all work on it.
+  You can also edit the master world itself (its levels live in
+  `games/maze/`), copy the master world into a draft, and import/export worlds
+  as JSON in the same `mazebench-build-world-v1` format the hosted site uses.
+- **Agent Mode** (`/agent`) — launch Codex CLI, Claude Code (your
+  subscriptions, via the same runner as `mazebench model=...`), or Prime
+  Verifiers runs **from the browser**, against the master world, any local
+  draft, or a downloaded community world. Runs stream live: per-move actions,
+  gems, the ASCII board, the agent's reasoning, the runner log, and the replay
+  video when the run finishes. Run artifacts land under
+  `outputs/maze-local/site/<run-id>/`.
+
+### Sync drafts with mazebench.com
+
+Build Mode can connect to your account on the hosted site
+(`https://dev.mazebench.com`, soon `mazebench.com`): the local server holds a
+session token in `data/remote.json` and talks to the site server-to-server —
+push local drafts up, pull site drafts down, and download published community
+worlds for agent runs. Connect either via the browser link flow
+(`/link-local` on the hosted site) or by pasting your `mazebench_session`
+cookie value manually. Drafts stay drafts — publishing remains a deliberate
+action on the site.
+
 ## The `mazebench` command
 
 There is a small `mazebench` CLI that wraps every workflow. It is a launcher:
@@ -94,6 +127,7 @@ Common options (all accept `key=value` or `--key value`):
 | `tools` | `false` (sandboxed to the maze) or `true` (full access) | `false` |
 | `mode` | `text` (ASCII board) or `vision` (rendered PNGs) | `text` |
 | `moves` | maze action budget shown to the agent | `20` |
+| `game` | game dir under `games/`, e.g. a Build Mode draft world id | `maze` |
 | `level` | world level id, e.g. `HxI` or `level_HxI` | `level_HxI` |
 | `view` | `top` … `side` camera pitch | `top-diagonal` |
 | `yaw` | `0`–`3` camera yaw | `0` |

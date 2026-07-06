@@ -5,10 +5,10 @@ const { URL } = require("url");
 const PREVIEW_REQUEST_BODY_MAX_BYTES = 20 * 1024 * 1024;
 
 function createRequestRouter({
+  agentRuns,
   buildMazePreviewData,
   buildMazeWorldMapEditorData,
-  defaultLevelIdForGame,
-  ensureMazeWorldLevelMapped,
+  buildWorlds,
   getContentType,
   getEditableLevel,
   getGame,
@@ -17,16 +17,19 @@ function createRequestRouter({
   getLevelFilePath,
   getLevelState,
   gamesDir,
-  isMazeWorldLevelId,
   loadJson,
-  mazeDefaultLevelId,
   publicFileRoutes,
   readJsonBody,
+  remote,
+  renderAgentPage,
+  renderAgentRunPage,
   renderAuthorPage,
+  renderBuildPage,
   renderFlyoverPage,
   renderGamePage,
   renderHomePage,
   renderNotFound,
+  renderPlayModePage,
   renderPlayPage,
   renderWorldMapEditorPage,
   resolveGameAssetPath,
@@ -35,10 +38,11 @@ function createRequestRouter({
   sendHtml,
   sendJson,
   sendRedirect,
-  validateMazeWorldMapEntries,
-  writeMazePreviewImageData,
-  writeMazeWorldMap
+  worldMaps,
+  writeMazePreviewImageData
 }) {
+  const defaultLevelIdForGame = (game) => worldMaps.defaultLevelIdForGame(game);
+  const isWorldLevelId = (game, levelId) => worldMaps.isMazeWorldLevelId(game.id, levelId);
   async function handleRequest(request, response) {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     const segments = url.pathname.split("/").filter(Boolean);
@@ -68,6 +72,240 @@ function createRequestRouter({
       return;
     }
 
+    if (url.pathname === "/build") {
+      sendHtml(response, 200, renderBuildPage());
+      return;
+    }
+
+    if (url.pathname === "/play") {
+      sendHtml(response, 200, renderPlayModePage());
+      return;
+    }
+
+    if (url.pathname === "/agent") {
+      sendHtml(response, 200, renderAgentPage());
+      return;
+    }
+
+    if (segments.length === 3 && segments[0] === "agent" && segments[1] === "runs") {
+      const runId = decodeURIComponent(segments[2]);
+      const summary = agentRuns.summarizeRun(runId);
+
+      if (!summary) {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
+
+      sendHtml(response, 200, renderAgentRunPage(summary));
+      return;
+    }
+
+    if (segments.length >= 4 && segments[0] === "agent-runs" && segments[2] === "files") {
+      const runId = decodeURIComponent(segments[1]);
+      const fileName = segments.slice(3).map(decodeURIComponent).join("/");
+      const filePath = agentRuns.resolveRunFilePath(runId, fileName);
+
+      if (!filePath) {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
+
+      sendFile(request, response, filePath, getContentType(filePath));
+      return;
+    }
+
+    if (segments.length === 3 && segments[0] === "api" && segments[1] === "agent" && segments[2] === "runs") {
+      if (request.method === "GET") {
+        sendJson(response, 200, { runs: agentRuns.listRuns() });
+        return;
+      }
+
+      if (request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const run = agentRuns.launchRun(payload);
+        sendJson(response, 201, { run, message: `Launched run ${run.id}.` });
+        return;
+      }
+
+      response.writeHead(405, { Allow: "GET, POST" });
+      response.end();
+      return;
+    }
+
+    if (segments.length === 5 && segments[0] === "api" && segments[1] === "agent" && segments[2] === "runs") {
+      const runId = decodeURIComponent(segments[3]);
+
+      if (segments[4] === "progress" && request.method === "GET") {
+        const progress = agentRuns.getRunProgress(runId, {
+          afterTurn: Number(url.searchParams.get("after_turn")) || 0,
+          logOffset: Number(url.searchParams.get("log_offset")) || 0
+        });
+
+        if (!progress) {
+          sendHtml(response, 404, renderNotFound());
+          return;
+        }
+
+        sendJson(response, 200, progress);
+        return;
+      }
+
+      if (segments[4] === "stop" && request.method === "POST") {
+        sendJson(response, 200, { run: agentRuns.stopRun(runId) });
+        return;
+      }
+
+      sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    if (segments.length >= 2 && segments[0] === "api" && segments[1] === "remote") {
+      if (segments.length === 3 && segments[2] === "status" && request.method === "GET") {
+        sendJson(response, 200, remote.getStatus());
+        return;
+      }
+
+      if (segments.length === 3 && segments[2] === "connect" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 200, await remote.connectWithToken(payload?.token));
+        return;
+      }
+
+      if (segments.length === 3 && segments[2] === "disconnect" && request.method === "POST") {
+        sendJson(response, 200, remote.disconnect());
+        return;
+      }
+
+      if (segments.length === 3 && segments[2] === "origin" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 200, remote.setOrigin(payload?.origin));
+        return;
+      }
+
+      if (segments.length === 4 && segments[2] === "link" && segments[3] === "start" && request.method === "GET") {
+        const host = request.headers.host || "localhost:3000";
+        const callback = `http://${host}/api/remote/link/callback`;
+        sendJson(response, 200, { url: remote.deviceLinkUrl(callback) });
+        return;
+      }
+
+      if (segments.length === 4 && segments[2] === "link" && segments[3] === "callback" && request.method === "GET") {
+        const token = url.searchParams.get("token") || "";
+
+        try {
+          await remote.connectWithToken(token);
+          sendRedirect(response, "/build?linked=1");
+        } catch (error) {
+          sendRedirect(response, `/build?link_error=${encodeURIComponent(error.message)}`);
+        }
+        return;
+      }
+
+      if (segments.length === 3 && segments[2] === "worlds" && request.method === "GET") {
+        const view = url.searchParams.get("view") || "drafts";
+        sendJson(response, 200, { worlds: await remote.listRemoteWorlds(view) });
+        return;
+      }
+
+      if (segments.length === 5 && segments[2] === "worlds" && segments[4] === "pull" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const world = await remote.pullWorld(decodeURIComponent(segments[3]), {
+          kind: payload?.kind === "online" ? "online" : "draft"
+        });
+        sendJson(response, 200, { world, message: `Pulled ${world.title}.` });
+        return;
+      }
+
+      if (segments.length === 3 && segments[2] === "push" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const world = await remote.pushWorld(payload?.game_id);
+        sendJson(response, 200, { world, message: `Pushed ${world.title} to ${remote.getStatus().origin}.` });
+        return;
+      }
+
+      sendHtml(response, 404, renderNotFound());
+      return;
+    }
+
+    if (segments.length === 3 && segments[0] === "api" && segments[1] === "build" && segments[2] === "worlds") {
+      if (request.method === "GET") {
+        sendJson(response, 200, { worlds: buildWorlds.listLocalWorlds() });
+        return;
+      }
+
+      if (request.method === "POST") {
+        const payload = await readJsonBody(request);
+        let game = null;
+
+        if (payload?.editor_state) {
+          game = buildWorlds.createLocalWorld({
+            title: payload.title,
+            editorState: payload.editor_state
+          });
+        } else if (payload?.source_game_id) {
+          game = buildWorlds.createLocalWorldFromGame(payload.source_game_id, payload.title);
+        } else {
+          game = buildWorlds.createLocalWorld({
+            title: payload?.title,
+            worldWidth: payload?.world_width,
+            worldHeight: payload?.world_height
+          });
+        }
+
+        sendJson(response, 201, {
+          world: buildWorlds.describeLocalWorld(game.id),
+          message: `Created ${game.name}.`
+        });
+        return;
+      }
+
+      response.writeHead(405, { Allow: "GET, POST" });
+      response.end();
+      return;
+    }
+
+    if (segments.length >= 4 && segments[0] === "api" && segments[1] === "build" && segments[2] === "worlds") {
+      const worldGameId = decodeURIComponent(segments[3]);
+
+      if (!buildWorlds.isLocalWorldGameId(worldGameId) || !buildWorlds.readDraftMeta(worldGameId)) {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
+
+      if (segments.length === 5 && segments[4] === "export" && request.method === "GET") {
+        const game = getGame(worldGameId);
+        sendJson(response, 200, buildWorlds.editorStateForGame(game));
+        return;
+      }
+
+      if (segments.length === 4 && request.method === "PATCH") {
+        const payload = await readJsonBody(request);
+        const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+
+        if (!title) {
+          sendJson(response, 400, { error: "A non-empty title is required." });
+          return;
+        }
+
+        buildWorlds.updateDraftMeta(worldGameId, { title });
+        sendJson(response, 200, {
+          world: buildWorlds.describeLocalWorld(worldGameId),
+          message: `Renamed to ${title}.`
+        });
+        return;
+      }
+
+      if (segments.length === 4 && request.method === "DELETE") {
+        buildWorlds.removeLocalWorld(worldGameId);
+        sendJson(response, 200, { message: `Deleted ${worldGameId}.` });
+        return;
+      }
+
+      response.writeHead(405, { Allow: "GET, PATCH, DELETE" });
+      response.end();
+      return;
+    }
+
     if (segments.length === 3 && segments[0] === "games" && segments[2] === "level_parsing.json") {
       const parserPath = path.join(gamesDir, segments[1], "level_parsing.json");
       if (!fs.existsSync(parserPath)) {
@@ -92,12 +330,12 @@ function createRequestRouter({
 
     if (segments.length === 2 && segments[0] === "author") {
       const game = getGame(segments[1]);
-      if (!game || game.id !== "maze") {
+      if (!game || !game.worldMap) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
 
-      const level = getEditableLevel(game, mazeDefaultLevelId);
+      const level = getEditableLevel(game, defaultLevelIdForGame(game));
       if (!level) {
         sendHtml(response, 404, renderNotFound());
         return;
@@ -109,7 +347,7 @@ function createRequestRouter({
 
     if (segments.length === 2 && segments[0] === "world-map") {
       const game = getGame(segments[1]);
-      if (!game || game.id !== "maze") {
+      if (!game || !game.worldMap) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
@@ -120,15 +358,15 @@ function createRequestRouter({
 
     if (segments.length === 3 && segments[0] === "author") {
       const game = getGame(segments[1]);
-      if (!game || game.id !== "maze") {
+      if (!game || !game.worldMap) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
 
-      if (!isMazeWorldLevelId(segments[2])) {
+      if (!isWorldLevelId(game, segments[2])) {
         sendRedirect(
           response,
-          `/author/${encodeURIComponent(game.id)}/${encodeURIComponent(mazeDefaultLevelId)}`
+          `/author/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
         );
         return;
       }
@@ -162,7 +400,7 @@ function createRequestRouter({
 
     if (segments.length === 2 && segments[0] === "flyover") {
       const game = getGame(segments[1]);
-      if (!game || game.id !== "maze") {
+      if (!game || !game.worldMap) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
@@ -179,12 +417,12 @@ function createRequestRouter({
 
     if (segments.length === 3 && segments[0] === "flyover") {
       const game = getGame(segments[1]);
-      if (!game || game.id !== "maze") {
+      if (!game || !game.worldMap) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
 
-      if (!isMazeWorldLevelId(segments[2])) {
+      if (!isWorldLevelId(game, segments[2])) {
         sendRedirect(
           response,
           `/flyover/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
@@ -209,7 +447,7 @@ function createRequestRouter({
         return;
       }
 
-      if (game.id === "maze" && !isMazeWorldLevelId(segments[2])) {
+      if (game.worldMap && !isWorldLevelId(game, segments[2])) {
         sendRedirect(
           response,
           `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
@@ -234,7 +472,7 @@ function createRequestRouter({
         return;
       }
 
-      if (game.id === "maze" && !isMazeWorldLevelId(segments[3])) {
+      if (game.worldMap && !isWorldLevelId(game, segments[3])) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
@@ -256,7 +494,7 @@ function createRequestRouter({
       segments[4] === "preview"
     ) {
       const game = getGame(segments[2]);
-      if (!game || game.id !== "maze" || !isMazeWorldLevelId(segments[3])) {
+      if (!game || !game.worldMap || !isWorldLevelId(game, segments[3])) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
@@ -274,7 +512,7 @@ function createRequestRouter({
       }
 
       const payload = await readJsonBody(request, { maxBytes: PREVIEW_REQUEST_BODY_MAX_BYTES });
-      writeMazePreviewImageData(level, payload?.imageDataUrl);
+      writeMazePreviewImageData(game, level, payload?.imageDataUrl);
       sendJson(response, 200, {
         fileName: level.fileName,
         levelId: level.id,
@@ -286,7 +524,7 @@ function createRequestRouter({
 
     if (segments.length === 4 && segments[0] === "api" && segments[1] === "author") {
       const game = getGame(segments[2]);
-      if (!game || game.id !== "maze" || !isMazeWorldLevelId(segments[3])) {
+      if (!game || !game.worldMap || !isWorldLevelId(game, segments[3])) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
@@ -313,7 +551,8 @@ function createRequestRouter({
         const editorState = sanitizeEditorPayload(game, payload);
         const levelPath = getLevelFilePath(game, level);
         fs.writeFileSync(levelPath, editorState.rawText, "utf8");
-        ensureMazeWorldLevelMapped(level);
+        worldMaps.ensureMazeWorldLevelMapped(game, level);
+        buildWorlds.touchLocalWorld(game.id);
         sendJson(response, 200, {
           ...getLevelEditorState(game, level),
           message: `Saved ${level.fileName}.`,
@@ -329,7 +568,7 @@ function createRequestRouter({
 
     if (segments.length === 3 && segments[0] === "api" && segments[1] === "world-map") {
       const game = getGame(segments[2]);
-      if (!game || game.id !== "maze") {
+      if (!game || !game.worldMap) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
@@ -345,8 +584,9 @@ function createRequestRouter({
           payload && Object.prototype.hasOwnProperty.call(payload, "entries")
             ? payload.entries
             : payload?.levels;
-        const entries = validateMazeWorldMapEntries(game.levelFiles, rawLevels);
-        writeMazeWorldMap(entries);
+        const entries = worldMaps.validateMazeWorldMapEntries(game.id, game.levelFiles, rawLevels);
+        worldMaps.writeMazeWorldMap(game.id, entries);
+        buildWorlds.touchLocalWorld(game.id);
         sendJson(
           response,
           200,

@@ -20,6 +20,8 @@
 //   tools        false (sandboxed: maze only) | true (full)  (default false)
 //   mode         text (ASCII board) | vision (rendered PNGs) (default text)
 //   moves        maze action budget shown to the agent       (default 20)
+//   game         game directory under games/ (default maze; draft/online
+//                worlds created in Build Mode use their games/<id> dirs)
 //   level        world level id, e.g. HxI or level_HxI       (default level_HxI)
 //   vision_width, vision_height   PNG size in vision mode     (default 512)
 //   view         top | top-diagonal | diagonal | side-diagonal | side
@@ -95,6 +97,11 @@ function normalizeLevelId(value) {
   return match ? `level_${match[1].toUpperCase()}x${match[2].toUpperCase()}` : "level_HxI";
 }
 
+function normalizeGameId(value) {
+  const gameId = String(value || "maze").trim();
+  return /^[a-z0-9][a-z0-9_-]*$/i.test(gameId) ? gameId : "maze";
+}
+
 function isTruthy(value, fallback = false) {
   if (value === undefined) return fallback;
   return !["off", "false", "0", "no", ""].includes(String(value).toLowerCase());
@@ -145,7 +152,7 @@ Session file: ${config.sessionFile}
 
 Your FIRST shell command must start the session (run it exactly once):
 
-  node "${HELPER}" start --repo-root "${ROOT_DIR}" --state "${config.sessionFile}" --level "${config.levelId}" --view "${config.view}" --yaw "${config.yaw}" --game-won-gem-count "${config.gems}"${visionFlags}
+  node "${HELPER}" start --repo-root "${ROOT_DIR}" --state "${config.sessionFile}" --game "${config.gameId}" --level "${config.levelId}" --view "${config.view}" --yaw "${config.yaw}" --game-won-gem-count "${config.gems}"${visionFlags}
 
 Then play up to ${config.moves} maze action(s), unless the game reaches a
 terminal state earlier. Do not stop right after start: choose and run at least
@@ -440,7 +447,7 @@ function runAgent(config, prompt) {
   console.log(
     `Tools ${config.tools ? "ON (full access)" : "OFF (sandboxed to maze only)"} | ` +
       `Mode ${config.mode}${config.mode === "vision" ? ` (${config.visionWidth}x${config.visionHeight})` : ""} | ` +
-      `Level ${config.levelId} | view ${config.view} | yaw ${config.yaw} | budget ${config.moves} moves\n`
+      `Game ${config.gameId} | Level ${config.levelId} | view ${config.view} | yaw ${config.yaw} | budget ${config.moves} moves\n`
   );
 
   // Both agents emit a structured JSONL event stream on stdout (codex --json /
@@ -563,7 +570,7 @@ function runInContainer(config, raw) {
   // path options (out/session) are intentionally dropped; the inner run writes
   // under the mounted /app/outputs/maze-local.
   const forwardKeys = [
-    "model", "moves", "mode", "tools", "level", "view", "yaw", "gems",
+    "model", "moves", "mode", "tools", "game", "level", "view", "yaw", "gems",
     "video", "no_video", "fast", "draft", "width", "height", "fps",
     "vision_width", "vision_height", "model_name", "llm",
     "reasoning", "effort", "codex_fast",
@@ -573,12 +580,33 @@ function runInContainer(config, raw) {
   for (const key of forwardKeys) {
     if (raw[key] !== undefined) inner.push(`${key}=${raw[key]}`);
   }
+  // An explicit out dir inside the mounted outputs tree survives the re-exec:
+  // rewrite it to the container-side path so callers (e.g. the web UI) can
+  // tail a run directory they chose. Out dirs elsewhere are dropped as before.
+  if (raw.out) {
+    const hostOut = path.resolve(raw.out);
+    const relative = path.relative(hostOutputs, hostOut);
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      inner.push(`out=${path.posix.join("/app/outputs/maze-local", relative.split(path.sep).join("/"))}`);
+    }
+  }
 
   const dockerArgs = [
     "run", "--rm", "-i",
     "-e", "MAZEBENCH_IN_CONTAINER=1",
     "-v", `${hostOutputs}:/app/outputs/maze-local`
   ];
+  // Draft/online worlds are not baked into the image — mount the game dir
+  // read-only. Its images/assets_3d symlinks resolve against the in-image
+  // /app/games/maze copy.
+  if (config.gameId !== "maze") {
+    const gameDir = path.join(ROOT_DIR, "games", config.gameId);
+    if (!fs.existsSync(gameDir)) {
+      console.error(`Game directory not found: ${gameDir}`);
+      return 1;
+    }
+    dockerArgs.push("-v", `${gameDir}:/app/games/${config.gameId}:ro`);
+  }
   for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
     if (process.env[key]) dockerArgs.push("-e", key);
   }
@@ -915,6 +943,7 @@ async function main() {
     draft: isTruthy(raw.draft, false),
     fast: isTruthy(raw.fast, false),
     fps: raw.fps ? positiveInt(raw.fps, undefined) : undefined,
+    gameId: normalizeGameId(raw.game),
     gems: positiveInt(raw.gems, 100),
     height: raw.height ? positiveInt(raw.height, undefined) : undefined,
     levelId: normalizeLevelId(raw.level),

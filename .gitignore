@@ -11,3 +11,8 @@ __pycache__/
 # outputs from `prime eval run`
 /outputs/
 /environments/*/outputs/
+
+# local user content: draft/online world game dirs and site-local state
+/games/draft-*/
+/games/online-*/
+/data/

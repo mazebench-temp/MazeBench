@@ -1,5 +1,9 @@
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
+const { createAgentRunService, enrichedPathEnv } = require("./agent-runs");
+const { createLocalBuildWorldService } = require("./build-worlds-local");
+const { createRemoteService } = require("./remote");
 const { createMazeLevelService } = require("./maze-levels");
 const { createMazePreviewService } = require("./maze-preview");
 const { createMazeWorldMapService } = require("./maze-world-map");
@@ -17,8 +21,6 @@ const {
 const ROOT_DIR = path.resolve(__dirname, "..");
 const GAMES_DIR = path.join(ROOT_DIR, "games");
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
-const MAZE_DIR = path.join(GAMES_DIR, "maze");
-const MAZE_PREVIEWS_DIR = path.join(MAZE_DIR, "previews");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_FILE_ROUTES = new Map(
@@ -43,7 +45,10 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/author-solver-worker.js",
     "/author.js",
     "/world-map.js",
-    "/level-preview.js"
+    "/level-preview.js",
+    "/build.js",
+    "/agent.js",
+    "/agent-run.js"
   ].map((routePath) => [routePath, path.join(PUBLIC_DIR, routePath.slice(1))])
 );
 
@@ -102,7 +107,7 @@ function resolveGameAssetPath(gameId, relativePath) {
 const mazePreviewService = createMazePreviewService({
   buildGameAssetUrl,
   ensureDirectory,
-  mazePreviewsDir: MAZE_PREVIEWS_DIR
+  gamesDir: GAMES_DIR
 });
 
 const {
@@ -110,54 +115,29 @@ const {
   writeMazePreviewImageData
 } = mazePreviewService;
 
-const mazeWorldMapService = createMazeWorldMapService({
+const worldMaps = createMazeWorldMapService({
   buildMazePreviewData,
   listTopLevelFiles,
   loadJson,
-  mazeDir: MAZE_DIR
+  gamesDir: GAMES_DIR
 });
 
 const {
-  MAZE_DEFAULT_LEVEL_ID,
-  buildMazeFallbackLevelFileName,
-  buildMazeWorldLevel,
   buildMazeWorldMapEditorData,
-  buildMazeWorldMapState,
-  defaultLevelIdForGame,
-  ensureMazeWorldLevelMapped,
-  isMazeWorldLevelId,
-  mazeAuthorDefaultHeight,
-  mazeAuthorDefaultWidth,
-  mazeLevelGridHeight,
-  mazeLevelGridWidth,
-  mazeLevelLabel,
-  mazeWorldConfig,
-  validateMazeWorldMapEntries,
-  writeMazeWorldMap
-} = mazeWorldMapService;
+  defaultLevelIdForGame
+} = worldMaps;
 
 const mazeLevelService = createMazeLevelService({
   buildGameAssetUrl,
-  buildMazeFallbackLevelFileName,
   buildMazePreviewData,
-  buildMazeWorldLevel,
-  buildMazeWorldMapState,
-  defaultLevelIdForGame,
   gamesDir: GAMES_DIR,
-  isMazeWorldLevelId,
   listTopLevelFiles,
   loadJson,
   loadText,
-  mazeAuthorDefaultHeight,
-  mazeAuthorDefaultWidth,
-  mazeDefaultLevelId: MAZE_DEFAULT_LEVEL_ID,
-  mazeLevelGridHeight,
-  mazeLevelGridWidth,
-  mazeLevelLabel,
-  mazeWorldConfig,
   resolveGameAssetPath,
   rootDir: ROOT_DIR,
-  titleCase
+  titleCase,
+  worldMaps
 });
 
 const {
@@ -171,6 +151,59 @@ const {
   listGames,
   sanitizeEditorPayload
 } = mazeLevelService;
+
+const buildWorlds = createLocalBuildWorldService({
+  gamesDir: GAMES_DIR,
+  getGame,
+  getLevelEditorState,
+  listTopLevelFiles,
+  loadJson,
+  sanitizeEditorPayload,
+  worldMaps
+});
+
+const agentRuns = createAgentRunService({
+  buildWorlds,
+  ensureDirectory,
+  getGame,
+  loadJson,
+  rootDir: ROOT_DIR,
+  worldMaps
+});
+
+const remote = createRemoteService({
+  buildWorlds,
+  ensureDirectory,
+  getGame,
+  loadJson,
+  rootDir: ROOT_DIR
+});
+
+// Which agent/runtime CLIs are on PATH — shown on the Agent page so users know
+// what they can launch. Cached briefly; a page load should not probe 4 binaries
+// every time.
+let agentEnvironmentCache = null;
+
+function agentEnvironment() {
+  if (agentEnvironmentCache && Date.now() - agentEnvironmentCache.at < 60000) {
+    return agentEnvironmentCache.value;
+  }
+
+  const probe = (bin) =>
+    spawnSync("sh", ["-c", `command -v ${JSON.stringify(bin)}`], {
+      encoding: "utf8",
+      env: enrichedPathEnv()
+    }).status === 0;
+  const value = {
+    codex: probe("codex"),
+    claude: probe("claude"),
+    docker: probe("docker"),
+    prime: probe("prime")
+  };
+
+  agentEnvironmentCache = { at: Date.now(), value };
+  return value;
+}
 
 const DEFAULT_REQUEST_BODY_MAX_BYTES = 5 * 1024 * 1024;
 const NO_CACHE_HEADERS = {
@@ -304,29 +337,34 @@ function sendFile(request, response, filePath, contentType) {
 }
 
 const {
+  renderAgentPage,
+  renderAgentRunPage,
   renderAuthorPage,
+  renderBuildPage,
   renderFlyoverPage,
   renderGamePage,
   renderHomePage,
   renderNotFound,
+  renderPlayModePage,
   renderPlayPage,
   renderWorldMapEditorPage
 } = createPageRenderer({
+  agentEnvironment,
   buildAuthorPageData,
   buildMazeWorldMapEditorData,
-  defaultLevelIdForGame,
+  buildWorlds,
+  getGame,
   getLevelState,
   listGames,
-  mazeLevelGridHeight,
-  mazeLevelGridWidth,
-  mazeWorldConfig
+  remote,
+  worldMaps
 });
 
 const { handleRequest } = createRequestRouter({
+  agentRuns,
   buildMazePreviewData,
   buildMazeWorldMapEditorData,
-  defaultLevelIdForGame,
-  ensureMazeWorldLevelMapped,
+  buildWorlds,
   getContentType,
   getEditableLevel,
   getGame,
@@ -335,16 +373,19 @@ const { handleRequest } = createRequestRouter({
   getLevelFilePath,
   getLevelState,
   gamesDir: GAMES_DIR,
-  isMazeWorldLevelId,
   loadJson,
-  mazeDefaultLevelId: MAZE_DEFAULT_LEVEL_ID,
   publicFileRoutes: PUBLIC_FILE_ROUTES,
   readJsonBody,
+  remote,
+  renderAgentPage,
+  renderAgentRunPage,
   renderAuthorPage,
+  renderBuildPage,
   renderFlyoverPage,
   renderGamePage,
   renderHomePage,
   renderNotFound,
+  renderPlayModePage,
   renderPlayPage,
   renderWorldMapEditorPage,
   resolveGameAssetPath,
@@ -353,9 +394,8 @@ const { handleRequest } = createRequestRouter({
   sendHtml,
   sendJson,
   sendRedirect,
-  validateMazeWorldMapEntries,
-  writeMazePreviewImageData,
-  writeMazeWorldMap
+  worldMaps,
+  writeMazePreviewImageData
 });
 
 function isExpectedRequestError(error) {

@@ -1,7 +1,14 @@
 (function () {
   const modules = window.PlayModules || (window.PlayModules = {});
-  const threeModuleUrl = "/vendor/three.module.js";
-  const gltfLoaderModuleUrl = "/vendor/GLTFLoader.js";
+  const playConfig = window.__MAZEBENCH_PLAY_CONFIG__ || {};
+  function assetUrl(path) {
+    const version = playConfig.assetVersion || "";
+    if (!version) return path;
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}v=${encodeURIComponent(version)}`;
+  }
+  const threeModuleUrl = assetUrl("/vendor/three.module.js");
+  const gltfLoaderModuleUrl = assetUrl("/vendor/GLTFLoader.js");
 
   modules.registerThreeRenderFunctions = function registerThreeRenderFunctions(app) {
     const threeCanvas = document.createElement("canvas");
@@ -13,6 +20,7 @@
     let ambientLight = null;
     let keyLight = null;
     let GLTFLoaderClass = null;
+    let gltfLoaderClassPromise = null;
     let raycaster = null;
     let lastWidth = 0;
     let lastHeight = 0;
@@ -36,6 +44,7 @@
     let activeRenderContext = null;
     let cameraEstimateOverride = null;
     let editorHoverTarget = null;
+    let editorHoverHighlightMesh = null;
     let editorHoverRenderFrameId = 0;
     let editorHighlightMaterial = null;
     let editorPickMaterial = null;
@@ -63,7 +72,6 @@
     const debugCameraTiltHoldDurationMs = 500;
     const debugCameraMinZoom = 0.55;
     const debugCameraMaxZoom = 10;
-    const debugCameraZoomStep = 1.14;
     const neighboringRoomBrightness = 0.62;
     const geometryCache = new Map();
     const edgeGeometryCache = new Map();
@@ -286,7 +294,14 @@
     }
 
     function isWorldViewPlayMode() {
-      return !app.isFlyoverMode && !isEditorRenderMode() && playSurroundingRadius() > 1;
+      // The world editor opts INTO the optimized room-group world view via
+      // app.editorWorldView so authors see the whole world around the room
+      // they are editing, exactly like play mode renders it.
+      return (
+        !app.isFlyoverMode &&
+        (app.editorWorldView === true || !isEditorRenderMode()) &&
+        playSurroundingRadius() > 1
+      );
     }
 
     function usesRoomGroupWorld() {
@@ -405,13 +420,13 @@
 
     function createCameraForMode() {
       if (!THREE) {
-        return;
+        return false;
       }
 
       camera = cameraIsPerspective()
         ? new THREE.PerspectiveCamera(34, 1, 1, perspectiveCameraFarPlane())
         : new THREE.OrthographicCamera();
-      syncRendererSize();
+      return syncRendererSize();
     }
 
     function setCameraMode(mode) {
@@ -481,15 +496,16 @@
 
       debugCameraActive = true;
 
+      let cameraReady = false;
       if (
         cameraMode !== requestedMode ||
         (requestedMode === "perspective" && !camera?.isPerspectiveCamera) ||
         (requestedMode === "isometric" && !camera?.isOrthographicCamera)
       ) {
         cameraMode = requestedMode;
-        createCameraForMode();
+        cameraReady = createCameraForMode();
       } else {
-        syncRendererSize();
+        cameraReady = syncRendererSize();
       }
 
       if (Number.isFinite(options.yaw)) {
@@ -525,7 +541,8 @@
       // Hosts driving the camera every frame (e.g. the mazebench.com home
       // flyby) render via renderOncePerFrame themselves; skipRender avoids a
       // second full render plus per-frame DOM writes.
-      if (options.skipRender === true) {
+      if (options.skipRender === true || !cameraReady) {
+        updateCameraModeToggle();
         updateCameraDirectionMapper();
         return;
       }
@@ -878,12 +895,6 @@
         }
         debugCameraTargetYaw += yawStep;
         durationMs = 260;
-      } else if (matchesCameraControl(event, "zoomIn", ["q"])) {
-        debugCameraTargetZoom = clampDebugCameraZoom(debugCameraTargetZoom * debugCameraZoomStep);
-        durationMs = 140;
-      } else if (matchesCameraControl(event, "zoomOut", ["e"])) {
-        debugCameraTargetZoom = clampDebugCameraZoom(debugCameraTargetZoom / debugCameraZoomStep);
-        durationMs = 140;
       } else {
         handled = false;
       }
@@ -948,7 +959,19 @@
       return dimHexColor(color, quantized);
     }
 
+    function liveVectorGlowAmount() {
+      return homeThemeSuspendDepth === 0 ? currentVectorGlow() : 0;
+    }
+
     function material(color, opacity = 1, variants = null) {
+      // Vector-vista presentation: live geometry keeps its normal base colors
+      // so transitions can lerp them toward black. Cached per-room play groups
+      // are built while the theme is suspended and get recolored later by the
+      // cheap room-group shadow/glow pass.
+      const glow = liveVectorGlowAmount();
+      if (glow > 0.001 && color !== "#050608") {
+        color = lerpHexColor(color, HOME_BLOCK_COLOR, glow);
+      }
       return cachedMaterialForRenderColor(renderContextColor(color), opacity, variants);
     }
 
@@ -1022,7 +1045,101 @@
       });
     }
 
+    // Channel-lerp between two #rrggbb colors. Used to cross-fade the world
+    // between its normal palette and the black-block / blue-edge vector look.
+    function lerpHexColor(a, b, t) {
+      const ma = String(a || "").match(/^#([0-9a-f]{6})$/i);
+      const mb = String(b || "").match(/^#([0-9a-f]{6})$/i);
+      if (!ma || !mb) return a;
+      const va = parseInt(ma[1], 16);
+      const vb = parseInt(mb[1], 16);
+      const amount = clamp01(t);
+      const mix = (shift) => {
+        const ca = (va >> shift) & 255;
+        const cb = (vb >> shift) & 255;
+        return Math.round(ca + (cb - ca) * amount);
+      };
+      return `#${[mix(16), mix(8), mix(0)]
+        .map((channel) => channel.toString(16).padStart(2, "0"))
+        .join("")}`;
+    }
+
+    // Glow twin of a cache material: the base solid color lerped toward the
+    // near-black vector-block color by `glow`, then dimmed by the shadow
+    // `factor` — one cache-shared MeshLambertMaterial, no re-mesh. Composes
+    // with the shadow fade (both fold into a single reassigned material).
+    function glowDimmedWorldMaterial(baseMaterial, glow, factor) {
+      const source = baseMaterial?.userData?.dimSource;
+
+      if (!source) {
+        return dimmedWorldMaterial(baseMaterial, factor);
+      }
+      if (glow <= 0.001 && factor >= 0.999) {
+        return baseMaterial;
+      }
+
+      let color = source.color;
+      if (glow > 0.001) {
+        color = lerpHexColor(color, HOME_BLOCK_COLOR, glow);
+      }
+      if (factor < 0.999) {
+        color = dimHexColor(color, factor);
+      }
+
+      return cachedMaterialForRenderColor(color, source.opacity, {
+        doubleSide: source.doubleSide,
+        depthWrite: source.noDepthWrite ? false : undefined,
+        polygonOffset: source.polygonOffset,
+        polygonOffsetFactor: source.polygonOffsetFactor,
+        polygonOffsetUnits: source.polygonOffsetUnits
+      });
+    }
+
+    // Glow twin of an edge line material: black play edge lerped toward the
+    // light-blue vector-edge color by `glow`. Edges are never shadow-dimmed.
+    function glowEdgeMaterial(baseMaterial, glow) {
+      if (!baseMaterial || glow <= 0.001) {
+        return baseMaterial;
+      }
+      const opacity =
+        typeof baseMaterial.opacity === "number" ? baseMaterial.opacity : 1;
+      return lineMaterial(lerpHexColor("#000000", HOME_EDGE_COLOR, glow), opacity);
+    }
+
+    // ---- Home "vector boot" theme (black blocks, light-blue edges) ----
+    // Active only on the home vista: the home page and the snapshot bake set
+    // app.homeVectorTheme; live gameplay never does, so play keeps its normal
+    // palette. Blocks render near-black and every edge line renders light blue.
+    const HOME_BLOCK_COLOR = "#080a12";
+    const HOME_EDGE_COLOR = "#6fdcff";
+
+    // The per-room PLAY groups are meshed while the home vista is showing
+    // (idle warmup) and are reused for gameplay, which must keep normal
+    // colors. Suspend the theme while those groups build so only the vista
+    // presentation itself (the merged snapshot + the live anchor room) is
+    // themed, never the play geometry.
+    let homeThemeSuspendDepth = 0;
+
+    function useHomeVectorTheme() {
+      if (app.homeVectorTheme !== true) return false;
+      // During the offline bake every room IS the vista snapshot, so the
+      // play-group suspend (which keeps live gameplay normal) must not apply.
+      if (app.bakingSnapshot === true) return true;
+      return homeThemeSuspendDepth === 0;
+    }
+
+    function edgeColor() {
+      const glow = liveVectorGlowAmount();
+      return glow > 0.001 ? lerpHexColor("#000000", HOME_EDGE_COLOR, glow) : "#000000";
+    }
+
     function lineMaterial(color = "#000000", opacity = 1) {
+      // On the home vista every edge line is drawn with the "draw-on" reveal
+      // material so the blue wireframe traces in from the rear on load.
+      if (useHomeVectorTheme()) {
+        return revealLineMaterial(color, opacity);
+      }
+
       const alpha = Math.max(0, Math.min(1, opacity));
       const key = `${color}:${Math.round(alpha * 1000)}`;
 
@@ -1062,6 +1179,207 @@
       }
 
       return lineMaterialCache.get(key);
+    }
+
+    // ---- Home vista "draw-on" edge reveal --------------------------------
+    // The blue wireframe literally traces in from the rear of the world: a
+    // per-vertex world-space coordinate (projected onto the camera's forward
+    // heading) is compared against a moving front line each frame. Everything
+    // past the front is discarded, so long edges grow along their length while
+    // near edges pop in last — the 3D echo of the vector-boot grid.
+    const homeEdgeReveal = {
+      active: false,
+      startMs: 0,
+      durationMs: 2200,
+      uReveal: { value: 1 },
+      // THREE is imported asynchronously (null at closure init), so the sweep
+      // vector is created lazily once THREE is ready.
+      uSweepDir: { value: null },
+      uSweepMin: { value: 0 },
+      uSweepMax: { value: 1 },
+      uBand: { value: 1 }
+    };
+    const revealLineMaterialCache = new Map();
+
+    function ensureSweepVector() {
+      if (!homeEdgeReveal.uSweepDir.value && THREE) {
+        homeEdgeReveal.uSweepDir.value = new THREE.Vector3(0, 0, 1);
+      }
+      return homeEdgeReveal.uSweepDir.value;
+    }
+
+    function revealLineMaterial(color, opacity = 1) {
+      const alpha = Math.max(0, Math.min(1, opacity));
+      const key = `${color}:${Math.round(alpha * 1000)}`;
+
+      if (!revealLineMaterialCache.has(key)) {
+        const material = new THREE.LineBasicMaterial({
+          color,
+          depthTest: true,
+          depthWrite: false,
+          linewidth: 1,
+          opacity: alpha,
+          transparent: alpha < 0.999
+        });
+
+        material.onBeforeCompile = (shader) => {
+          // Share the reveal uniforms across every edge material so one driver
+          // frame updates them all at once.
+          ensureSweepVector();
+          shader.uniforms.uReveal = homeEdgeReveal.uReveal;
+          shader.uniforms.uSweepDir = homeEdgeReveal.uSweepDir;
+          shader.uniforms.uSweepMin = homeEdgeReveal.uSweepMin;
+          shader.uniforms.uSweepMax = homeEdgeReveal.uSweepMax;
+          shader.uniforms.uBand = homeEdgeReveal.uBand;
+
+          shader.vertexShader = shader.vertexShader
+            .replace(
+              "#include <common>",
+              "#include <common>\nvarying float vEdgeSweep;\nuniform vec3 uSweepDir;"
+            )
+            .replace(
+              "#include <begin_vertex>",
+              "#include <begin_vertex>\nvec3 edgeWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;\nvEdgeSweep = dot( edgeWorld, uSweepDir );"
+            )
+            .replace(
+              "#include <project_vertex>",
+              [
+                "vec4 mvPosition = modelViewMatrix * vec4( transformed, 1.0 );",
+                `float edgePullBias = ${edgeDepthBias.toFixed(4)};`,
+                "if ( isPerspectiveMatrix( projectionMatrix ) ) {",
+                "  float edgeViewDistance = max( length( mvPosition.xyz ), 0.0001 );",
+                "  float edgePull = max( edgePullBias, edgeViewDistance * 0.0015 );",
+                "  mvPosition.xyz *= max( edgeViewDistance - edgePull, 0.0 ) / edgeViewDistance;",
+                "} else {",
+                "  mvPosition.z += edgePullBias;",
+                "}",
+                "gl_Position = projectionMatrix * mvPosition;"
+              ].join("\n")
+            );
+
+          shader.fragmentShader = shader.fragmentShader
+            .replace(
+              "#include <common>",
+              "#include <common>\nvarying float vEdgeSweep;\nuniform float uReveal;\nuniform float uSweepMin;\nuniform float uSweepMax;\nuniform float uBand;"
+            )
+            .replace(
+              "#include <clipping_planes_fragment>",
+              // uReveal <= 0 hides EVERY edge unconditionally — the sweep
+              // bounds may still be at their defaults when the world is first
+              // primed hidden (they are computed once the reveal begins), so
+              // don't rely on them for the fully-off state.
+              "#include <clipping_planes_fragment>\nif ( uReveal <= 0.0 ) discard;\nfloat edgeFront = mix( uSweepMax + uBand, uSweepMin - uBand, uReveal );\nif ( vEdgeSweep < edgeFront ) discard;"
+            );
+        };
+
+        revealLineMaterialCache.set(key, material);
+      }
+
+      return revealLineMaterialCache.get(key);
+    }
+
+    // Sweep speed for the default reveal duration, in ms per world unit of
+    // depth along the camera heading. Calibrated so the 16x16 bench world
+    // (span ~16384 units at the vista heading) keeps its tuned ~2200ms sweep.
+    const HOME_EDGE_REVEAL_MS_PER_UNIT = 2200 / 16384;
+
+    function primeHomeEdgeReveal() {
+      // Hide every edge before the first vista frame so nothing flashes in
+      // fully-drawn ahead of the animation.
+      homeEdgeReveal.active = false;
+      homeEdgeReveal.uReveal.value = 0;
+    }
+
+    function beginHomeEdgeReveal(options = {}) {
+      const onComplete = typeof options.onComplete === "function" ? options.onComplete : null;
+      const complete = () => {
+        if (!onComplete) return;
+        try {
+          onComplete();
+        } catch {
+          // Reveal completion callbacks are best-effort.
+        }
+      };
+      if (!THREE || !camera || !edgeScene) {
+        homeEdgeReveal.uReveal.value = 1;
+        complete();
+        return;
+      }
+
+      const forward = new THREE.Vector3();
+      camera.getWorldDirection(forward);
+      const dir = new THREE.Vector3(forward.x, 0, forward.z);
+      if (dir.lengthSq() < 1e-6) {
+        dir.set(0, 0, 1);
+      }
+      dir.normalize();
+
+      const box = new THREE.Box3().setFromObject(edgeScene);
+      if (box.isEmpty()) {
+        homeEdgeReveal.uReveal.value = 1;
+        complete();
+        return;
+      }
+
+      // "Rear" is the far end along the camera heading (largest projection);
+      // reveal sweeps from there toward the near edge.
+      let sMin = Infinity;
+      let sMax = -Infinity;
+      const xs = [box.min.x, box.max.x];
+      const zs = [box.min.z, box.max.z];
+      for (let i = 0; i < 2; i += 1) {
+        for (let j = 0; j < 2; j += 1) {
+          const s = xs[i] * dir.x + zs[j] * dir.z;
+          if (s < sMin) sMin = s;
+          if (s > sMax) sMax = s;
+        }
+      }
+
+      ensureSweepVector().copy(dir);
+      homeEdgeReveal.uSweepMin.value = sMin;
+      homeEdgeReveal.uSweepMax.value = sMax;
+      homeEdgeReveal.uBand.value = Math.max(1, (sMax - sMin) * 0.05);
+      // Constant sweep SPEED, not constant duration: the default scales with
+      // the world's depth along the camera heading, so a 3x3 custom world
+      // finishes proportionally sooner than the 16x16 bench world (which
+      // stays at its tuned ~2200ms). Clamped so tiny scenes still read as a
+      // reveal and oversized ones never drag.
+      const sweepSpan = sMax - sMin;
+      const scaledDurationMs = Math.max(
+        550,
+        Math.min(2600, sweepSpan * HOME_EDGE_REVEAL_MS_PER_UNIT)
+      );
+      homeEdgeReveal.durationMs = Math.max(200, Number(options.durationMs) || scaledDurationMs);
+      homeEdgeReveal.startMs = performance.now();
+      homeEdgeReveal.uReveal.value = 0;
+      homeEdgeReveal.active = true;
+
+      const step = (now) => {
+        if (!homeEdgeReveal.active) {
+          return;
+        }
+        const raw = (now - homeEdgeReveal.startMs) / homeEdgeReveal.durationMs;
+        const p = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+        // smoothstep so the front eases in and settles.
+        homeEdgeReveal.uReveal.value = p * p * (3 - 2 * p);
+        invalidateSceneCache();
+        (app.renderOncePerFrame || app.render)(now);
+        if (p < 1) {
+          window.requestAnimationFrame(step);
+        } else {
+          homeEdgeReveal.uReveal.value = 1;
+          homeEdgeReveal.active = false;
+          invalidateSceneCache();
+          (app.renderOncePerFrame || app.render)(performance.now());
+          complete();
+        }
+      };
+      window.requestAnimationFrame(step);
+    }
+
+    function cancelHomeEdgeReveal() {
+      homeEdgeReveal.active = false;
+      homeEdgeReveal.uReveal.value = 1;
     }
 
     function imageTexture(url) {
@@ -1248,9 +1566,31 @@
       return { bounds, parts };
     }
 
-    function parseModelAsset(url, data) {
-      if (!GLTFLoaderClass || !(data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
-        return Promise.resolve(null);
+    function ensureGltfLoaderClass() {
+      if (GLTFLoaderClass) {
+        return Promise.resolve(GLTFLoaderClass);
+      }
+      if (gltfLoaderClassPromise) {
+        return gltfLoaderClassPromise;
+      }
+
+      gltfLoaderClassPromise = import(gltfLoaderModuleUrl)
+        .then((loaderModule) => {
+          GLTFLoaderClass = loaderModule.GLTFLoader || null;
+          return GLTFLoaderClass;
+        })
+        .catch(() => {
+          GLTFLoaderClass = null;
+          return null;
+        });
+
+      return gltfLoaderClassPromise;
+    }
+
+    async function parseModelAsset(url, data) {
+      const Loader = await ensureGltfLoaderClass();
+      if (!Loader || !(data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
+        return null;
       }
 
       const arrayBuffer = data instanceof ArrayBuffer
@@ -1259,7 +1599,7 @@
 
       return new Promise((resolve) => {
         try {
-          new GLTFLoaderClass().parse(
+          new Loader().parse(
             arrayBuffer,
             "",
             (gltf) => resolve(extractModelFromGltf(gltf)),
@@ -1975,11 +2315,13 @@
         return runtimeLevelState();
       }
 
-      const levelState = app.cachedHorizontalNeighborLevelState?.(neighborLevelId);
+	      const levelState = app.cachedHorizontalNeighborLevelState?.(neighborLevelId);
 
-      if (!levelState) {
-        app.queueHorizontalNeighborLevelState?.(neighborLevelId);
-      }
+	      if (!levelState) {
+	        if (app.worldViewVistaMode !== true) {
+	          app.queueHorizontalNeighborLevelState?.(neighborLevelId);
+	        }
+	      }
 
       return levelState || null;
     }
@@ -2334,7 +2676,7 @@
         return null;
       }
 
-      const edges = new THREE.LineSegments(edgeGeometry || edgeGeometryFor(geometry, threshold), lineMaterial("#000000", lineOpacity));
+      const edges = new THREE.LineSegments(edgeGeometry || edgeGeometryFor(geometry, threshold), lineMaterial(edgeColor(), lineOpacity));
       edges.position.copy(position);
 
       if (scale) {
@@ -2615,27 +2957,15 @@
     }
 
     function outlinePixelRadius() {
-      // Half-thickness the outline should have in WORLD units (matches the
-      // old 1.68px look at the default single-room camera distance).
+      // Constant on-screen thickness, independent of camera zoom/distance, so
+      // edges are the SAME width in the zoomed-out vista and in zoomed-in play.
+      // (The renderer runs at pixelRatio 1 and threeCanvas is sized to the
+      // display, so this value is already in on-screen pixels.) A fixed width
+      // is what lets the two looks — glowing blue edges vs plain black edges —
+      // be cross-faded as a pure colour/glow change without the line width
+      // jumping. This is the "default single-room" thickness applied always.
       const worldRadius = unit * 0.035 * 0.75;
-      let pixelsPerUnit = 0;
-
-      if (camera?.isOrthographicCamera) {
-        pixelsPerUnit = camera.zoom;
-      } else if (camera?.isPerspectiveCamera && lastCameraFitDistance > 0) {
-        const fovRadians = (camera.fov * Math.PI) / 180;
-        pixelsPerUnit =
-          threeCanvas.height /
-          (2 * lastCameraFitDistance * Math.tan(fovRadians / 2));
-      }
-
-      if (!(pixelsPerUnit > 0)) {
-        return Math.max(1.5, worldRadius);
-      }
-
-      // Attenuate with distance like perspective geometry; clamp so extreme
-      // zoom-in doesn't explode the 2D stamp count (offsets grow ~radius^2).
-      return Math.max(0, Math.min(6, worldRadius * pixelsPerUnit));
+      return Math.max(1.5, worldRadius);
     }
 
     function outlinePixelOffsets(radius) {
@@ -2682,6 +3012,17 @@
       return offsets;
     }
 
+    // How "glowing" the edges currently are: 1 = the home vector look (glowing
+    // blue), 0 = plain play edges (black). During a look-to-look transition the
+    // fade sets app.vectorGlowAmount to a value in between; otherwise it tracks
+    // the active theme.
+    function currentVectorGlow() {
+      if (typeof app.vectorGlowAmount === "number") {
+        return Math.max(0, Math.min(1, app.vectorGlowAmount));
+      }
+      return useHomeVectorTheme() ? 1 : 0;
+    }
+
     function drawToonOutlineOverlay(targetContext) {
       const width = threeCanvas.width;
       const height = threeCanvas.height;
@@ -2691,9 +3032,16 @@
         return;
       }
 
+      // Glowing edges are drawn about half as thick: keep the solid 1px core
+      // but fade the outer stamp ring so the line reads thin and lets the bloom
+      // fill it out. Plain black play edges keep the full-strength outline.
+      const outerAlpha = 1 - currentVectorGlow() * 0.7;
+
       targetContext.save();
       targetContext.imageSmoothingEnabled = false;
       outlinePixelOffsets(radius).forEach((offset) => {
+        targetContext.globalAlpha =
+          offset.x === 0 && offset.y === 0 ? 1 : outerAlpha;
         targetContext.drawImage(threeCanvas, offset.x, offset.y);
       });
       targetContext.restore();
@@ -4429,7 +4777,23 @@
       return editorHighlightMaterial;
     }
 
+    function clearEditorHoverHighlight() {
+      if (!editorHoverHighlightMesh) {
+        return;
+      }
+
+      editorHoverHighlightMesh.parent?.remove(editorHoverHighlightMesh);
+
+      if (editorHoverHighlightMesh.geometry && !cachedGeometryHas(editorHoverHighlightMesh.geometry)) {
+        editorHoverHighlightMesh.geometry.dispose();
+      }
+
+      editorHoverHighlightMesh = null;
+    }
+
     function addEditorHoverHighlight() {
+      clearEditorHoverHighlight();
+
       if (!editorHoverTarget || !THREE) {
         return;
       }
@@ -4498,6 +4862,7 @@
       highlight.position.copy(position);
       highlight.castShadow = false;
       highlight.receiveShadow = false;
+      editorHoverHighlightMesh = highlight;
       scene.add(highlight);
     }
 
@@ -5440,7 +5805,7 @@
 
         const edges = new THREE.LineSegments(
           edgeGeometryFor(part.geometry, 28),
-          lineMaterial("#000000", edgeOpacity)
+          lineMaterial(edgeColor(), edgeOpacity)
         );
 
         edges.position.copy(placement.position);
@@ -6518,7 +6883,7 @@
       model.parts.forEach((part) => {
         const edges = new THREE.LineSegments(
           edgeGeometryFor(part.geometry, 28),
-          lineMaterial("#000000", edgeOpacity)
+          lineMaterial(edgeColor(), edgeOpacity)
         );
 
         edges.position.set(-placement.center.x, -model.bounds.min.y, -placement.center.z);
@@ -6672,7 +7037,7 @@
 
       const edges = new THREE.LineSegments(
         edgeGeometryFor(geometry, threshold),
-        lineMaterial("#000000", lineOpacity)
+        lineMaterial(edgeColor(), lineOpacity)
       );
 
       edges.position.copy(position);
@@ -6966,6 +7331,7 @@
     }
 
     function disposeScene() {
+      clearEditorHoverHighlight();
       disposeSceneChildren(scene);
       disposeSceneChildren(edgeScene);
       playerLiftMarkerMeshes.clear();
@@ -7229,6 +7595,9 @@
       // Cached world-view room groups survive rebuilds; detach them so
       // disposeScene doesn't free their merged geometry.
       detachWorldViewRoomGroups();
+      // Retained home snapshots also survive rebuilds; only the consolidated
+      // vista path should re-attach them for the current frame.
+      detachWorldConsolidation();
       disposeScene();
 
       if (!scene) {
@@ -7362,7 +7731,8 @@
           app.levelTransition ||
           app.gateAnimationFrameId !== null ||
           app.orangeWallAnimationFrameId !== null ||
-          app.playerLiftAnimationFrameId !== null
+          app.playerLiftAnimationFrameId !== null ||
+          homeEdgeReveal.active
       );
     }
 
@@ -7476,8 +7846,15 @@
         edgeOutlinesEnabled() ? "edges:on" : "edges:off",
         animationSignature(now),
         flyoverFadeAnimationSignature(now),
-        worldShadowSignature(now),
+        // The world-shadow fade is applied by per-frame material swaps
+        // (applyWorldShadowGlowSwapPass), never by rebuilds, so it has no
+        // signature term. The vector glow needs one: immediate-mode renders
+        // (the vista anchor room and camera-flight rooms) bake the glow into
+        // their materials at mesh time, so each 1/32 glow step must dirty
+        // the content once for those few rooms to re-mesh at the new value.
+        `vector-glow:${Math.round(currentVectorGlow() * 32)}`,
         app.worldViewVistaMode === true ? "vista-anchor" : "live-anchor",
+        app.worldViewDetachedVista === true ? "detached-vista" : "room-vista",
         app.isFlyoverMode ? "flyover-selection" : "no-flyover-selection",
         transition
           ? [
@@ -7554,6 +7931,10 @@
     }
 
     function syncRendererSize() {
+      if (!renderer || !camera) {
+        return false;
+      }
+
       const width = app.boardRect.width;
       const height = app.boardRect.height;
 
@@ -7580,6 +7961,7 @@
       }
 
       camera.updateProjectionMatrix();
+      return true;
     }
 
     function oneLayerCameraWorldHeight() {
@@ -8109,9 +8491,8 @@
       return flyoverLevelBrightness(app.currentLevelId, 1);
     }
 
-    // World level ids wrap around the grid, so a wide radius revisits the
-    // same room at multiple coordinates. The grid is static per world, so the
-    // deduped nearest-copy coordinate list is cached per anchor level.
+    // The grid is static per world, so the coordinate list is cached per
+    // anchor level.
     const worldNeighborCoordsCache = new Map();
 
     function worldNeighborCoords(levelId, radius) {
@@ -8210,8 +8591,31 @@
       return worldShadowFade.current !== worldShadowFade.target;
     }
 
-    function worldShadowSignature(now) {
-      return `shadow:${Math.round(worldShadowQuantized(worldShadowFactor(now)) * 1000)}`;
+    // Land a flight on exactly the final shadow value: the fade would
+    // otherwise settle a few frames after the camera stops, leaving the
+    // landed frame visibly mid-fade on slow devices.
+    function snapWorldShadowFade() {
+      worldShadowFade.current = worldShadowTargetFactor();
+      worldShadowFade.target = worldShadowFade.current;
+      worldShadowFade.from = worldShadowFade.current;
+    }
+
+    // Advance the world-shadow and vector-glow fades on frames that do NOT
+    // rebuild the scene: re-skin every attached room group at this frame's
+    // factors. applyWorldViewRoomShadow early-returns per entry when the
+    // quantized values are unchanged, so settled frames cost one Map walk.
+    function applyWorldShadowGlowSwapPass(now) {
+      if (app.isFlyoverMode || app.worldViewRoomFadeInsEnabled === true) {
+        return;
+      }
+
+      const factor = worldShadowFactor(now);
+
+      worldViewRoomGroups.forEach((entry) => {
+        if (entry.group?.parent) {
+          applyWorldViewRoomShadow(entry, worldViewRoomEntryShadowFactor(entry, factor));
+        }
+      });
     }
 
     function flyoverLevelBrightness(levelId, brightness = 1) {
@@ -8237,10 +8641,10 @@
       };
     }
 
-    function surroundingLevelViews() {
-      if (!shouldRenderSurroundingLevels()) {
-        return [];
-      }
+	    function surroundingLevelViews() {
+	      if (!shouldRenderSurroundingLevels()) {
+	        return [];
+	      }
 
       if (app.isFlyoverMode && typeof app.flyoverSurroundingLevelViews === "function") {
         const flyoverViews = app.flyoverSurroundingLevelViews();
@@ -8252,15 +8656,36 @@
 
       const currentState = runtimeLevelState();
       const views = [];
+      const detachedVista = app.worldViewVistaMode === true && app.worldViewDetachedVista === true;
+
+      if (detachedVista) {
+        const anchorState =
+          app.cachedHorizontalNeighborLevelState?.(app.currentLevelId) ||
+          currentState;
+
+        if (anchorState?.width && anchorState?.height) {
+          views.push({
+            dx: 0,
+            dy: 0,
+            levelId: app.currentLevelId,
+            levelState: anchorState,
+            offset: { x: 0, z: 0 },
+            brightness: 1,
+            distance: 0
+          });
+        }
+      }
 
       worldNeighborCoords(app.currentLevelId, surroundingLevelRadius()).forEach((coord) => {
-        const levelId = coord.levelId;
-        const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
+	        const levelId = coord.levelId;
+	        const levelState = app.cachedHorizontalNeighborLevelState?.(levelId);
 
-        if (!levelState) {
-          app.queueHorizontalNeighborLevelState?.(levelId, { priority: coord.distance });
-          return;
-        }
+	        if (!levelState) {
+	          if (app.worldViewVistaMode !== true) {
+	            app.queueHorizontalNeighborLevelState?.(levelId, { priority: coord.distance });
+	          }
+	          return;
+	        }
 
         if (
           app.isFlyoverMode &&
@@ -8748,6 +9173,12 @@
     }
 
     function attachWorldViewRoomEntry(entry, view) {
+      entry.detachedVistaAnchor =
+        app.worldViewVistaMode === true &&
+        app.worldViewDetachedVista === true &&
+        String(view.levelId || "") === String(app.currentLevelId || "") &&
+        Number(view.dx || 0) === 0 &&
+        Number(view.dy || 0) === 0;
       entry.group.position.set(view.offset.x, 0, view.offset.z);
       entry.edgeGroup.position.set(view.offset.x, 0, view.offset.z);
       entry.edgeGroup.userData.edgeBasePosition.set(view.offset.x, 0, view.offset.z);
@@ -8755,14 +9186,21 @@
       edgeScene.add(entry.edgeGroup);
     }
 
+    function worldViewRoomEntryShadowFactor(entry, fallbackFactor) {
+      return entry.detachedVistaAnchor === true ? 1 : fallbackFactor;
+    }
+
     // Dim a room group by swapping its meshes onto the dimmed twins of their
     // shared cache materials — pixel-identical to a rebuild at `factor`, but
-    // with zero meshing. Edge lines were never brightness-dimmed; the edge
-    // group is intentionally untouched.
+    // with zero meshing. The same pass also folds in the vector-glow cross-fade
+    // (solids toward black, edges toward blue) so a look-to-look transition
+    // never fights the shadow swap over child.material.
     function applyWorldViewRoomShadow(entry, factor) {
       const quantized = worldShadowQuantized(factor);
+      const glow = currentVectorGlow();
+      const glowQuantized = glow <= 0.001 ? 0 : Math.round(glow * 32) / 32;
 
-      if (entry.shadowFactor === quantized) {
+      if (entry.shadowFactor === quantized && entry.glowFactor === glowQuantized) {
         return;
       }
 
@@ -8782,11 +9220,31 @@
         const base = child.userData.shadowBase;
 
         child.material =
-          quantized >= 0.999 ? base.material : dimmedWorldMaterial(base.material, quantized);
+          quantized >= 0.999 && glowQuantized <= 0.001
+            ? base.material
+            : glowDimmedWorldMaterial(base.material, glowQuantized, quantized);
         // Mirror renderContextCastsShadows(): neighbors stop casting
         // shadows below the 0.72 brightness gate.
         child.castShadow = base.castShadow && quantized > 0.72;
       });
+
+      // Edges only respond to the glow (never to shadow), so re-skin them only
+      // when the glow amount actually moved.
+      if (entry.edgeGroup && entry.glowFactor !== glowQuantized) {
+        entry.edgeGroup.traverse((child) => {
+          if ((!child.isLine && !child.isLineSegments) || !child.material) {
+            return;
+          }
+
+          if (child.userData.glowBase === undefined) {
+            child.userData.glowBase = { material: child.material };
+          }
+
+          child.material = glowEdgeMaterial(child.userData.glowBase.material, glowQuantized);
+        });
+      }
+
+      entry.glowFactor = glowQuantized;
     }
 
     function detachWorldViewRoomGroups() {
@@ -8817,6 +9275,8 @@
       scene = group;
       edgeScene = edgeGroup;
 
+      // These groups are the PLAY representation; never theme them.
+      homeThemeSuspendDepth += 1;
       try {
         renderLevelStateAt(view.levelState, { x: 0, z: 0 }, {
           role: "neighbor",
@@ -8826,6 +9286,7 @@
           hidePlayers: true
         }, now);
       } finally {
+        homeThemeSuspendDepth -= 1;
         scene = previousScene;
         edgeScene = previousEdgeScene;
       }
@@ -8869,6 +9330,16 @@
       }
 
       return flyoverLevelBrightness(view.levelId, brightness);
+    }
+
+    function detachWorldConsolidation() {
+      if (!worldConsolidation) {
+        return;
+      }
+
+      worldConsolidation.objects.forEach(({ object }) => {
+        object.parent?.remove(object);
+      });
     }
 
     function disposeWorldConsolidation() {
@@ -9294,6 +9765,10 @@
       worldConsolidation = {
         signature: `snapshot:${manifest.contentKey || ""}`,
         fromSnapshot: true,
+        // The snapshot bakes room offsets relative to this anchor room; the
+        // attach paths refuse to re-attach it under any other anchor, which
+        // would draw every room one-or-more slots away from its true spot.
+        anchorLevelId: String(manifest.anchorLevelId || ""),
         objects,
         ownedMaterials,
         ownedTextures
@@ -9415,6 +9890,16 @@
       return Promise.all(pending);
     }
 
+    // Convenience for hosts rendering one-off boards (palette previews,
+    // toolbox demos, local thumbnails): resolve once every GLB referenced by
+    // the level state is loaded (or failed), so the first visible render
+    // already uses real models instead of fallback primitives.
+    function whenLevelStateModelsReady(levelState) {
+      const urls = new Set();
+      collectLevelStateModelUrls(levelState, urls);
+      return preloadModelAssets(urls);
+    }
+
     let warmupModelUrls = null;
     let warmupModelUrlsVersion = -1;
 
@@ -9508,16 +9993,26 @@
       return remaining === 0;
     }
 
-    function renderWorldViewRoomGroups(now, views) {
+    function renderWorldViewRoomGroups(now, views, retainLevelIds = null) {
       // Snapshot-backed vista: the merged world was restored from a baked
       // snapshot, so there are no per-room groups to build — just keep the
       // snapshot objects attached. PLAY clears worldViewConsolidate, which
       // routes back through the normal path and disposes the snapshot.
+      // The merged geometry is baked in ONE anchor's coordinates: attaching
+      // it while the runtime is anchored anywhere else shifts every room by
+      // whole slots (the anchor room's content lands on the current room).
+      // Never attach across an anchor mismatch — detach and let the per-room
+      // path draw this frame instead.
+      const consolidationAnchorMatches =
+        !worldConsolidation?.anchorLevelId ||
+        worldConsolidation.anchorLevelId === String(app.currentLevelId || "");
+
       if (
         worldConsolidation?.fromSnapshot &&
         !app.isFlyoverMode &&
         app.worldViewConsolidate === true &&
-        isWorldViewPlayMode()
+        isWorldViewPlayMode() &&
+        consolidationAnchorMatches
       ) {
         worldViewRoomBuildPending = false;
         detachWorldViewRoomGroups();
@@ -9544,10 +10039,18 @@
       // Hosts that prime every level state up front (mazebench.com home
       // vista) opt into one synchronous whole-world build; play mode keeps
       // the per-frame budget so frames never block.
+      // Camera flights get the same treatment as wide transitions: a tiny
+      // per-frame budget and stale-signature reuse, so late-arriving level
+      // states (the bulk priming can land mid-ascent) never stack 32ms of
+      // meshing on top of the flight tween. Missing rooms finish streaming
+      // in after landing — the landing render invalidates the cache anyway.
+      const cameraFlightActive =
+        Boolean(app.cameraFlightFitOptions) ||
+        (Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0);
       const buildBudgetMs =
         app.isFlyoverMode || app.worldViewSynchronousBuild === true
           ? Infinity
-          : isWideLevelTransition
+          : isWideLevelTransition || cameraFlightActive
             ? 3
             : 32;
       const pendingBuilds = [];
@@ -9574,7 +10077,10 @@
 
           activeLevelIds.add(view.levelId);
 
-          if (!entry || (!isWideLevelTransition && entry.signature !== signature)) {
+          if (
+            !entry ||
+            (!isWideLevelTransition && !cameraFlightActive && entry.signature !== signature)
+          ) {
             pendingBuilds.push({ view, brightness, signature });
 
             if (!entry) {
@@ -9585,7 +10091,7 @@
           attachWorldViewRoomEntry(entry, view);
 
           if (!legacyBrightnessBuilds) {
-            applyWorldViewRoomShadow(entry, shadowFactor);
+            applyWorldViewRoomShadow(entry, worldViewRoomEntryShadowFactor(entry, shadowFactor));
           }
 
           consolidationParts.push(`${view.levelId}@${view.offset.x},${view.offset.z}:${entry.signature}`);
@@ -9639,18 +10145,26 @@
         attachWorldViewRoomEntry(entry, pending.view);
 
         if (!legacyBrightnessBuilds) {
-          applyWorldViewRoomShadow(entry, shadowFactor);
+          applyWorldViewRoomShadow(entry, worldViewRoomEntryShadowFactor(entry, shadowFactor));
         }
 
         allRoomsReady = false;
       }
 
-      worldViewRoomGroups.forEach((entry, levelId) => {
-        if (!activeLevelIds.has(levelId)) {
-          disposeWorldViewRoomEntry(entry);
-          worldViewRoomGroups.delete(levelId);
-        }
-      });
+      // Rooms rendered as camera-flight views this frame are excluded from
+      // `views`, but their warm groups must survive the flight — disposing
+      // them here would force a full re-mesh the next time they render as
+      // plain neighbors. The vista likewise never wants evictions: every
+      // room is permanently on screen there.
+      retainLevelIds?.forEach((levelId) => activeLevelIds.add(levelId));
+      if (app.worldViewVistaMode !== true && !cameraFlightActive) {
+        worldViewRoomGroups.forEach((entry, levelId) => {
+          if (!activeLevelIds.has(levelId)) {
+            disposeWorldViewRoomEntry(entry);
+            worldViewRoomGroups.delete(levelId);
+          }
+        });
+      }
 
       // Flyover flight and host-flagged static world vistas (mazebench.com
       // home) consolidate into merged meshes: their camera sees every room
@@ -9658,17 +10172,19 @@
       // per-room groups buys nothing. Play mode (including wide transitions)
       // keeps per-room groups so the camera frustum culls off-screen rooms.
       const wantsWorldConsolidation =
-        (app.isFlyoverMode && app.flyoverWholeWorld === true) ||
-        (!app.isFlyoverMode && app.worldViewConsolidate === true && isWorldViewPlayMode());
+        ((app.isFlyoverMode && app.flyoverWholeWorld === true) ||
+          (!app.isFlyoverMode && app.worldViewConsolidate === true && isWorldViewPlayMode())) &&
+        // An anchor-mismatched retained snapshot must not be clobbered by a
+        // live rebuild — keep drawing per-room groups until the anchor is
+        // back (or the snapshot is released by the host).
+        (consolidationAnchorMatches || !worldConsolidation?.fromSnapshot);
 
       if (!wantsWorldConsolidation) {
         // Hosts that round-trip between the vista and play (mazebench.com
         // home) keep the merged world cached while it is off screen so
         // returning home re-attaches instead of re-meshing/re-fetching.
         if (worldConsolidation && app.retainWorldConsolidation === true) {
-          worldConsolidation.objects.forEach(({ object }) => {
-            object.parent?.remove(object);
-          });
+          detachWorldConsolidation();
         } else {
           disposeWorldConsolidation();
         }
@@ -9679,7 +10195,17 @@
         app.flyoverRoomFadeIns instanceof Map && app.flyoverRoomFadeIns.size > 0;
 
       if (!allRoomsReady || fadesPending || views.length === 0 || worldShadowAnimating()) {
-        disposeWorldConsolidation();
+        // Not ready to merge this frame. A retained consolidation (the home
+        // vista's merged world, kept across round trips) must survive these
+        // frames — landing one frame before the shadow fade settles, or with
+        // one room still streaming, would otherwise throw away the merged
+        // world and force a full re-mesh on exactly the slow devices that
+        // land late.
+        if (worldConsolidation && app.retainWorldConsolidation === true) {
+          detachWorldConsolidation();
+        } else {
+          disposeWorldConsolidation();
+        }
         return;
       }
 
@@ -9691,6 +10217,9 @@
         edgeScene.updateMatrixWorld(true);
         worldConsolidation = {
           signature: consolidationSignature,
+          // The merged geometry bakes room offsets relative to this anchor;
+          // the attach paths refuse to re-attach under any other anchor.
+          anchorLevelId: String(app.currentLevelId || ""),
           objects: buildConsolidatedObjects(scene, "mesh", scene).concat(
             buildConsolidatedObjects(edgeScene, "line", edgeScene)
           )
@@ -9718,7 +10247,7 @@
         : views;
 
       if (usesRoomGroupWorld()) {
-        renderWorldViewRoomGroups(now, baseViews);
+        renderWorldViewRoomGroups(now, baseViews, cameraFlightLevelIds);
         renderCameraFlightLevelViews(now, cameraFlightViews);
         return;
       }
@@ -9861,8 +10390,7 @@
 
     function transitionSurroundingLevelViews(transition, outgoingState, incomingState, incomingOffset, progress) {
       const radius = surroundingLevelRadius();
-      // Union of both neighborhoods, deduped to the nearest copy of each
-      // room (world level ids wrap around the grid).
+      // Union of both neighborhoods, deduped to the nearest copy of each room.
       const candidatesByLevelId = new Map();
 
       const addCandidate = (levelId, x, y) => {
@@ -10136,6 +10664,11 @@
             }
 
             const levelId = app.adjacentWorldLevelId(baseLevelId, dx, dy);
+
+            if (!levelId) {
+              continue;
+            }
+
             const levelState = app.cachedHorizontalNeighborLevelState(levelId);
 
             if (!levelState?.width || !levelState?.height) {
@@ -10742,6 +11275,8 @@
         app.worldShadowFadeMs = 0;
 
         const now = performance.now();
+        // Compile the PLAY-look programs, never the themed vista look.
+        homeThemeSuspendDepth += 1;
         resetScene();
         const views = surroundingLevelViews();
         renderSurroundingLevelViews(now, views);
@@ -10759,6 +11294,7 @@
       } catch (error) {
         // Never let a prewarm failure disturb the vista.
       } finally {
+        if (homeThemeSuspendDepth > 0) homeThemeSuspendDepth -= 1;
         Object.assign(worldShadowFade, savedFade);
         app.worldViewConsolidate = saved.consolidate;
         app.worldViewUniformBrightness = saved.uniform;
@@ -10826,17 +11362,26 @@
         !worldViewRoomBuildPending &&
         signature === lastSceneSignature
       ) {
-        // sceneCanvas already holds this exact frame; nothing to redraw —
-        // but keep frames coming while the world-shadow fade animates
-        // between quantized steps (only the ~12 step frames redraw).
+        // sceneCanvas already holds this exact frame. The world-shadow fade
+        // lives outside the signature (it is applied by material swaps, not
+        // rebuilds), so while it animates each frame re-skins the attached
+        // groups and composites — display-rate fades with zero re-meshing.
         if (!app.isFlyoverMode && worldShadowAnimating()) {
+          applyWorldShadowGlowSwapPass(now);
+          renderSceneToComposite(false);
           window.requestAnimationFrame((frameNow) => (app.renderOncePerFrame || app.render)(frameNow));
         }
         return true;
       }
 
       if (!contentChanged) {
+        // Camera-only frames during flights: keep the shadow/glow material
+        // swaps advancing even though the scene graph is reused.
+        if (!app.isFlyoverMode) {
+          applyWorldShadowGlowSwapPass(now);
+        }
         fitCameraToScene(editorSurroundingFitOptions() || cameraFlightFitOptions() || flyoverFitOptions() || {});
+        addEditorHoverHighlight();
         renderSceneToComposite(false);
         lastSceneSignature = signature;
         return true;
@@ -10866,10 +11411,10 @@
             addTerrainRegions(now);
             renderActorsForCurrentContext(now);
           });
-        } else if (app.worldViewVistaMode === true) {
-          // Home-vista anchor room: render through the neighbor path so it
-          // is indistinguishable from the baked snapshot rooms — no floor
-          // grid, no tile-top details, no player avatar, frozen actors.
+        } else if (app.worldViewVistaMode === true && app.worldViewDetachedVista !== true) {
+          // Legacy anchored vista: render the technical anchor as a room.
+          // Detached menu vistas draw it through surroundingLevelViews instead
+          // so the menu is not conceptually "inside" any room.
           renderLevelStateAt(renderState(), { x: 0, z: 0 }, {
             role: "neighbor",
             brightness: 1,
@@ -10895,7 +11440,8 @@
       // settled frame afterwards refreshes it. This is the biggest per-frame
       // saving during the vista→play dive.
       const cameraFlightInProgress =
-        Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0;
+        Boolean(app.cameraFlightFitOptions) ||
+        (Array.isArray(app.cameraFlightLevelViews) && app.cameraFlightLevelViews.length > 0);
       const deferShadowMap =
         worldViewRoomBuildPending ||
         (!app.isFlyoverMode && (worldShadowAnimating() || cameraFlightInProgress));
@@ -10969,16 +11515,6 @@
     app.threeRendererReady = import(threeModuleUrl)
       .then((module) => {
         THREE = module;
-        // The loader resolves its bare "three" import through the page's
-        // importmap to the same /vendor/three.module.js instance. Models
-        // degrade to fallback shapes if it can't load.
-        return import(gltfLoaderModuleUrl)
-          .then((loaderModule) => {
-            GLTFLoaderClass = loaderModule.GLTFLoader || null;
-          })
-          .catch(() => {
-            GLTFLoaderClass = null;
-          });
       })
       .then(() => {
         renderer = new THREE.WebGLRenderer({
@@ -11035,12 +11571,19 @@
       prewarmAdjacentLevelTransition,
       serializeWorldConsolidation,
       restoreWorldConsolidation,
+      detachWorldConsolidation,
+      snapWorldShadowFade,
       warmWorldViewRoomGroups,
       preloadModelAssets,
+      whenLevelStateModelsReady,
       prewarmPlayLookShaders,
+      primeHomeEdgeReveal,
+      beginHomeEdgeReveal,
+      cancelHomeEdgeReveal,
       renderScene,
       renderHoverFrame,
       dispose: disposeRenderer,
+      isReady: () => Boolean(THREE && renderer && camera && scene && edgeScene),
       getRenderStats: () => ({ ...(app.threeRenderStats || {}) }),
       usesDirectCanvas: () => app.flyoverDirectCanvas === true,
       threeCanvas

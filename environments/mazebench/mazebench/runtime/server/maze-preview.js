@@ -1,16 +1,20 @@
 const fs = require("fs");
 const path = require("path");
 
-function createMazePreviewService({ buildGameAssetUrl, ensureDirectory, mazePreviewsDir }) {
+function createMazePreviewService({ buildGameAssetUrl, ensureDirectory, gamesDir }) {
   function getMazePreviewFileName(fileName) {
     return `${path.parse(fileName).name}.png`;
   }
 
-  function getMazePreviewFilePath(fileName) {
-    return path.join(mazePreviewsDir, getMazePreviewFileName(fileName));
+  function getMazePreviewsDir(gameId) {
+    return path.join(gamesDir, String(gameId || ""), "previews");
   }
 
-  function writeMazePreviewImageData(level, imageDataUrl) {
+  function getMazePreviewFilePath(gameId, fileName) {
+    return path.join(getMazePreviewsDir(gameId), getMazePreviewFileName(fileName));
+  }
+
+  function writeMazePreviewImageData(game, level, imageDataUrl) {
     const match = String(imageDataUrl || "").match(/^data:image\/png;base64,(.+)$/);
 
     if (!match) {
@@ -27,20 +31,20 @@ function createMazePreviewService({ buildGameAssetUrl, ensureDirectory, mazePrev
       throw new Error("Preview payload must be a PNG image.");
     }
 
-    ensureDirectory(mazePreviewsDir);
-    const previewPath = getMazePreviewFilePath(level.fileName);
+    ensureDirectory(getMazePreviewsDir(game.id));
+    const previewPath = getMazePreviewFilePath(game.id, level.fileName);
     fs.writeFileSync(previewPath, previewBuffer);
     return previewPath;
   }
 
   function buildMazePreviewData(game, fileName) {
-    if (game?.id !== "maze" || typeof fileName !== "string" || !fileName) {
+    if (!game?.id || typeof fileName !== "string" || !fileName) {
       return {
         previewUrl: null
       };
     }
 
-    const previewPath = getMazePreviewFilePath(fileName);
+    const previewPath = getMazePreviewFilePath(game.id, fileName);
 
     if (!previewPath || !fs.existsSync(previewPath)) {
       return {

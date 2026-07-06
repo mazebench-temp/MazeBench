@@ -42,6 +42,7 @@ function parseArgs(argv) {
     const next = () => argv[++i] || "";
     if (arg === "--repo-root") options.repoRoot = path.resolve(next());
     else if (arg === "--state") options.state = path.resolve(next());
+    else if (arg === "--game") options.game = next();
     else if (arg === "--level") options.level = next();
     else if (arg === "--view") options.view = next();
     else if (arg === "--yaw") options.yaw = next();
@@ -63,6 +64,8 @@ function usage() {
   node codex-play.js scorecard --state <session.json>
 
 start options:
+  --game <id>               game directory under games/ (default maze; draft
+                            and online worlds use their games/<id> dirs)
   --level <id>              maze world level id (default level_HxI)
   --view <name>             top | top-diagonal | diagonal | side-diagonal | side
   --yaw <0-3>               camera yaw
@@ -219,7 +222,7 @@ function main() {
     const session = {
       actions: [],
       createdAt: new Date().toISOString(),
-      gameId: "maze",
+      gameId: String(options.game || "maze").trim() || "maze",
       gameWonGemCount: positiveInt(options.gameWonGemCount, 100),
       levelId: normalizeLevelId(options.level),
       nodeBin: options.nodeBin || process.execPath,

@@ -1,15 +1,17 @@
 const { escapeHtml, serializeForScript } = require("./support");
 
 function createPageRenderer({
+  agentEnvironment,
   buildAuthorPageData,
   buildMazeWorldMapEditorData,
-  defaultLevelIdForGame,
+  buildWorlds,
+  getGame,
   getLevelState,
   listGames,
-  mazeLevelGridHeight,
-  mazeLevelGridWidth,
-  mazeWorldConfig
+  remote,
+  worldMaps
 }) {
+  const defaultLevelIdForGame = (game) => worldMaps.defaultLevelIdForGame(game);
   function renderPage({ title, body, bodyClass = "" }) {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -27,34 +29,99 @@ function createPageRenderer({
   }
 
   function renderHomePage() {
-    const games = listGames();
-    const items = games
-      .flatMap((game) => {
-        const gameLink = `<a class="game-link" href="${
-          game.id === "maze"
-            ? `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}`
-            : `/games/${encodeURIComponent(game.id)}`
-        }">
-          <span class="game-link__title">${escapeHtml(game.name)}</span>
-        </a>`;
+    const otherGames = listGames().filter((game) => !game.worldMap);
+    const otherGamesSection = otherGames.length
+      ? `<section class="stack home-other-games">
+          <h2>Other Games</h2>
+          <div class="game-list">${otherGames
+            .map(
+              (game) => `<a class="game-link" href="/games/${encodeURIComponent(game.id)}">
+                <span class="game-link__title">${escapeHtml(game.name)}</span>
+              </a>`
+            )
+            .join("")}</div>
+        </section>`
+      : "";
 
-        if (game.id !== "maze") {
-          return [gameLink];
-        }
+    return renderPage({
+      title: "MazeBench",
+      body: `<main class="shell home-shell">
+        <h1>MazeBench</h1>
+        <div class="mode-list">
+          <a class="mode-card" href="/play">
+            <span class="mode-card__title">Play Mode</span>
+            <span class="mode-card__copy">Play the master world, your drafts, or worlds from mazebench.com.</span>
+          </a>
+          <a class="mode-card" href="/build">
+            <span class="mode-card__title">Build Mode</span>
+            <span class="mode-card__copy">Make and save your own worlds locally, edit the master world, and sync drafts with your account.</span>
+          </a>
+          <a class="mode-card" href="/agent">
+            <span class="mode-card__title">Agent Mode</span>
+            <span class="mode-card__copy">Run Codex, Claude Code, or Prime Verifiers on any world and watch the runs live.</span>
+          </a>
+        </div>
+        ${otherGamesSection}
+      </main>`
+    });
+  }
 
-        const flyoverLink = `<a class="game-link game-link--flyover" href="/flyover/${encodeURIComponent(game.id)}/${encodeURIComponent(defaultLevelIdForGame(game))}">
-          <span class="game-link__title">Flyover View</span>
-        </a>`;
-
-        return [gameLink, flyoverLink];
-      })
+  function renderPlayModePage() {
+    const masterGame = getGame("maze");
+    const worlds = buildWorlds.listLocalWorlds();
+    const masterCard = masterGame
+      ? `<article class="build-card">
+          <div class="build-card__head">
+            <h3>${escapeHtml(masterGame.name)} <span class="author-panel__badge">master</span></h3>
+            <p class="author-panel__copy">${masterGame.worldMap?.levels?.length || 0} levels</p>
+          </div>
+          <div class="build-card__links">
+            <a class="back-link" href="/play/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}">Play</a>
+            <a class="back-link" href="/flyover/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}">Flyover</a>
+          </div>
+        </article>`
+      : "";
+    const worldCards = worlds
+      .map(
+        (world) => `<article class="build-card">
+          <div class="build-card__head">
+            <h3>${escapeHtml(world.title)}${world.kind === "online" ? ' <span class="author-panel__badge">online copy</span>' : ""}</h3>
+            <p class="author-panel__copy">${world.world_width}&times;${world.world_height} world &middot; ${world.level_count} level${world.level_count === 1 ? "" : "s"}</p>
+          </div>
+          <div class="build-card__links">
+            <a class="back-link" href="${escapeHtml(world.play_url)}">Play</a>
+            <a class="back-link" href="${escapeHtml(world.flyover_url)}">Flyover</a>
+          </div>
+        </article>`
+      )
       .join("");
 
     return renderPage({
-      title: "Main Menu",
-      body: `<main class="shell">
-        <h1>Main Menu</h1>
-        <div class="game-list">${items}</div>
+      title: "Play Mode",
+      bodyClass: "author-body build-body",
+      body: `<main class="shell build-shell">
+        <header class="author-header">
+          <div class="author-topbar">
+            <h1>Play Mode</h1>
+            <nav class="page-nav" aria-label="Play navigation">
+              <a class="back-link" href="/">Home</a>
+              <a class="back-link" href="/build">Build Mode</a>
+            </nav>
+          </div>
+        </header>
+        <div class="build-layout">
+          <section class="author-panel build-section" aria-label="Master world">
+            <h2>Master World</h2>
+            <div class="build-card-list">${masterCard}</div>
+          </section>
+          <section class="author-panel build-section" aria-label="Local worlds">
+            <h2>My Worlds</h2>
+            <div class="build-card-list">${
+              worldCards ||
+              '<p class="author-panel__copy">No local worlds yet — create one in <a href="/build">Build Mode</a>.</p>'
+            }</div>
+          </section>
+        </div>
       </main>`
     });
   }
@@ -65,15 +132,15 @@ function createPageRenderer({
       ? `<a class="back-link" href="/play/${encodeURIComponent(game.id)}/${encodeURIComponent(startLevelId)}">Play</a>`
       : "";
     const authorLink =
-      game.id === "maze" && startLevelId
+      game.worldMap && startLevelId
         ? `<a class="back-link" href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(startLevelId)}">Author</a>`
         : "";
     const worldMapLink =
-      game.id === "maze"
+      game.worldMap
         ? `<a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">World Map</a>`
         : "";
     const levelsSection =
-      game.id === "maze"
+      game.worldMap
         ? ""
         : `<section class="stack">
           <h2>Levels</h2>
@@ -245,6 +312,7 @@ function createPageRenderer({
 
   function renderAuthorPage(game, level) {
     const authorData = buildAuthorPageData(game, level);
+    const worldConfig = worldMaps.worldConfigForGame(game.id);
 
     return renderPage({
       title: `${game.name} Author`,
@@ -308,11 +376,11 @@ function createPageRenderer({
                 <div class="author-control-row">
                   <label class="field field--compact">
                     <span>Width</span>
-                    <input id="board-width" type="number" min="1" max="${mazeLevelGridWidth}" inputmode="numeric">
+                    <input id="board-width" type="number" min="1" max="${worldConfig.gridWidth}" inputmode="numeric">
                   </label>
                   <label class="field field--compact">
                     <span>Height</span>
-                    <input id="board-height" type="number" min="1" max="${mazeLevelGridHeight}" inputmode="numeric">
+                    <input id="board-height" type="number" min="1" max="${worldConfig.gridHeight}" inputmode="numeric">
                   </label>
                   <button id="resize-level" class="tool-button" type="button">Resize</button>
                 </div>
@@ -492,6 +560,230 @@ function createPageRenderer({
     });
   }
 
+  function renderBuildPage() {
+    const masterGame = getGame("maze");
+    const masterLevelId = masterGame ? defaultLevelIdForGame(masterGame) : null;
+    const buildData = {
+      apiUrl: "/api/build/worlds",
+      master: masterGame
+        ? {
+            id: masterGame.id,
+            name: masterGame.name,
+            level_count: masterGame.worldMap?.levels?.length || 0,
+            play_url: `/play/maze/${encodeURIComponent(masterLevelId)}`,
+            author_url: `/author/maze/${encodeURIComponent(masterLevelId)}`,
+            world_map_url: "/world-map/maze",
+            flyover_url: `/flyover/maze/${encodeURIComponent(masterLevelId)}`
+          }
+        : null,
+      worlds: buildWorlds.listLocalWorlds(),
+      remote: remote.getStatus()
+    };
+
+    return renderPage({
+      title: "Build Mode",
+      bodyClass: "author-body build-body",
+      body: `<main class="shell build-shell">
+        <header class="author-header">
+          <div class="author-topbar">
+            <h1>Build Mode</h1>
+            <nav class="page-nav" aria-label="Build navigation">
+              <a class="back-link" href="/">Home</a>
+            </nav>
+            <p id="build-status" class="author-status" role="status" aria-live="polite"></p>
+          </div>
+        </header>
+        <div class="build-layout">
+          <section class="author-panel build-section" aria-label="Master world">
+            <h2>Master World</h2>
+            <div id="build-master" class="build-card-list"></div>
+          </section>
+          <section class="author-panel build-section" aria-label="My worlds">
+            <h2>My Worlds</h2>
+            <p class="author-panel__copy">Draft worlds live in this repo under <code>games/</code> and never publish anywhere unless you push them.</p>
+            <div id="build-worlds" class="build-card-list"></div>
+          </section>
+          <section class="author-panel build-section" aria-label="New world">
+            <h2>New World</h2>
+            <div class="author-control-row">
+              <label class="field"><span>Title</span><input id="new-world-title" type="text" placeholder="My World"></label>
+              <label class="field field--compact"><span>Columns</span><input id="new-world-width" type="number" min="1" max="26" value="3" inputmode="numeric"></label>
+              <label class="field field--compact"><span>Rows</span><input id="new-world-height" type="number" min="1" max="26" value="3" inputmode="numeric"></label>
+              <button id="create-world" class="tool-button tool-button--primary" type="button">Create World</button>
+            </div>
+            <div class="author-control-row">
+              <button id="copy-master" class="tool-button" type="button">Copy Master World to Draft</button>
+              <button id="import-world" class="tool-button" type="button">Import World JSON</button>
+              <input id="import-world-file" type="file" accept="application/json,.json" hidden>
+            </div>
+          </section>
+          <section id="build-remote-section" class="author-panel build-section" aria-label="MazeBench account" hidden>
+            <h2>MazeBench.com Account</h2>
+            <div id="build-remote"></div>
+          </section>
+        </div>
+        <script>window.__BUILD_DATA__ = ${serializeForScript(buildData)};</script>
+        <script src="/build.js" defer></script>
+      </main>`
+    });
+  }
+
+  function agentWorldOption(game) {
+    return {
+      id: game.id,
+      title: game.id === "maze" ? `${game.name} (master)` : game.name,
+      level_ids: (game.worldMap?.levels || []).map((level) => level.id),
+      default_level_id: defaultLevelIdForGame(game),
+      gem_count: game.id === "maze" ? 100 : undefined
+    };
+  }
+
+  function renderAgentPage() {
+    const masterGame = getGame("maze");
+    const worlds = [
+      ...(masterGame ? [agentWorldOption(masterGame)] : []),
+      ...buildWorlds
+        .listLocalWorlds()
+        .map((world) => getGame(world.id))
+        .filter((game) => game && game.worldMap)
+        .map(agentWorldOption)
+    ];
+    const agentData = {
+      apiUrl: "/api/agent/runs",
+      worlds,
+      environment: agentEnvironment(),
+      remote: remote.getStatus()
+    };
+
+    return renderPage({
+      title: "Agent Mode",
+      bodyClass: "author-body build-body",
+      body: `<main class="shell build-shell agent-shell">
+        <header class="author-header">
+          <div class="author-topbar">
+            <h1>Agent Mode</h1>
+            <nav class="page-nav" aria-label="Agent navigation">
+              <a class="back-link" href="/">Home</a>
+              <a class="back-link" href="/build">Build Mode</a>
+            </nav>
+            <p id="agent-status" class="author-status" role="status" aria-live="polite"></p>
+          </div>
+        </header>
+        <div class="build-layout">
+          <section class="author-panel build-section" aria-label="Launch a run">
+            <h2>New Run</h2>
+            <div class="author-control-row">
+              <label class="field"><span>Agent</span>
+                <select id="run-model">
+                  <option value="codex">Codex CLI</option>
+                  <option value="claude">Claude Code</option>
+                  <option value="prime">Prime Verifiers</option>
+                </select>
+              </label>
+              <label class="field"><span>World</span><select id="run-world"></select></label>
+              <label class="field"><span>Start level</span><select id="run-level"></select></label>
+              <label class="field field--compact"><span>Moves</span><input id="run-moves" type="number" min="1" max="500" value="20" inputmode="numeric"></label>
+            </div>
+            <div class="author-control-row">
+              <label class="field"><span>Observation</span>
+                <select id="run-mode">
+                  <option value="text">Text (ASCII board)</option>
+                  <option value="vision">Vision (rendered PNGs)</option>
+                </select>
+              </label>
+              <label class="field"><span>Model id (optional)</span><input id="run-model-name" type="text" placeholder="agent default"></label>
+              <label class="field" data-codex-only><span>Reasoning</span>
+                <select id="run-reasoning">
+                  <option value="">model default</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                </select>
+              </label>
+            </div>
+            <div class="author-control-row agent-toggles">
+              <label class="agent-check"><input id="run-container" type="checkbox" checked> Container (isolated)</label>
+              <label class="agent-check"><input id="run-video" type="checkbox" checked> Replay video</label>
+              <label class="agent-check"><input id="run-tools" type="checkbox"> Full tool access</label>
+              <label class="agent-check" data-codex-only><input id="run-codex-fast" type="checkbox"> Codex fast mode</label>
+            </div>
+            <div class="author-control-row" data-prime-only hidden>
+              <label class="field field--compact"><span>Examples (n)</span><input id="run-prime-n" type="number" min="1" max="50" value="1"></label>
+              <label class="field field--compact"><span>Rollouts (r)</span><input id="run-prime-r" type="number" min="1" max="10" value="1"></label>
+              <label class="field field--compact"><span>Max turns</span><input id="run-prime-turns" type="number" min="1" max="200" value="8"></label>
+            </div>
+            <div class="author-control-row">
+              <button id="launch-run" class="tool-button tool-button--primary" type="button">Launch Run</button>
+              <button id="add-online-world" class="tool-button" type="button">Add Online World&hellip;</button>
+            </div>
+            <p id="agent-environment" class="author-panel__copy"></p>
+          </section>
+          <section id="online-picker" class="author-panel build-section" aria-label="Online worlds" hidden>
+            <h2>Online Worlds</h2>
+            <p class="author-panel__copy">Published community worlds from <span id="online-origin"></span>. Picking one downloads a local copy agents can run on.</p>
+            <div id="online-worlds" class="build-card-list"></div>
+          </section>
+          <section class="author-panel build-section" aria-label="Runs">
+            <h2>Runs</h2>
+            <div id="agent-runs" class="build-card-list"></div>
+          </section>
+        </div>
+        <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
+        <script src="/agent.js" defer></script>
+      </main>`
+    });
+  }
+
+  function renderAgentRunPage(run) {
+    return renderPage({
+      title: `Run ${run.id}`,
+      bodyClass: "author-body build-body",
+      body: `<main class="shell build-shell agent-run-shell">
+        <header class="author-header">
+          <div class="author-topbar">
+            <h1>Agent Run</h1>
+            <nav class="page-nav" aria-label="Run navigation">
+              <a class="back-link" href="/agent">Agent Mode</a>
+              <a class="back-link" href="/">Home</a>
+            </nav>
+            <button id="stop-run" class="tool-button tool-button--danger" type="button" hidden>Stop Run</button>
+            <p id="run-status" class="author-status" role="status" aria-live="polite"></p>
+          </div>
+        </header>
+        <div class="build-layout">
+          <section class="author-panel build-section">
+            <h2 id="run-title"></h2>
+            <p id="run-meta" class="author-panel__copy"></p>
+            <div id="run-stats" class="agent-stats"></div>
+          </section>
+          <section class="author-panel build-section" id="run-video-section" hidden>
+            <h2>Replay</h2>
+            <video id="run-video" controls playsinline style="max-width:100%"></video>
+          </section>
+          <section class="author-panel build-section">
+            <h2>Board</h2>
+            <pre id="run-board" class="agent-board">(waiting for the first action&hellip;)</pre>
+          </section>
+          <section class="author-panel build-section">
+            <h2>Moves</h2>
+            <div id="run-turns" class="agent-turns"></div>
+          </section>
+          <section class="author-panel build-section" id="run-reasoning-section" hidden>
+            <h2>Agent Reasoning</h2>
+            <div id="run-reasoning" class="agent-turns"></div>
+          </section>
+          <section class="author-panel build-section">
+            <h2>Runner Log</h2>
+            <pre id="run-log" class="agent-log"></pre>
+          </section>
+        </div>
+        <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
+        <script src="/agent-run.js" defer></script>
+      </main>`
+    });
+  }
+
   function renderNotFound() {
     return renderPage({
       title: "Not Found",
@@ -502,11 +794,15 @@ function createPageRenderer({
   }
 
   return {
+    renderAgentPage,
+    renderAgentRunPage,
     renderAuthorPage,
+    renderBuildPage,
     renderFlyoverPage,
     renderGamePage,
     renderHomePage,
     renderNotFound,
+    renderPlayModePage,
     renderPlayPage,
     renderWorldMapEditorPage
   };

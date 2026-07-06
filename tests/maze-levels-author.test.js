@@ -61,36 +61,42 @@ const game = {
 fs.writeFileSync(path.join(levelDir, "test-empty.txt"), "+ . +++#\n", "utf8");
 fs.writeFileSync(path.join(levelDir, "legacy_hole.txt"), "h h+# #+h+# h+M0 M0\n", "utf8");
 
-const service = createMazeLevelService({
-  buildGameAssetUrl: () => "",
+const worldMaps = {
   buildMazeFallbackLevelFileName: () => "fallback.txt",
-  buildMazePreviewData: () => ({ previewUrl: null }),
-  buildMazeWorldLevel: (levelId, options = {}) => ({
+  buildMazeWorldLevel: (gameId, levelId, options = {}) => ({
     fileName: options.fileName || "fallback.txt",
     id: levelId,
     label: levelId
   }),
   buildMazeWorldMapState: () => ({}),
   defaultLevelIdForGame: () => "level_AxA",
-  gamesDir,
-  isMazeWorldLevelId: (levelId) => /^level_[A-Z]x[A-Z]$/.test(levelId),
-  listTopLevelFiles: () => [],
-  loadJson: () => ({}),
-  loadText: (filePath, fallback) => fs.readFileSync(filePath, "utf8") || fallback,
-  mazeAuthorDefaultHeight: 1,
-  mazeAuthorDefaultWidth: 3,
-  mazeDefaultLevelId: "level_AxA",
-  mazeLevelGridHeight: 16,
-  mazeLevelGridWidth: 16,
-  mazeLevelLabel: (levelId) => levelId,
-  mazeWorldConfig: {
+  isMazeFamilyGameId: (gameId) => gameId === "maze",
+  isMazeWorldLevelId: (gameId, levelId) => /^level_[A-Z]x[A-Z]$/.test(levelId),
+  mazeLevelLabel: (gameId, levelId) => levelId,
+  worldConfigForGame: () => ({
+    worldSize: { width: 1, height: 1 },
+    levelSize: { width: 16, height: 16 },
     cameraView: { width: 3, height: 1 },
     worldColumns: ["A"],
-    worldRows: ["A"]
-  },
+    worldRows: ["A"],
+    gridWidth: 16,
+    gridHeight: 16,
+    authorDefaultWidth: 3,
+    authorDefaultHeight: 1
+  })
+};
+
+const service = createMazeLevelService({
+  buildGameAssetUrl: () => "",
+  buildMazePreviewData: () => ({ previewUrl: null }),
+  gamesDir,
+  listTopLevelFiles: () => [],
+  loadJson: () => null,
+  loadText: (filePath, fallback) => fs.readFileSync(filePath, "utf8") || fallback,
   resolveGameAssetPath: () => null,
   rootDir: tempRoot,
-  titleCase: (value) => String(value)
+  titleCase: (value) => String(value),
+  worldMaps
 });
 
 const editorState = service.getLevelEditorState(game, game.worldMap.byPosition.get("level_AxA"));
