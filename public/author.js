@@ -47,10 +47,6 @@
     solveLevel: document.getElementById("solve-level"),
     solverAlgorithm: document.getElementById("solver-algorithm"),
     solverCancel: document.getElementById("solver-cancel"),
-    solverProgress: document.getElementById("solver-progress"),
-    solverProgressBar: document.getElementById("solver-progress-bar"),
-    solverProgressText: document.getElementById("solver-progress-text"),
-    solverProgressTrack: document.getElementById("solver-progress-track"),
     solverMaxStates: document.getElementById("solver-max-states"),
     status: document.getElementById("author-status"),
     undoLevel: document.getElementById("undo-level")
@@ -69,11 +65,7 @@
     "levelColumn",
     "levelRow",
     "solverAlgorithm",
-    "solverCancel",
-    "solverProgress",
-    "solverProgressBar",
-    "solverProgressText",
-    "solverProgressTrack"
+    "solverCancel"
   ]);
 
   if (
@@ -535,7 +527,10 @@
   }
 
   function gemPlacementSurfaceSets(cells = state.cells) {
-    const playData = buildEditorPlayData({ cells, includeGems: false });
+    return gemPlacementSurfaceSetsFromPlayData(buildEditorPlayData({ cells, includeGems: false }));
+  }
+
+  function gemPlacementSurfaceSetsFromPlayData(playData) {
     const blockedSurfaces = new Set();
     const validSurfaces = new Set();
 
@@ -567,15 +562,6 @@
     });
 
     return { blockedSurfaces, validSurfaces };
-  }
-
-  function canPlaceGemAtSurface(x, y, elevation, surfaceSets) {
-    if (!isInsideEditorCell(x, y)) {
-      return false;
-    }
-
-    const key = gemPlacementSurfaceKey(x, y, elevation);
-    return surfaceSets.validSurfaces.has(key) && !surfaceSets.blockedSurfaces.has(key);
   }
 
   function gemPlacementValueForCell(x, y, elevation = 0) {
@@ -704,9 +690,16 @@
     };
   }
 
-  function beginSolverRun() {
+  function performanceNow() {
+    return window.performance && typeof window.performance.now === "function"
+      ? window.performance.now()
+      : Date.now();
+  }
+
+  function beginSolverRun(label) {
     state.solverAbortController = createSolverAbortController();
     state.isSolverBusy = true;
+    showSolverDock(label);
     syncSolverButtonState();
     return state.solverAbortController.signal;
   }
@@ -728,28 +721,236 @@
     }
 
     state.solverAbortController.abort();
+    // Worker runs die instantly; main-thread fallbacks stop at the next yield.
+    abortActiveSolverWorkerJob();
+    if (solverDock.cancelButton) {
+      solverDock.cancelButton.disabled = true;
+      solverDock.cancelButton.textContent = "Cancelling...";
+    }
     setStatus("Cancelling solver...", "warning");
     syncSolverButtonState();
   }
 
   function nextSolverProgressFrame() {
     return new Promise((resolve) => {
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(() => resolve());
+      // Hidden tabs never fire requestAnimationFrame and clamp timers to a
+      // second, which would slow a run to a crawl; a message-channel hop
+      // yields the event loop there without either penalty. Visible tabs get
+      // a real paint frame so progress stays smooth.
+      if (document.hidden || typeof window.requestAnimationFrame !== "function") {
+        const channel = new MessageChannel();
+
+        channel.port1.onmessage = () => resolve();
+        channel.port2.postMessage(0);
         return;
       }
 
-      window.setTimeout(resolve, 0);
+      window.requestAnimationFrame(() => resolve());
+    });
+  }
+
+  // ---- Solver run dock ----
+  // A drop-down panel under the topbar that appears for every solver run:
+  // progress, elapsed time, instant cancel, and the experimental-engine note.
+  // Generated here so every host page gets it without new required markup.
+  const solverDock = {
+    bar: null,
+    cancelButton: null,
+    elapsed: null,
+    element: null,
+    hideFinalizeTimer: 0,
+    hideTimer: 0,
+    startedAt: 0,
+    text: null,
+    tickTimer: 0,
+    track: null
+  };
+
+  const SOLVER_DOCK_CSS = [
+    ".solver-dock {",
+    "  backdrop-filter: blur(8px);",
+    "  background: rgba(5, 8, 18, 0.94);",
+    "  border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.45);",
+    "  border-radius: 14px;",
+    "  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 22px rgba(var(--cyan-rgb, 84, 240, 255), 0.16);",
+    "  color: var(--ink, #e7eaff);",
+    "  display: grid;",
+    "  gap: 9px;",
+    "  left: 50%;",
+    "  opacity: 0;",
+    "  padding: 12px 14px;",
+    "  pointer-events: none;",
+    "  position: fixed;",
+    "  top: 74px;",
+    "  transform: translateX(-50%) translateY(-14px);",
+    "  transition: opacity 200ms ease, transform 220ms ease;",
+    "  width: min(94vw, 540px);",
+    "  z-index: 60;",
+    "}",
+    ".solver-dock[hidden] { display: none; }",
+    ".solver-dock.is-open { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }",
+    ".solver-dock__head { align-items: center; display: flex; gap: 8px; }",
+    ".solver-dock__title {",
+    "  font-family: var(--font-display, inherit);",
+    "  font-size: 13px;",
+    "  font-weight: 800;",
+    "  letter-spacing: 0.08em;",
+    "  text-transform: uppercase;",
+    "}",
+    ".solver-dock__badge {",
+    "  background: rgba(var(--amber-rgb, 255, 193, 84), 0.12);",
+    "  border: 1px solid rgba(var(--amber-rgb, 255, 193, 84), 0.65);",
+    "  border-radius: 999px;",
+    "  color: var(--amber, #ffc154);",
+    "  font-family: var(--font-mono, monospace);",
+    "  font-size: 10px;",
+    "  letter-spacing: 0.1em;",
+    "  padding: 2px 8px;",
+    "  text-transform: uppercase;",
+    "}",
+    ".solver-dock__elapsed {",
+    "  color: var(--muted, #9aa3c7);",
+    "  font-family: var(--font-mono, monospace);",
+    "  font-size: 11px;",
+    "  margin-left: auto;",
+    "}",
+    ".solver-dock__cancel {",
+    "  background: rgba(8, 11, 26, 0.85);",
+    "  border: 1px solid rgba(var(--magenta-rgb, 255, 84, 170), 0.55);",
+    "  border-radius: 9px;",
+    "  color: var(--ink, #e7eaff);",
+    "  cursor: pointer;",
+    "  font: inherit;",
+    "  font-size: 12px;",
+    "  font-weight: 600;",
+    "  min-height: 0;",
+    "  padding: 4px 12px;",
+    "  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;",
+    "}",
+    ".solver-dock__cancel:hover:not(:disabled),",
+    ".solver-dock__cancel:focus-visible {",
+    "  background: rgba(var(--magenta-rgb, 255, 84, 170), 0.12);",
+    "  border-color: rgba(var(--magenta-rgb, 255, 84, 170), 0.9);",
+    "  box-shadow: 0 0 14px rgba(var(--magenta-rgb, 255, 84, 170), 0.3);",
+    "  outline: none;",
+    "}",
+    ".solver-dock__cancel:disabled { color: var(--muted, #9aa3c7); cursor: default; opacity: 0.7; }",
+    ".solver-dock__track {",
+    "  background: rgba(124, 143, 255, 0.14);",
+    "  border: 1px solid rgba(124, 143, 255, 0.3);",
+    "  border-radius: 999px;",
+    "  height: 10px;",
+    "  overflow: hidden;",
+    "}",
+    ".solver-dock__bar {",
+    "  background: linear-gradient(90deg, rgba(var(--cyan-rgb, 84, 240, 255), 0.9), rgba(var(--violet-rgb, 124, 143, 255), 0.9));",
+    "  border-radius: 999px;",
+    "  box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.5);",
+    "  height: 100%;",
+    "  transition: width 120ms linear;",
+    "  width: 0%;",
+    "}",
+    ".solver-dock__text { color: var(--ink, #e7eaff); font-family: var(--font-mono, monospace); font-size: 11px; margin: 0; }",
+    ".solver-dock__note {",
+    "  border-left: 2px solid rgba(var(--amber-rgb, 255, 193, 84), 0.6);",
+    "  color: var(--muted, #9aa3c7);",
+    "  font-size: 11px;",
+    "  line-height: 1.5;",
+    "  margin: 0;",
+    "  padding-left: 9px;",
+    "}"
+  ].join("\n");
+
+  function ensureSolverDock() {
+    if (solverDock.element) {
+      return solverDock;
+    }
+
+    const style = document.createElement("style");
+    style.textContent = SOLVER_DOCK_CSS;
+    document.head.append(style);
+
+    const dock = document.createElement("section");
+    dock.className = "solver-dock";
+    dock.setAttribute("aria-live", "polite");
+    dock.setAttribute("aria-label", "Solver run");
+    dock.hidden = true;
+    dock.innerHTML =
+      '<div class="solver-dock__head">' +
+      '<span class="solver-dock__title">Solver</span>' +
+      '<span class="solver-dock__badge" title="Engine v0.1 — expect rough edges">Experimental</span>' +
+      '<span class="solver-dock__elapsed">0.0s</span>' +
+      '<button class="solver-dock__cancel" type="button">Cancel</button>' +
+      "</div>" +
+      '<div class="solver-dock__track" role="progressbar" aria-label="Solver search progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' +
+      '<div class="solver-dock__bar"></div>' +
+      "</div>" +
+      '<p class="solver-dock__text">Starting search...</p>' +
+      '<p class="solver-dock__note">Engine v0.1 &mdash; the search runs in a background thread, so the editor stays responsive and Cancel is instant. Some ice-slope interactions and large polycubes are not fully worked out yet; searches that touch them can run long or stall.</p>';
+    document.body.append(dock);
+
+    solverDock.element = dock;
+    solverDock.bar = dock.querySelector(".solver-dock__bar");
+    solverDock.cancelButton = dock.querySelector(".solver-dock__cancel");
+    solverDock.elapsed = dock.querySelector(".solver-dock__elapsed");
+    solverDock.text = dock.querySelector(".solver-dock__text");
+    solverDock.track = dock.querySelector(".solver-dock__track");
+    solverDock.cancelButton.addEventListener("click", cancelSolverRun);
+
+    return solverDock;
+  }
+
+  function solverDockTopOffset() {
+    const header = document.querySelector(".author-header, .author-topbar");
+    const bottom = header ? header.getBoundingClientRect().bottom : 0;
+
+    return Math.max(10, Math.round(bottom + 10));
+  }
+
+  function formatSolverElapsed(ms) {
+    const seconds = Math.max(0, ms) / 1000;
+
+    if (seconds < 60) {
+      return seconds.toFixed(1) + "s";
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.floor(seconds % 60);
+
+    return minutes + "m " + String(rest).padStart(2, "0") + "s";
+  }
+
+  function updateSolverDockElapsed() {
+    if (solverDock.elapsed) {
+      solverDock.elapsed.textContent = formatSolverElapsed(performanceNow() - solverDock.startedAt);
+    }
+  }
+
+  function showSolverDock(label) {
+    const dock = ensureSolverDock();
+
+    window.clearTimeout(solverDock.hideTimer);
+    window.clearTimeout(solverDock.hideFinalizeTimer);
+    window.clearInterval(solverDock.tickTimer);
+    dock.element.hidden = false;
+    dock.element.style.top = solverDockTopOffset() + "px";
+    dock.text.textContent = (label ? label + " · " : "") + "starting search...";
+    dock.bar.style.width = "0%";
+    dock.track.setAttribute("aria-valuenow", "0");
+    dock.cancelButton.disabled = false;
+    dock.cancelButton.textContent = "Cancel";
+    solverDock.startedAt = performanceNow();
+    updateSolverDockElapsed();
+    solverDock.tickTimer = window.setInterval(updateSolverDockElapsed, 100);
+    window.requestAnimationFrame(() => {
+      if (!dock.element.hidden) {
+        dock.element.classList.add("is-open");
+      }
     });
   }
 
   function renderSolverProgress(label, expanded, maxExpanded) {
-    if (
-      !elements.solverProgress ||
-      !elements.solverProgressBar ||
-      !elements.solverProgressText ||
-      !elements.solverProgressTrack
-    ) {
+    if (!solverDock.element || solverDock.element.hidden) {
       return;
     }
 
@@ -757,13 +958,10 @@
     const safeExpanded = Math.max(0, Math.min(expanded, safeMax));
     const percent = Math.min(100, (safeExpanded / safeMax) * 100);
 
-    elements.solverProgress.hidden = false;
-    elements.solverProgress.removeAttribute("aria-hidden");
-    elements.solverProgressBar.style.width = percent.toFixed(1) + "%";
-    elements.solverProgressTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
-    elements.solverProgressText.textContent =
-      label +
-      ": " +
+    solverDock.bar.style.width = percent.toFixed(1) + "%";
+    solverDock.track.setAttribute("aria-valuenow", String(Math.round(percent)));
+    solverDock.text.textContent =
+      (label ? label + " · " : "") +
       formatStateCount(safeExpanded) +
       " / " +
       formatStateCount(safeMax) +
@@ -771,41 +969,235 @@
   }
 
   function hideSolverProgress() {
-    if (
-      !elements.solverProgress ||
-      !elements.solverProgressBar ||
-      !elements.solverProgressTrack
-    ) {
+    if (!solverDock.element) {
       return;
     }
 
-    elements.solverProgress.hidden = true;
-    elements.solverProgress.setAttribute("aria-hidden", "true");
-    elements.solverProgressBar.style.width = "0%";
-    elements.solverProgressTrack.setAttribute("aria-valuenow", "0");
+    window.clearInterval(solverDock.tickTimer);
+    window.clearTimeout(solverDock.hideTimer);
+    window.clearTimeout(solverDock.hideFinalizeTimer);
+    // Linger briefly so the final counts are readable, then slide away.
+    solverDock.hideTimer = window.setTimeout(() => {
+      solverDock.element.classList.remove("is-open");
+      solverDock.hideFinalizeTimer = window.setTimeout(() => {
+        if (!state.isSolverBusy) {
+          solverDock.element.hidden = true;
+        }
+      }, 260);
+    }, 700);
   }
 
-  function createSolverProgressReporter(label, maxExpandedStates) {
+  // ---- Solver execution (worker first, cooperative main-thread fallback) ----
+  const solverWorkerState = {
+    activeJob: null,
+    broken: false,
+    jobId: 0,
+    worker: null
+  };
+
+  function solverCancelError() {
+    return new Error("Solver cancelled.");
+  }
+
+  function solverWorkerInfrastructureError(message) {
+    const error = new Error(message || "Solver worker unavailable.");
+    error.isSolverWorkerInfrastructure = true;
+
+    return error;
+  }
+
+  function terminateSolverWorker() {
+    if (solverWorkerState.worker) {
+      solverWorkerState.worker.terminate();
+      solverWorkerState.worker = null;
+    }
+  }
+
+  function failActiveSolverWorkerJob(error) {
+    const job = solverWorkerState.activeJob;
+
+    if (!job) {
+      return;
+    }
+
+    solverWorkerState.activeJob = null;
+    job.reject(error);
+  }
+
+  function abortActiveSolverWorkerJob() {
+    if (!solverWorkerState.activeJob) {
+      return;
+    }
+
+    terminateSolverWorker();
+    failActiveSolverWorkerJob(solverCancelError());
+  }
+
+  function getSolverWorker() {
+    if (solverWorkerState.worker) {
+      return solverWorkerState.worker;
+    }
+
+    const worker = new window.Worker("/author-solver-worker.js");
+
+    worker.onmessage = (event) => {
+      const message = event.data || {};
+      const job = solverWorkerState.activeJob;
+
+      if (!job || message.id !== job.id) {
+        return;
+      }
+
+      if (message.type === "progress") {
+        job.onProgress?.(message.expanded, message.maxExpanded);
+        return;
+      }
+
+      if (message.type === "done") {
+        solverWorkerState.activeJob = null;
+        job.resolve(message.result);
+        return;
+      }
+
+      if (message.type === "error") {
+        solverWorkerState.activeJob = null;
+        job.reject(new Error(message.message || "Solver worker failed."));
+      }
+    };
+    worker.onerror = () => {
+      // The worker script itself failed (missing file, parse error): retire
+      // it and let the current and future runs use the main-thread fallback.
+      solverWorkerState.broken = true;
+      terminateSolverWorker();
+      failActiveSolverWorkerJob(solverWorkerInfrastructureError("Solver worker failed to start."));
+    };
+    solverWorkerState.worker = worker;
+
+    return worker;
+  }
+
+  function runSolverSearchInWorker(op, payload, runOptions) {
+    return new Promise((resolve, reject) => {
+      let worker;
+
+      try {
+        worker = getSolverWorker();
+      } catch (error) {
+        reject(solverWorkerInfrastructureError(error instanceof Error ? error.message : ""));
+        return;
+      }
+
+      solverWorkerState.jobId += 1;
+      const id = solverWorkerState.jobId;
+
+      solverWorkerState.activeJob = {
+        id,
+        onProgress: runOptions.onProgress,
+        reject,
+        resolve
+      };
+
+      try {
+        worker.postMessage({
+          type: "run",
+          id,
+          op,
+          playData: payload.playData,
+          options: {
+            algorithm: payload.algorithm,
+            maxExpandedStates: payload.maxExpandedStates,
+            progressYieldStateInterval: solverProgressYieldStateInterval,
+            surfaces: payload.surfaces || null
+          }
+        });
+      } catch (error) {
+        solverWorkerState.activeJob = null;
+        reject(solverWorkerInfrastructureError(error instanceof Error ? error.message : ""));
+      }
+    });
+  }
+
+  function serializeGemSurfaceSets(surfaceSets) {
+    return {
+      blocked: Array.from(surfaceSets.blockedSurfaces),
+      height: state.height,
+      valid: Array.from(surfaceSets.validSurfaces),
+      width: state.width
+    };
+  }
+
+  function gemSurfacePredicateFromSerialized(surfaces) {
+    const validSurfaces = new Set(surfaces?.valid || []);
+    const blockedSurfaces = new Set(surfaces?.blocked || []);
+
+    return (x, y, elevation) => {
+      if (!isInsideEditorCell(x, y)) {
+        return false;
+      }
+
+      const key = gemPlacementSurfaceKey(x, y, elevation);
+
+      return validSurfaces.has(key) && !blockedSurfaces.has(key);
+    };
+  }
+
+  function createCooperativeSolverReporter(onProgress) {
     let lastRenderAt = 0;
 
-    renderSolverProgress(label, 0, maxExpandedStates);
-
     return async function reportSolverProgress(progress, force = false) {
-      const expanded = progress?.expanded ?? 0;
-      const maxExpanded = progress?.maxExpanded ?? maxExpandedStates;
-      const now =
-        window.performance && typeof window.performance.now === "function"
-          ? window.performance.now()
-          : Date.now();
+      const now = performanceNow();
 
       if (!force && now - lastRenderAt < solverProgressRenderIntervalMs) {
         return;
       }
 
       lastRenderAt = now;
-      renderSolverProgress(label, expanded, maxExpanded);
+      onProgress?.(progress?.expanded ?? 0, progress?.maxExpanded ?? 1);
       await nextSolverProgressFrame();
     };
+  }
+
+  async function runSolverSearchOnMainThread(op, payload, runOptions) {
+    const mazeSolver = getMazeSolver();
+    const engine = createSolverEngine(payload.playData);
+    const options = {
+      maxExpandedStates: payload.maxExpandedStates,
+      onProgress: createCooperativeSolverReporter(runOptions.onProgress),
+      progressYieldStateInterval: solverProgressYieldStateInterval,
+      signal: runOptions.signal
+    };
+
+    if (op === "place_gem") {
+      return mazeSolver.findHardestGemPlacement(engine, {
+        ...options,
+        canPlaceGemAt: gemSurfacePredicateFromSerialized(payload.surfaces)
+      });
+    }
+
+    return mazeSolver.solveWithAStar(engine, { ...options, algorithm: payload.algorithm });
+  }
+
+  // Runs one search. Prefers the dedicated worker (keeps the editor free of
+  // lag and makes Cancel instant); falls back to the cooperative main-thread
+  // path when workers are unavailable or the worker script fails to load.
+  async function runSolverSearch(op, payload, runOptions = {}) {
+    if (runOptions.signal?.aborted) {
+      throw solverCancelError();
+    }
+
+    if (typeof window.Worker === "function" && !solverWorkerState.broken) {
+      try {
+        return await runSolverSearchInWorker(op, payload, runOptions);
+      } catch (error) {
+        if (!error?.isSolverWorkerInfrastructure) {
+          throw error;
+        }
+
+        solverWorkerState.broken = true;
+      }
+    }
+
+    return runSolverSearchOnMainThread(op, payload, runOptions);
   }
 
   function buildEditorRenderPlayData() {
@@ -1308,7 +1700,9 @@
     { match: (tool) => ["player", "clone", "gem"].includes(tool.name), name: "Players & Goals" },
     { match: () => true, name: "Scenery" }
   ];
-  const HOTBAR_BASE_TOKENS = [
+  // Every hotbar slot is replaceable: picking a tool from the toolbox (or the
+  // right-click eyedropper) drops it into whichever slot is highlighted.
+  const hotbarSlots = [
     noopToken,
     eraserToken,
     authorData.defaultFloorToken,
@@ -1316,9 +1710,13 @@
     authorData.defaultWallToken,
     canonicalIceSlopeToken,
     "G",
-    "p"
-  ].filter(Boolean);
-  let hotbarExtraToken = "g";
+    "p",
+    "g"
+  ].filter((token) => Boolean(token) && Boolean(toolForToken(token)));
+  let activeHotbarSlotIndex =
+    hotbarSlots.indexOf(state.selectedToken) >= 0
+      ? hotbarSlots.indexOf(state.selectedToken)
+      : Math.max(0, hotbarSlots.length - 1);
   let hotbarToolnameTimer = 0;
 
   function toolForToken(token) {
@@ -1335,11 +1733,7 @@
   }
 
   function hotbarTokens() {
-    const tokens = HOTBAR_BASE_TOKENS.slice();
-    if (hotbarExtraToken && !tokens.includes(hotbarExtraToken) && toolForToken(hotbarExtraToken)) {
-      tokens.push(hotbarExtraToken);
-    }
-    return tokens;
+    return hotbarSlots.slice();
   }
 
   function toolSwatchMarkup(tool) {
@@ -2737,10 +3131,15 @@
     }
 
     state.selectedToken = token;
-    // Tools picked from the toolbox that aren't hotbar staples take over the
-    // last hotbar slot (most-recently-used, Minecraft style).
-    if (!HOTBAR_BASE_TOKENS.includes(token)) {
-      hotbarExtraToken = token;
+    const slotIndex = hotbarSlots.indexOf(token);
+    if (slotIndex >= 0) {
+      // Selecting a tool that's already on the hotbar highlights its slot.
+      activeHotbarSlotIndex = slotIndex;
+    } else if (hotbarSlots.length > 0) {
+      // Tools picked outside the hotbar (toolbox, right-click pick) land in
+      // the slot that was highlighted, not always the last one.
+      activeHotbarSlotIndex = Math.max(0, Math.min(activeHotbarSlotIndex, hotbarSlots.length - 1));
+      hotbarSlots[activeHotbarSlotIndex] = token;
     }
     renderPalette();
     renderSelectedTool();
@@ -3969,39 +4368,10 @@
     return positions;
   }
 
-  function createHillClimbProgressReporter(
-    candidateIndex,
-    candidateCount,
-    maxExpandedStates,
-    baseExpanded = 0,
-    progressState = null
-  ) {
-    const sharedProgressState = progressState || {
-      lastRenderAt: 0
-    };
-    const safeCandidateCount = Math.max(1, candidateCount);
-    const safeMaxExpandedStates = Math.max(1, maxExpandedStates);
-    const label = "Hill-Climb " + (candidateIndex + 1) + "/" + safeCandidateCount;
+  function hillClimbProgressRenderer(candidateIndex, candidateCount) {
+    const label = "Hill-Climb " + (candidateIndex + 1) + "/" + Math.max(1, candidateCount);
 
-    return async function reportHillClimbProgress(progress, force = false) {
-      const expanded = Math.max(0, progress?.expanded ?? 0);
-      const now =
-        window.performance && typeof window.performance.now === "function"
-          ? window.performance.now()
-          : Date.now();
-
-      if (now - sharedProgressState.lastRenderAt < solverProgressRenderIntervalMs) {
-        return;
-      }
-
-      sharedProgressState.lastRenderAt = now;
-      renderSolverProgress(
-        label,
-        Math.min(safeMaxExpandedStates, baseExpanded + expanded),
-        safeMaxExpandedStates
-      );
-      await nextSolverProgressFrame();
-    };
+    return (expanded, maxExpanded) => renderSolverProgress(label, expanded, maxExpanded);
   }
 
   function addAffectedCellKey(keys, x, y) {
@@ -4178,8 +4548,8 @@
         " trying wall placements...",
       "warning"
     );
-    const signal = beginSolverRun();
     const maxExpandedStates = normalizeSolverMaxExpandedStatesInput();
+    const signal = beginSolverRun("Hill-Climb");
     renderSolverProgress("Hill-Climb", 0, maxExpandedStates);
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -4187,27 +4557,16 @@
     let best = null;
     let cappedCount = 0;
     const hillClimbResults = [];
-    const hillClimbProgressState = { lastRenderAt: 0 };
     let fixedGemBaseline = null;
     let fixedGemAffectedCells = null;
 
     try {
-      const mazeSolver = getMazeSolver();
-
       if (mode === "fixed_gem") {
-        fixedGemBaseline = await mazeSolver.solveWithAStar(
-          createSolverEngine(buildEditorPlayData({ cells: baseCells })),
+        fixedGemBaseline = await runSolverSearch(
+          "solve",
+          { algorithm, maxExpandedStates, playData: buildEditorPlayData({ cells: baseCells }) },
           {
-            algorithm,
-            maxExpandedStates,
-            onProgress: createHillClimbProgressReporter(
-              0,
-              positions.length,
-              maxExpandedStates,
-              0,
-              hillClimbProgressState
-            ),
-            progressYieldStateInterval: solverProgressYieldStateInterval,
+            onProgress: hillClimbProgressRenderer(0, positions.length),
             signal
           }
         );
@@ -4219,7 +4578,17 @@
         }
       }
 
+      let lastUiYieldAt = performanceNow();
+
       for (let index = 0; index < positions.length; index += 1) {
+        // Worker searches keep the heavy lifting off this thread, but the
+        // per-candidate prep here still queues back-to-back tasks that can
+        // starve rendering — hand the browser a paint frame periodically.
+        if (performanceNow() - lastUiYieldAt > 24) {
+          await nextSolverProgressFrame();
+          lastUiYieldAt = performanceNow();
+        }
+
         const position = positions[index];
         const candidateCells = hillClimbWallCandidateCells(
           baseCells,
@@ -4254,19 +4623,11 @@
             continue;
           }
 
-          const result = await mazeSolver.solveWithAStar(
-            createSolverEngine(buildEditorPlayData({ cells: candidateCells })),
+          const result = await runSolverSearch(
+            "solve",
+            { algorithm, maxExpandedStates, playData: buildEditorPlayData({ cells: candidateCells }) },
             {
-              algorithm,
-              maxExpandedStates,
-              onProgress: createHillClimbProgressReporter(
-                index,
-                positions.length,
-                maxExpandedStates,
-                0,
-                hillClimbProgressState
-              ),
-              progressYieldStateInterval: solverProgressYieldStateInterval,
+              onProgress: hillClimbProgressRenderer(index, positions.length),
               signal
             }
           );
@@ -4294,24 +4655,19 @@
             }
           }
         } else {
-          const engine = createSolverEngine(
-            buildEditorPlayData({ cells: candidateCells, includeGems: false })
-          );
-          const gemSurfaceSets = gemPlacementSurfaceSets(candidateCells);
-          const result = await mazeSolver.findHardestGemPlacement(engine, {
-            canPlaceGemAt: (x, y, elevation) =>
-              canPlaceGemAtSurface(x, y, elevation, gemSurfaceSets),
-            maxExpandedStates,
-            onProgress: createHillClimbProgressReporter(
-              index,
-              positions.length,
+          const candidatePlayData = buildEditorPlayData({ cells: candidateCells, includeGems: false });
+          const result = await runSolverSearch(
+            "place_gem",
+            {
               maxExpandedStates,
-              0,
-              hillClimbProgressState
-            ),
-            progressYieldStateInterval: solverProgressYieldStateInterval,
-            signal
-          });
+              playData: candidatePlayData,
+              surfaces: serializeGemSurfaceSets(gemPlacementSurfaceSetsFromPlayData(candidatePlayData))
+            },
+            {
+              onProgress: hillClimbProgressRenderer(index, positions.length),
+              signal
+            }
+          );
 
           if (result.status === "capped") {
             cappedCount += 1;
@@ -4403,23 +4759,26 @@
     }
 
     setStatus("Place Gem running reachability search...", "warning");
-    const signal = beginSolverRun();
     const maxExpandedStates = normalizeSolverMaxExpandedStatesInput();
+    const signal = beginSolverRun("Place Gem");
     renderSolverProgress("Place Gem", 0, maxExpandedStates);
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     try {
-      const engine = createSolverEngine(buildEditorPlayData({ includeGems: false }));
-      const gemSurfaceSets = gemPlacementSurfaceSets();
-      const result = await getMazeSolver().findHardestGemPlacement(engine, {
-        canPlaceGemAt: (x, y, elevation) =>
-          canPlaceGemAtSurface(x, y, elevation, gemSurfaceSets),
-        maxExpandedStates,
-        onProgress: createSolverProgressReporter("Place Gem", maxExpandedStates),
-        progressYieldStateInterval: solverProgressYieldStateInterval,
-        signal
-      });
+      const result = await runSolverSearch(
+        "place_gem",
+        {
+          maxExpandedStates,
+          playData: buildEditorPlayData({ includeGems: false }),
+          surfaces: serializeGemSurfaceSets(gemPlacementSurfaceSets())
+        },
+        {
+          onProgress: (expanded, maxExpanded) =>
+            renderSolverProgress("Place Gem", expanded, maxExpanded),
+          signal
+        }
+      );
 
       if (result.candidate) {
         const placedValue = applyGemPlacement(result.candidate);
@@ -4494,21 +4853,22 @@
     const algorithmLabel = solverAlgorithmLabel(algorithm);
 
     setStatus("Solver running " + algorithmLabel + "...", "warning");
-    const signal = beginSolverRun();
     const maxExpandedStates = normalizeSolverMaxExpandedStatesInput();
+    const signal = beginSolverRun(algorithmLabel);
     renderSolverProgress(algorithmLabel, 0, maxExpandedStates);
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     try {
-      const engine = createSolverEngine(playData);
-      const result = await getMazeSolver().solveWithAStar(engine, {
-        algorithm,
-        maxExpandedStates,
-        onProgress: createSolverProgressReporter(algorithmLabel, maxExpandedStates),
-        progressYieldStateInterval: solverProgressYieldStateInterval,
-        signal
-      });
+      const result = await runSolverSearch(
+        "solve",
+        { algorithm, maxExpandedStates, playData },
+        {
+          onProgress: (expanded, maxExpanded) =>
+            renderSolverProgress(algorithmLabel, expanded, maxExpanded),
+          signal
+        }
+      );
 
       if (result.status === "solved") {
         rememberSolverSolution(result.path);
