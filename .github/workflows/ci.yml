@@ -22,7 +22,7 @@ jobs:
       - name: Node test suite
         run: npm test
 
-      - name: Stage the Python runtime (packaging smoke test)
+      - name: Stage the Python runtime
         run: node scripts/build-python-runtime.js
 
       - uses: actions/setup-python@v5
@@ -34,10 +34,38 @@ jobs:
           python -m pip install --quiet build
           python -m build
 
-      - name: Smoke-test `mazebench launch` from the wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Prove the supported Python range on every run: the oldest we claim
+  # (requires-python >= 3.9) and the newest stable release.
+  wheel-smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.14"]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install the wheel (with the prime extra) and launch the site
         run: |
           python -m venv /tmp/mzvenv
-          /tmp/mzvenv/bin/pip install --quiet dist/mazebench-*.whl
+          /tmp/mzvenv/bin/pip install --quiet "$(ls dist/mazebench-*.whl)[prime]"
           cd /
           MAZEBENCH_HOME=/tmp/mzhome nohup /tmp/mzvenv/bin/mazebench launch port=3311 open=false > /tmp/launch.log 2>&1 &
           for i in $(seq 1 60); do

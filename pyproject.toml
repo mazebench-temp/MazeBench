@@ -4,7 +4,9 @@ version = "0.2.0"
 description = "MazeBench: ice-maze puzzle site, world editor, and coding-agent benchmark runner. `mazebench launch` serves the website locally."
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11,<3.14"
+# The CLI is a stdlib-only launcher (it shells out to Node), so it runs on any
+# modern Python. No upper bound: future Python releases should install fine.
+requires-python = ">=3.9"
 keywords = ["maze", "benchmark", "agents", "game", "puzzle"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -12,6 +14,12 @@ classifiers = [
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Games/Entertainment :: Puzzle Games",
     "Topic :: Software Development :: Testing",
 ]
@@ -27,8 +35,12 @@ Homepage = "https://mazebench.com"
 Source = "https://github.com/mazebench/MazeBench"
 
 [project.optional-dependencies]
+# The Prime Verifiers library currently supports >=3.10,<3.14; the marker keeps
+# `pip install mazebench[prime]` from failing on other Pythons (the CLI itself
+# never imports verifiers — the prime path shells out to the `prime`/`uv` CLIs,
+# so everything else works regardless).
 prime = [
-    "verifiers>=0.1.14",
+    "verifiers>=0.1.14; python_version >= '3.10' and python_version < '3.14'",
 ]
 
 [project.scripts]
