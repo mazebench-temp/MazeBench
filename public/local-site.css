@@ -1442,3 +1442,16 @@ body.play-body {
   margin-top: 14px;
   text-align: center;
 }
+
+.run-live__caption {
+  background: rgba(4, 6, 16, 0.72);
+  border-radius: 999px;
+  bottom: 8px;
+  color: var(--muted, #9aa3c7);
+  font-size: 11px;
+  font-weight: 600;
+  left: 50%;
+  padding: 3px 12px;
+  position: absolute;
+  transform: translateX(-50%);
+}

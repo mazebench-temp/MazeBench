@@ -851,6 +851,7 @@ function createPageRenderer({
                 <span class="inline-spinner" aria-hidden="true"></span>
                 <span>Waiting for the first frame…</span>
               </div>
+              <figcaption id="run-live-caption" class="run-live__caption" hidden></figcaption>
             </figure>
             <div id="run-board-wrap" class="run-live__board" hidden>
               <div class="run-live__board-label">ASCII board (what the agent reads)</div>

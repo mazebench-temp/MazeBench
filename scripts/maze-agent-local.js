@@ -202,6 +202,10 @@ function agentCommand(config, prompt) {
       // by default, and exec auto-runs commands within that sandbox.
       argv.push("--sandbox", "workspace-write");
     }
+    // Ask Codex for fuller reasoning summaries (it emits `reasoning` items in
+    // the JSON stream). Codex only ever exposes summaries — never raw
+    // chain-of-thought — but "detailed" is richer than the terse default.
+    argv.push("-c", 'model_reasoning_summary="detailed"');
     if (config.modelName) {
       argv.push("-m", config.modelName);
     }
@@ -459,11 +463,15 @@ function runAgent(config, prompt) {
   );
 
   // Both agents emit a structured JSONL event stream on stdout (codex --json /
-  // claude --output-format stream-json). Stream it to agent-events.jsonl AS IT
+  // claude --output-format stream-json). Append it to agent-events.jsonl AS IT
   // ARRIVES so the web UI can distill live per-move reasoning while the agent is
-  // still playing; the human banner/progress stays on stderr (inherited).
+  // still playing. We use synchronous appends (not a buffered WriteStream) so
+  // the on-disk file the web UI tails never lags behind — important for Codex,
+  // whose events are sparse (one short message per move) and would otherwise
+  // sit unflushed in a stream buffer until the very end.
   const distill = config.model === "codex" ? distillCodexEvents : distillClaudeEvents;
-  const eventsStream = fs.createWriteStream(path.join(config.outDir, "agent-events.jsonl"), { flags: "w" });
+  const eventsPath = path.join(config.outDir, "agent-events.jsonl");
+  fs.writeFileSync(eventsPath, "");
 
   return new Promise((resolve) => {
     const child = spawn(bin, argv, { cwd: ROOT_DIR, stdio: ["ignore", "pipe", "inherit"] });
@@ -471,21 +479,22 @@ function runAgent(config, prompt) {
 
     child.stdout.on("data", (chunk) => {
       raw += chunk.toString();
-      eventsStream.write(chunk);
+      try {
+        fs.appendFileSync(eventsPath, chunk);
+      } catch (_error) {
+        /* best effort — the final write below still captures everything */
+      }
     });
     child.on("error", (error) => {
-      eventsStream.end();
       console.error(error instanceof Error ? error.message : String(error));
       resolve();
     });
     child.on("close", (code) => {
-      eventsStream.end(() => {
-        if (raw.trim()) writeReasoningArtifacts(config, raw, distill(raw), { skipEvents: true });
-        if (code !== 0) {
-          console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
-        }
-        resolve();
-      });
+      if (raw.trim()) writeReasoningArtifacts(config, raw, distill(raw), { skipEvents: true });
+      if (code !== 0) {
+        console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
+      }
+      resolve();
     });
   });
 }

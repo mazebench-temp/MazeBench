@@ -136,11 +136,17 @@
 
   // ---- live image -----------------------------------------------------------
 
-  function showImage(url) {
+  const captionEl = document.getElementById("run-live-caption");
+
+  function showImage(url, turn) {
     if (!url) return;
     liveImage.src = url + (url.includes("?") ? "" : `?t=${Date.now()}`);
     liveImage.hidden = false;
     livePlaceholder.hidden = true;
+    if (captionEl && turn != null) {
+      captionEl.textContent = `after move ${turn}`;
+      captionEl.hidden = false;
+    }
   }
 
   // Text-mode runs have no agent frames, so render one on demand for the latest
@@ -155,7 +161,7 @@
       const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/frame?turn=${latest}`);
       const payload = await response.json();
       if (payload.url) {
-        showImage(payload.url);
+        showImage(payload.url, latest);
         state.lastRenderedTurn = latest;
       } else if (payload.error && livePlaceholder && !liveImage.src) {
         livePlaceholder.querySelector("span:last-child").textContent = payload.error;
@@ -222,7 +228,7 @@
       renderFeed();
 
       if (isVision && progress.vision_frame_url) {
-        showImage(progress.vision_frame_url);
+        showImage(progress.vision_frame_url, state.afterTurn);
       } else if (!isVision) {
         maybeRenderTextFrame();
       }
@@ -250,6 +256,12 @@
             : `Run ${progress.run.status}.`,
           progress.run.status === "failed"
         );
+        // The text-mode image renders async and lags the board; keep polling
+        // until it catches up to the final move so the two end up in sync.
+        if (!isVision && state.lastRenderedTurn < state.afterTurn) {
+          maybeRenderTextFrame();
+          state.timer = setTimeout(poll, 1200);
+        }
       }
     } catch (error) {
       setStatus(error.message, true);
