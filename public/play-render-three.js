@@ -7975,18 +7975,42 @@
         renderer.setSize(width, height, false);
       }
 
+      // The mobile-play view offset (activeViewFitInsets) is part of the
+      // projection: aspect/frusta must always describe the VIRTUAL (inset)
+      // canvas whenever the offset is enabled, on EVERY path that renders —
+      // including the ones that never reach fitCameraToScene (the actor-
+      // movement fast path, the shadow-fade composite). Resetting the aspect
+      // to the full canvas here while the offset stayed enabled rendered
+      // exactly those frames stretched.
+      const fitViewInsets = activeViewFitInsets();
+      const projectionWidth = fitViewInsets ? fitViewInsets.width : width;
+      const projectionHeight = Math.max(1, fitViewInsets ? fitViewInsets.height : height);
+
       if (camera.isPerspectiveCamera) {
-        camera.aspect = width / Math.max(1, height);
+        camera.aspect = projectionWidth / projectionHeight;
         camera.fov = 34;
         camera.near = perspectiveCameraNearPlane();
         camera.far = perspectiveCameraFarPlane();
       } else {
-        camera.left = -width / 2;
-        camera.right = width / 2;
-        camera.top = height / 2;
-        camera.bottom = -height / 2;
+        camera.left = -projectionWidth / 2;
+        camera.right = projectionWidth / 2;
+        camera.top = projectionHeight / 2;
+        camera.bottom = -projectionHeight / 2;
         camera.near = -4000;
         camera.far = 4000;
+      }
+
+      if (fitViewInsets) {
+        camera.setViewOffset(
+          projectionWidth,
+          projectionHeight,
+          -fitViewInsets.left,
+          -fitViewInsets.top,
+          width,
+          height
+        );
+      } else if (camera.view?.enabled) {
+        camera.clearViewOffset();
       }
 
       camera.updateProjectionMatrix();
