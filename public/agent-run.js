@@ -236,10 +236,16 @@
       renderStats(progress.run);
 
       if (isPrime) {
-        // Prime has no live board; the move feed + replay video are built from
-        // the eval results once it finishes, so just ingest whatever is there.
+        // Prime isn't live; the board, per-move reasoning, and replay video are
+        // all built from the eval results once it finishes, so ingest whatever
+        // has landed. In text mode ingestActions fills the ASCII board.
         ingestActions(progress.actions || []);
+        ingestReasoning(progress.reasoning || []);
         renderFeed();
+        const seeEmpty = document.getElementById("run-see-empty");
+        if (seeEmpty && boardEl && boardEl.textContent) {
+          seeEmpty.hidden = true;
+        }
         updateReplay(progress.run, progress.replay_progress);
       } else {
         ingestActions(progress.actions || []);
@@ -321,6 +327,13 @@
   if (!isPrime && isVision) {
     boardWrap.hidden = true;
     document.getElementById("run-live-grid").classList.add("is-image-only");
+  }
+
+  // A Prime vision run has no text board to show — the model reads images — so
+  // drop the "what the agent sees" panel entirely (the replay video covers it).
+  if (isPrime && isVision) {
+    const seeSection = document.getElementById("run-see-section");
+    if (seeSection) seeSection.hidden = true;
   }
 
   describeRun(initial);

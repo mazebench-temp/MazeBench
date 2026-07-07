@@ -811,14 +811,12 @@ function createPageRenderer({
           <div id="prime-settings" hidden>
             <div class="settings-row">
               <label class="field field--narrow"><span>Max turns</span><input id="run-prime-turns" type="number" min="1" max="200" value="20" inputmode="numeric"></label>
+              <div class="segmented" id="prime-mode-picker" role="radiogroup" aria-label="Observation mode">
+                <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true">Text<small>ASCII board</small></button>
+                <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false">Vision<small>rendered PNGs</small></button>
+              </div>
             </div>
-            <div class="settings-row switches-row">
-              <label class="switch">
-                <input id="run-prime-vision" type="checkbox">
-                <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
-                <span class="switch__label">Image inputs<small>send rendered PNGs — needs a vision model</small></span>
-              </label>
-            </div>
+            <p id="prime-vision-note" class="muted" hidden></p>
           </div>
 
           <div class="card-actions launch-row">
@@ -842,7 +840,16 @@ function createPageRenderer({
     // local runner uses: maze-prime-run.js renders a replay video and a move
     // feed from the eval results once it finishes, and the client fills them in.
     const mazeSections = isPrime
-      ? `<section class="panel" id="run-replay-section" hidden>
+      ? `<section class="panel" id="run-see-section">
+          <h2>What the agent sees</h2>
+          <div id="run-board-wrap" class="run-live__board" hidden>
+            <div class="run-live__board-label">ASCII board (what the agent reads)</div>
+            <pre id="run-board" class="agent-board"></pre>
+          </div>
+          <p id="run-see-empty" class="muted">Prime plays the maze headlessly; the exact board the model reads appears here once the eval finishes.</p>
+        </section>
+
+        <section class="panel" id="run-replay-section" hidden>
           <h2>Replay</h2>
           <div id="run-replay-progress" class="replay-progress" hidden>
             <div class="replay-progress__track"><div id="run-replay-bar" class="replay-progress__fill"></div></div>
@@ -852,8 +859,8 @@ function createPageRenderer({
         </section>
 
         <section class="panel">
-          <h2>Moves</h2>
-          <p class="muted">The agent plays inside Prime's Verifiers eval; its moves appear here once the eval finishes. Full progress, rewards, and scores stream in the runner log below.</p>
+          <h2>Moves &amp; reasoning</h2>
+          <p class="muted">Each move the agent made, with the reasoning tokens it produced. Full progress, rewards, and scores stream in the runner log below.</p>
           <div id="run-feed" class="agent-feed"></div>
         </section>`
       : `<section class="panel run-live">

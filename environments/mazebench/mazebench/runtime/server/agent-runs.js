@@ -515,6 +515,53 @@ function createAgentRunService({
     };
   }
 
+  // Prime's model list (OpenAI-style /models) exposes no modality field, so we
+  // infer image-input support from the model id: an allowlist of known
+  // multimodal families, with text-only variants (…-mini reasoning models,
+  // audio-only endpoints) carved back out. Unknown ids default to text-only so
+  // the UI never offers vision to a model that can't read images.
+  function primeModelVision(id) {
+    const slug = String(id || "").toLowerCase();
+
+    // Text-only variants that would otherwise match a multimodal family below.
+    if (/(^|\/)(o1|o3|o4)-mini/.test(slug)) return false;
+    if (/gpt-4o-mini-(tts|audio|transcribe|realtime|search)/.test(slug)) return false;
+    if (/gpt-4o-(audio|realtime|transcribe|tts)/.test(slug)) return false;
+
+    const visionFamilies = [
+      /gpt-4o/,
+      /gpt-4\.1/,
+      /gpt-4-turbo/,
+      /gpt-4-vision/,
+      /chatgpt-4o/,
+      /gpt-5/,
+      /(^|\/)o1(\b|-)/,
+      /(^|\/)o3(\b|-)/,
+      /(^|\/)o4(\b|-)/,
+      /claude-3/,
+      /claude-(opus|sonnet|haiku|fable)-\d/,
+      /gemini/,
+      /-vl(\b|-)/,
+      /qwen.*-vl/,
+      /qwen2\.5-omni/,
+      /llava/,
+      /pixtral/,
+      /llama-3\.2-(11|90)b/,
+      /llama-4/,
+      /internvl/,
+      /deepseek-vl/,
+      /molmo/,
+      /phi-3-vision/,
+      /phi-4-multimodal/,
+      /mistral-small-3/,
+      /grok-4/,
+      /grok-2-vision/,
+      /grok-vision/
+    ];
+
+    return visionFamilies.some((pattern) => pattern.test(slug));
+  }
+
   function primeModelCatalog() {
     const result = spawnSync("prime", ["--plain", "inference", "models", "--output", "json"], {
       encoding: "utf8",
@@ -554,7 +601,8 @@ function createAgentRunService({
             id,
             label: slash === -1 ? id : id.slice(slash + 1),
             description: "",
-            group: slash === -1 ? "other" : id.slice(0, slash)
+            group: slash === -1 ? "other" : id.slice(0, slash),
+            vision: primeModelVision(id)
           };
         })
         .filter((model) => model.id);
@@ -562,7 +610,9 @@ function createAgentRunService({
       return {
         models,
         default_model_id: models[0]?.id || "",
-        note: models.length ? "" : "The Prime catalog came back empty — type a model id instead."
+        note: models.length
+          ? "Image-input support is inferred from the model id; text-only models can't be run in Vision mode."
+          : "The Prime catalog came back empty — type a model id instead."
       };
     } catch (error) {
       return { models: [], note: "Could not parse the Prime model catalog — type a model id instead." };

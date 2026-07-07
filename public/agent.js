@@ -125,6 +125,7 @@
 
   async function loadModels(providerId) {
     if (state.catalogs[providerId]) {
+      autoSelectModel();
       renderModels();
       return;
     }
@@ -239,6 +240,7 @@
     }
 
     renderReasoning();
+    renderPrimeMode();
   }
 
   // Both Codex and Claude Code expose a reasoning-effort setting. Codex reads it
@@ -434,16 +436,60 @@
 
   // ---- run settings ---------------------------------------------------------
 
-  document.querySelectorAll("#mode-picker .segmented__option").forEach((option) => {
+  // Text/Vision segmented control. Both the local #mode-picker and the Prime
+  // #prime-mode-picker drive the same state.mode, so selecting in one syncs the
+  // visual state of both.
+  function setMode(mode) {
+    state.mode = mode;
+    document.querySelectorAll(".segmented__option[data-mode]").forEach((option) => {
+      const selected = option.dataset.mode === mode;
+      option.classList.toggle("is-selected", selected);
+      option.setAttribute("aria-pressed", String(selected));
+    });
+  }
+
+  document.querySelectorAll(".segmented__option[data-mode]").forEach((option) => {
     option.addEventListener("click", () => {
-      state.mode = option.dataset.mode;
-      document.querySelectorAll("#mode-picker .segmented__option").forEach((other) => {
-        const selected = other === option;
-        other.classList.toggle("is-selected", selected);
-        other.setAttribute("aria-pressed", String(selected));
-      });
+      if (option.disabled) return;
+      setMode(option.dataset.mode);
     });
   });
+
+  // Prime models differ in whether they accept image inputs and the catalog
+  // can't tell us directly, so the server infers it (primeModelVision) and tags
+  // each model with `vision`. A text-only model locks Vision off. A custom
+  // (user-typed) id is unknown, so we trust the user and allow it.
+  function primeModelAcceptsImages() {
+    if (state.provider !== "prime") return true;
+    if (state.modelId === "__custom__") return true;
+    const model = selectedModel();
+    return model ? Boolean(model.vision) : true;
+  }
+
+  function renderPrimeMode() {
+    const picker = document.getElementById("prime-mode-picker");
+    if (!picker) return;
+
+    const visionOption = picker.querySelector('.segmented__option[data-mode="vision"]');
+    const canVision = primeModelAcceptsImages();
+
+    if (visionOption) {
+      visionOption.disabled = !canVision;
+      visionOption.classList.toggle("is-disabled", !canVision);
+      visionOption.title = canVision ? "" : "This model is text-only — it can't accept image inputs.";
+    }
+
+    // Never leave a text-only model stuck in Vision mode, then re-sync visuals.
+    if (!canVision && state.mode === "vision") state.mode = "text";
+    setMode(state.mode);
+
+    const note = document.getElementById("prime-vision-note");
+    if (note) {
+      const model = selectedModel();
+      note.textContent = canVision ? "" : `${model ? model.label : "This model"} is text-only — Vision (image inputs) is unavailable.`;
+      note.hidden = canVision;
+    }
+  }
 
   // Container mode requires Docker installed AND its daemon running. Otherwise
   // force the toggle off and lock it so a run can never be launched that would
@@ -605,7 +651,7 @@
             kind: "prime",
             model_name: resolvedModelName(),
             max_turns: Number(document.getElementById("run-prime-turns").value) || 20,
-            vision: document.getElementById("run-prime-vision").checked,
+            vision: state.mode === "vision",
             video: true
           }
         : {

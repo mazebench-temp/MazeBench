@@ -109,9 +109,67 @@ function findResults(dir, depth = 0) {
   return null;
 }
 
-// Reshape the eval's info.maze_actions into the actions.jsonl the run page reads
-// (turn, command_text, status), so the Moves feed populates for a Prime run.
-function writeActionsJsonl(resultsPath, outDir) {
+// Flatten an OpenAI-style message content (string, or a list of text/image
+// parts) into plain text, dropping image parts.
+function messageText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") return part.text || "";
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return content == null ? "" : String(content);
+}
+
+// The observation embeds the ASCII maze in a ```text … ``` fence; pull it out so
+// the run page can show exactly the board the model read. In vision mode there
+// is no fence (the board is an image), so this returns "".
+function extractBoard(observation) {
+  const match = String(observation || "").match(/```(?:text)?\r?\n([\s\S]*?)```/);
+  return match ? match[1].replace(/\s+$/, "") : "";
+}
+
+// Walk the rollout's conversation once, pairing each assistant turn with the
+// user observation that preceded it. Assistant turns carry reasoning_content
+// (the reasoning tokens) and the chosen action; the user turn carries the board.
+function conversationTurns(row) {
+  const nodes = Array.isArray(row.nodes) ? row.nodes : [];
+  const turns = [];
+  let lastObservation = "";
+
+  for (const node of nodes) {
+    const message = node && node.message;
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+
+    if (message.role === "user") {
+      lastObservation = messageText(message.content);
+    } else if (message.role === "assistant") {
+      turns.push({
+        board: extractBoard(lastObservation),
+        reasoning: String(messageText(message.reasoning_content) || "").trim(),
+        action: String(messageText(message.content) || "").trim()
+      });
+    }
+  }
+
+  return turns;
+}
+
+// Build the per-move artifacts the run page reads: actions.jsonl (turn,
+// command_text, status incl. the text board) drives the board + move list, and
+// reasoning.json drives the per-move reasoning shown alongside each move.
+function writeMoveArtifacts(resultsPath, outDir) {
   const firstLine = fs
     .readFileSync(resultsPath, "utf8")
     .split(/\r?\n/)
@@ -124,19 +182,48 @@ function writeActionsJsonl(resultsPath, outDir) {
 
   const row = JSON.parse(firstLine);
   const info = row.info || {};
-  const mazeActions = Array.isArray(info.maze_actions) ? info.maze_actions : [];
-  const lines = mazeActions
-    .filter((action) => action && action.turn != null)
-    .map((action) =>
-      JSON.stringify({
-        turn: action.turn,
-        command_text: String(action.command || action.raw_response || "").trim(),
-        status: action.status || {}
-      })
-    );
+  const mazeActions = (Array.isArray(info.maze_actions) ? info.maze_actions : []).filter(
+    (action) => action && action.turn != null
+  );
+  const turns = conversationTurns(row);
 
-  fs.writeFileSync(path.join(outDir, "actions.jsonl"), lines.length ? `${lines.join("\n")}\n` : "");
-  return lines.length;
+  const actionLines = [];
+  const reasoning = [];
+
+  mazeActions.forEach((action, index) => {
+    const detail = turns[index] || {};
+    const status = { ...(action.status || {}) };
+
+    // Surface the board the model saw as status.level (what the run page reads
+    // for the ASCII board panel in text mode).
+    if (detail.board) {
+      status.level = detail.board;
+    }
+
+    const commandText = String(action.command || action.raw_response || detail.action || "").trim();
+
+    actionLines.push(JSON.stringify({ turn: action.turn, command_text: commandText, status }));
+
+    if (detail.reasoning) {
+      reasoning.push({
+        move: action.turn,
+        reasoning: detail.reasoning,
+        action: commandText,
+        room: status.current_room || "",
+        gems: status.gem_count ?? 0,
+        moved: status.moved,
+        player_dead: Boolean(status.player_dead)
+      });
+    }
+  });
+
+  fs.writeFileSync(path.join(outDir, "actions.jsonl"), actionLines.length ? `${actionLines.join("\n")}\n` : "");
+
+  if (reasoning.length) {
+    fs.writeFileSync(path.join(outDir, "reasoning.json"), `${JSON.stringify(reasoning, null, 2)}\n`);
+  }
+
+  return actionLines.length;
 }
 
 function runReplayExport(resultsPath, outDir, opts) {
@@ -175,8 +262,8 @@ async function main() {
   }
 
   try {
-    const moves = writeActionsJsonl(resultsPath, opts.outDir);
-    console.log(`[mazebench] wrote ${moves} move${moves === 1 ? "" : "s"} to actions.jsonl`);
+    const moves = writeMoveArtifacts(resultsPath, opts.outDir);
+    console.log(`[mazebench] wrote ${moves} move${moves === 1 ? "" : "s"} (board + reasoning) from the eval`);
   } catch (error) {
     console.error(`[mazebench] could not build the move feed: ${error.message}`);
   }
