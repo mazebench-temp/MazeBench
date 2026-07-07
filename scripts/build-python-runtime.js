@@ -12,6 +12,7 @@
 // Node.js remains a runtime prerequisite on the user's machine (plus ffmpeg +
 // a Chromium-family browser for replay videos, and codex/claude for agents).
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
