@@ -20,11 +20,15 @@ Examples
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -33,7 +37,15 @@ __version__ = "0.2.2"
 USAGE = """mazebench — run the MazeBench maze game
 
 Launch the website (Play / Build / Agent modes in your browser):
-  mazebench launch [port=3000 host=127.0.0.1 open=true]
+  mazebench launch [port=3000 host=127.0.0.1 open=true]   run it (Ctrl-C to stop)
+  mazebench launch bg                                      run it in the background
+  mazebench status                                         is it running? where?
+  mazebench stop                                           shut down a running site
+  mazebench restart [port=… bg]                            stop, then launch again
+
+  The port is chosen automatically: it starts at 3000 (or your port=) and moves
+  to the next free port if that one is busy, so a launch never fails on a port
+  clash. The live URL is printed and saved so stop/status/restart just work.
 
 Interactive setup (pick options with arrow keys):
   mazebench wizard
@@ -234,27 +246,221 @@ def run_play(root: Path, pairs: dict[str, str], flags: list[str]) -> int:
     return _run(cmd, root)
 
 
-def run_launch(root: Path, pairs: dict[str, str], flags: list[str]) -> int:
+# ---- website lifecycle (launch / stop / status / restart) -----------------
+#
+# The server records {pid, host, port, url, started_at} in a small state file
+# when it binds and removes it on exit, so stop/status/restart work from any
+# terminal without the user tracking process ids. The port is chosen so a launch
+# never dies on a clash: we probe upward from the preferred port for a free one,
+# and server.js walks upward too if it still loses a race.
+
+
+def _mazebench_home() -> Path:
+    return Path(os.environ.get("MAZEBENCH_HOME", "~/.mazebench")).expanduser()
+
+
+def _state_file() -> Path:
+    return _mazebench_home() / "server.json"
+
+
+def _server_log() -> Path:
+    return _mazebench_home() / "server.log"
+
+
+def _pid_alive(pid: int) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, just owned by another user
+    except OSError:
+        return False
+    return True
+
+
+def _read_state() -> dict | None:
+    """The running server's record, or None (clearing a stale file)."""
+    try:
+        state = json.loads(_state_file().read_text())
+    except (OSError, ValueError):
+        return None
+    if not _pid_alive(int(state.get("pid", 0) or 0)):
+        _clear_state()
+        return None
+    return state
+
+
+def _clear_state() -> None:
+    _state_file().unlink(missing_ok=True)
+
+
+def _bind_host(host: str) -> str:
+    return "" if host in ("0.0.0.0", "::", "*") else host
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((_bind_host(host), port))
+            return True
+        except OSError:
+            return False
+
+
+def _find_free_port(host: str, preferred: int, span: int = 50) -> int:
+    for candidate in range(preferred, preferred + span):
+        if 0 < candidate < 65536 and _port_is_free(host, candidate):
+            return candidate
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((_bind_host(host), 0))  # OS-assigned free port
+        return sock.getsockname()[1]
+
+
+def _wait_for_state(pid: int, timeout: float = 6.0) -> dict | None:
+    """Poll until the just-started server writes its bound port, or it dies."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(_state_file().read_text())
+            if int(state.get("pid", 0) or 0) == pid and state.get("url"):
+                return state
+        except (OSError, ValueError):
+            pass
+        if not _pid_alive(pid):
+            return None
+        time.sleep(0.15)
+    return None
+
+
+def _open_when_ready(pid: int, fallback_url: str) -> None:
+    state = _wait_for_state(pid)
+    webbrowser.open(state["url"] if state and state.get("url") else fallback_url)
+
+
+def _is_on(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "on", "yes", "bg")
+
+
+def run_launch(root: Path, words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
     """Serve the website (Play / Build / Agent modes) from `root`."""
     _require(_node_bin(), "Install Node.js (the site and maze engine run on Node).")
-    port = pairs.get("port", "3000")
-    host = pairs.get("host", "127.0.0.1")
-    url = f"http://{'localhost' if host in ('0.0.0.0', '::') else host}:{port}"
 
-    env = dict(os.environ, PORT=str(port), HOST=host)
     open_browser = pairs.get("open", "true").lower() not in ("off", "false", "0", "no")
+    background = "bg" in words or _is_on(pairs.get("background", pairs.get("bg", "")))
+    host = pairs.get("host", "127.0.0.1")
 
-    if open_browser:
-        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-
-    print(f"mazebench: serving {url}  (Ctrl-C to stop)", file=sys.stderr)
-    cmd = [_node_bin(), str(root / "server.js"), *flags]
-    print(f"$ {' '.join(cmd)}", file=sys.stderr)
+    # Already running? Point at it rather than starting a second server.
+    existing = _read_state()
+    if existing:
+        url = existing.get("url", "")
+        print(f"mazebench: already running at {url} (pid {existing.get('pid')}).", file=sys.stderr)
+        print("  Use `mazebench stop` to shut it down, or `mazebench restart` for a fresh one.", file=sys.stderr)
+        if open_browser and url:
+            webbrowser.open(url)
+        return 0
 
     try:
-        return subprocess.call(cmd, cwd=str(root), env=env)
-    except KeyboardInterrupt:
+        preferred = int(pairs.get("port", "3000") or "3000")
+    except ValueError:
+        preferred = 3000
+    port = _find_free_port(host, preferred)
+    if port != preferred:
+        print(f"mazebench: port {preferred} is busy — using {port} instead.", file=sys.stderr)
+
+    state_file = _state_file()
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    _clear_state()
+    env = dict(os.environ, PORT=str(port), HOST=host, MAZEBENCH_STATE_FILE=str(state_file))
+    display_host = "localhost" if host in ("0.0.0.0", "::") else host
+    url = f"http://{display_host}:{port}"
+    cmd = [_node_bin(), str(root / "server.js"), *flags]
+
+    if background:
+        log_path = _server_log()
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(cmd, cwd=str(root), env=env, stdout=log, stderr=log, start_new_session=True)
+        state = _wait_for_state(proc.pid)
+        if state is None:
+            print(f"mazebench: the server did not come up — see {log_path}", file=sys.stderr)
+            return 1
+        print(f"mazebench: running in the background at {state['url']} (pid {state['pid']}).", file=sys.stderr)
+        print("  Stop it with `mazebench stop`; check it with `mazebench status`.", file=sys.stderr)
+        if open_browser:
+            webbrowser.open(state["url"])
         return 0
+
+    print(f"mazebench: serving {url}  (Ctrl-C to stop; or `mazebench stop` elsewhere)", file=sys.stderr)
+    proc = subprocess.Popen(cmd, cwd=str(root), env=env)
+    if open_browser:
+        threading.Thread(target=_open_when_ready, args=(proc.pid, url), daemon=True).start()
+
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        # Ctrl-C already reached the child (shared process group); let it clean up.
+        try:
+            proc.wait(timeout=8)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            proc.terminate()
+        return 0
+    finally:
+        _clear_state()  # backstop if the server crashed without clearing it
+
+
+def run_stop(root: Path, pairs: dict[str, str]) -> int:
+    state = _read_state()
+    if not state:
+        print("mazebench: no running site found (nothing to stop).", file=sys.stderr)
+        return 0
+
+    pid = int(state.get("pid", 0) or 0)
+    url = state.get("url", "")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        _clear_state()
+        print("mazebench: the site was already gone; cleared its record.", file=sys.stderr)
+        return 0
+
+    for _ in range(50):  # up to ~5s for a clean shutdown
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.1)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    _clear_state()
+    print(f"mazebench: stopped the site at {url} (pid {pid}).", file=sys.stderr)
+    return 0
+
+
+def run_status(root: Path) -> int:
+    state = _read_state()
+    if not state:
+        print("mazebench: not running. Start it with `mazebench launch`.")
+        return 0
+    print(
+        f"mazebench: running at {state.get('url')} "
+        f"(pid {state.get('pid')}, since {state.get('started_at', '?')})."
+    )
+    return 0
+
+
+def run_restart(root: Path, words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+    old = _read_state()
+    # Keep the same port on restart unless the user asked for a different one.
+    if old and "port" not in pairs and old.get("port"):
+        pairs = {**pairs, "port": str(old["port"])}
+    run_stop(root, pairs)
+    time.sleep(0.4)  # let the port fully release before we grab it again
+    return run_launch(root, words, pairs, flags)
 
 
 def run_wizard(root: Path) -> int:
@@ -353,7 +559,13 @@ def main(argv: list[str] | None = None) -> int:
             print(USAGE)
             return 0
         if command in ("launch", "serve", "site", "web"):
-            return run_launch(root, pairs, flags)
+            return run_launch(root, words[1:], pairs, flags)
+        if command in ("stop", "shutdown", "kill"):
+            return run_stop(root, pairs)
+        if command in ("status", "ps"):
+            return run_status(root)
+        if command == "restart":
+            return run_restart(root, words[1:], pairs, flags)
         if command in ("wizard", "setup"):
             return run_wizard(root)
         if command == "build":
