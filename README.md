@@ -122,9 +122,10 @@ mazebench model=codex model_name=gpt-5.5 reasoning=xhigh codex_fast=true moves=1
 mazebench model=claude model_name=opus moves=10
 ```
 
-`model_name` is forwarded to `codex -m` / `claude --model`; `reasoning` maps to
-`codex -c model_reasoning_effort` and `codex_fast=true` to the `priority`
-service tier.
+`model_name` is forwarded to `codex -m` / `claude --model`. `reasoning` maps to
+`codex -c model_reasoning_effort` (Codex: `low`/`medium`/`high`/`xhigh`) or to
+`claude --effort` (Claude Code: `low`/`medium`/`high`/`xhigh`/`max`);
+`codex_fast=true` maps to Codex's `priority` service tier.
 
 One-liners:
 
@@ -154,7 +155,7 @@ Common options (all accept `key=value` or `--key value`):
 | `gems` | unique gems required for `game_won` | `100` |
 | `vision_width`, `vision_height` | PNG size in vision mode | `512` |
 | `model_name` | underlying LLM id (`codex -m` / `claude --model`) | agent default |
-| `reasoning` | Codex reasoning effort: `low` / `medium` / `high` / `xhigh` | model default |
+| `reasoning` | reasoning effort — Codex: `low`/`medium`/`high`/`xhigh`; Claude: `low`/`medium`/`high`/`xhigh`/`max` | model default |
 | `codex_fast` | Codex Fast mode (priority tier, ~1.5× speed) | `false` |
 | `video` | `on` / `off` | `on` |
 | `fast`, `draft` | faster/cheaper video capture | off |

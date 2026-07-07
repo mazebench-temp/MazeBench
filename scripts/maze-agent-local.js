@@ -28,7 +28,8 @@
 //   yaw          0-3 camera yaw                               (default 0)
 //   gems         unique gems required for game_won            (default 100)
 //   model_name   underlying LLM id (codex -m / claude --model) (agent default)
-//   reasoning    codex reasoning effort: low|medium|high|xhigh (model default)
+//   reasoning    reasoning effort. codex: low|medium|high|xhigh; claude:
+//                low|medium|high|xhigh|max (model/agent default when unset)
 //   codex_fast   codex Fast mode (priority tier)              (default false)
 //   video        on | off                                     (default on)
 //   out          output directory for this run's artifacts
@@ -243,6 +244,10 @@ function agentCommand(config, prompt) {
     argv.push("--max-turns", maxTurns);
     if (config.modelName) {
       argv.push("--model", config.modelName);
+    }
+    // Claude Code's reasoning-effort knob (low|medium|high|xhigh|max).
+    if (["low", "medium", "high", "xhigh", "max"].includes(config.reasoning)) {
+      argv.push("--effort", config.reasoning);
     }
     return { bin: config.claudeBin, argv };
   }

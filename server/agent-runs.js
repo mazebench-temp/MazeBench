@@ -506,7 +506,11 @@ function createAgentRunService({
         { id: "haiku", label: "Haiku", description: "Fastest" }
       ],
       default_model_id: "fable",
-      note: "Aliases — each maps to the latest model in its tier. Claude Code has no reasoning-effort setting, so there's nothing to choose there. Use Custom… for a full model id."
+      // Claude Code's `claude --effort <level>` accepts these (verified from the
+      // CLI); it's provider-wide, not per model.
+      reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+      reasoning_default: "",
+      note: "Aliases — each maps to the latest model in its tier. Use Custom… for a full model id."
     };
   }
 

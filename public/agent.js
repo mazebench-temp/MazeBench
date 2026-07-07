@@ -241,22 +241,43 @@
     renderReasoning();
   }
 
+  // Both Codex and Claude Code expose a reasoning-effort setting. Codex reads it
+  // per model (from its cache); Claude Code's `--effort` accepts a fixed set.
+  function reasoningOptions() {
+    const catalog = state.catalogs[state.provider] || {};
+
+    if (state.provider === "claude") {
+      return {
+        levels:
+          Array.isArray(catalog.reasoning_levels) && catalog.reasoning_levels.length
+            ? catalog.reasoning_levels
+            : ["low", "medium", "high", "xhigh", "max"],
+        defaultLevel: catalog.reasoning_default || ""
+      };
+    }
+
+    const model = selectedModel();
+    return {
+      levels:
+        model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
+          ? model.reasoning_levels
+          : ["low", "medium", "high", "xhigh"],
+      defaultLevel: model?.default_reasoning || ""
+    };
+  }
+
   function renderReasoning() {
     const row = document.getElementById("reasoning-row");
     const host = document.getElementById("reasoning-picker");
     const fastSwitch = document.getElementById("fast-switch");
 
-    if (state.provider !== "codex") {
+    if (state.provider !== "codex" && state.provider !== "claude") {
       row.hidden = true;
       return;
     }
 
     const model = selectedModel();
-    const levels =
-      model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
-        ? model.reasoning_levels
-        : ["low", "medium", "high", "xhigh"];
-    const defaultLevel = model?.default_reasoning || "";
+    const { levels, defaultLevel } = reasoningOptions();
 
     row.hidden = false;
     host.innerHTML = [
@@ -275,9 +296,8 @@
       });
     });
 
-    // Fast mode only where the catalog says the model supports it (default
-    // model: show it — the CLI ignores the flag when unsupported).
-    fastSwitch.hidden = Boolean(model) && !model.fast;
+    // Fast mode is a Codex-only tier; only offer it when the model supports it.
+    fastSwitch.hidden = state.provider !== "codex" || (Boolean(model) && !model.fast);
   }
 
   // ---- world + level pickers ------------------------------------------------
@@ -596,7 +616,7 @@
             moves: Number(document.getElementById("run-moves").value) || 20,
             mode: state.mode,
             model_name: resolvedModelName(),
-            reasoning: state.provider === "codex" ? state.reasoning : "",
+            reasoning: state.provider === "codex" || state.provider === "claude" ? state.reasoning : "",
             codex_fast: state.provider === "codex" && document.getElementById("run-codex-fast").checked,
             container: document.getElementById("run-container").checked,
             video: document.getElementById("run-video").checked,
