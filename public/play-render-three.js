@@ -10174,6 +10174,41 @@
             target.add(entry.object);
           }
         });
+
+        // Baked snapshots are consolidated WITHOUT vista mode set (see
+        // bake-world-snapshot.mjs), so the anchor room rendered through the
+        // immediate current-room path during the bake and is NOT part of the
+        // merged geometry. Detached vistas must draw it separately — attach
+        // its cached room group on top, glow-swapped like every other room
+        // (blue edges, no floor grid, no player avatar).
+        if (app.worldViewVistaMode === true && app.worldViewDetachedVista === true) {
+          const anchorView = views.find(
+            (view) =>
+              Number(view.dx || 0) === 0 &&
+              Number(view.dy || 0) === 0 &&
+              String(view.levelId || "") === String(app.currentLevelId || "")
+          );
+
+          if (anchorView) {
+            const signature = worldViewRoomSignature(anchorView, 1);
+            let entry = worldViewRoomGroups.get(anchorView.levelId);
+
+            if (!entry || entry.signature !== signature) {
+              if (entry) {
+                disposeWorldViewRoomEntry(entry);
+              }
+
+              entry = buildWorldViewRoomEntry(anchorView, 1, signature, now);
+              worldViewRoomGroups.set(anchorView.levelId, entry);
+            }
+
+            attachWorldViewRoomEntry(entry, anchorView);
+            applyWorldViewRoomShadow(
+              entry,
+              worldViewRoomEntryShadowFactor(entry, worldShadowFactor(now))
+            );
+          }
+        }
         return;
       }
 
