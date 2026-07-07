@@ -3440,6 +3440,20 @@
     );
 
     if (pickedTarget) {
+      // Taps on neighbor rooms come back as level-switch picks with only a
+      // room delta; resolve the delta to a real level id (or drop the pick
+      // when it points outside the world grid).
+      if (pickedTarget.kind === "levelSwitch" && !pickedTarget.levelId) {
+        const levelId = adjacentLevelId(
+          state.levelId,
+          Math.round(Number(pickedTarget.dx) || 0),
+          Math.round(Number(pickedTarget.dy) || 0)
+        );
+        if (!levelId || levelId === state.levelId) {
+          return null;
+        }
+        pickedTarget.levelId = levelId;
+      }
       return pickedTarget;
     }
 
@@ -4273,6 +4287,38 @@
     return path.length > 0 ? path : "(empty)";
   }
 
+  // Solver results live INSIDE the Solver panel and persist until the author
+  // dismisses them (X) or starts another solve — never on their own.
+  function hideSolverResultCard() {
+    const card = document.getElementById("solver-result");
+    if (card) {
+      card.hidden = true;
+    }
+  }
+
+  function renderSolverResultCard(result) {
+    const card = document.getElementById("solver-result");
+    if (!card) {
+      return;
+    }
+    const title = document.getElementById("solver-result-title");
+    const detail = document.getElementById("solver-result-detail");
+    const path = document.getElementById("solver-result-path");
+    if (title) title.textContent = result.title || "";
+    if (detail) detail.textContent = result.detail || "";
+    if (path) path.textContent = result.path || "";
+    card.classList.toggle("solver-result--failed", result.solved !== true);
+    card.hidden = false;
+    if (card.dataset.closeBound !== "1") {
+      card.dataset.closeBound = "1";
+      document.getElementById("solver-result-close")?.addEventListener("click", hideSolverResultCard);
+    }
+    const panel = card.closest("details");
+    if (panel && !panel.hasAttribute("open") && typeof setDisclosureOpen === "function") {
+      setDisclosureOpen(panel, true);
+    }
+  }
+
   function applyGemPlacement(candidate) {
     pushUndoSnapshot();
     for (let y = 0; y < state.height; y += 1) {
@@ -4852,6 +4898,7 @@
     const algorithm = getSolverAlgorithm();
     const algorithmLabel = solverAlgorithmLabel(algorithm);
 
+    hideSolverResultCard();
     setStatus("Solver running " + algorithmLabel + "...", "warning");
     const maxExpandedStates = normalizeSolverMaxExpandedStatesInput();
     const signal = beginSolverRun(algorithmLabel);
@@ -4872,36 +4919,37 @@
 
       if (result.status === "solved") {
         rememberSolverSolution(result.path);
-        setStatus(
-          "Solver: possible in " +
-            result.moves +
-            " move" +
-            (result.moves === 1 ? "" : "s") +
-            ". UDLR: " +
-            formatSolverPath(result.path) +
-            ".",
-          "success"
-        );
+        renderSolverResultCard({
+          detail:
+            "Explored " + formatStateCount(result.expanded) + " states with " + algorithmLabel +
+            ". Press Play Solution to watch it.",
+          path: formatSolverPath(result.path),
+          solved: true,
+          title: "Solved in " + result.moves + " move" + (result.moves === 1 ? "" : "s")
+        });
+        setStatus("Solver: possible in " + result.moves + " move" + (result.moves === 1 ? "" : "s") + ".", "success");
       } else if (result.status === "unsolved") {
         clearSolverSolution();
-        setStatus(
-          "Solver: not possible. Explored " +
-            formatStateCount(result.expanded) +
-            " state" +
-            (result.expanded === 1 ? "" : "s") +
-            ".",
-          "warning"
-        );
+        renderSolverResultCard({
+          detail:
+            "Explored " + formatStateCount(result.expanded) +
+            " state" + (result.expanded === 1 ? "" : "s") + " — no path reaches a gem.",
+          path: "",
+          solved: false,
+          title: "Not solvable"
+        });
+        setStatus("Solver: not possible.", "warning");
       } else {
         clearSolverSolution();
-        setStatus(
-          "Solver: no answer within " +
-            formatStateCount(result.maxExpanded) +
-            " states. Search stopped after " +
-            formatStateCount(result.expanded) +
-            ".",
-          "warning"
-        );
+        renderSolverResultCard({
+          detail:
+            "No answer within " + formatStateCount(result.maxExpanded) +
+            " states (stopped after " + formatStateCount(result.expanded) + "). Raise the search limit and retry.",
+          path: "",
+          solved: false,
+          title: "Search capped"
+        });
+        setStatus("Solver: no answer within the state limit.", "warning");
       }
     } catch (error) {
       if (!isSolverCancelError(error)) {
@@ -5447,6 +5495,114 @@
         }
       });
     }
+
+    const verifiedStat = document.getElementById("world-stat-verified");
+    const syncVerifiedStat = () => {
+      if (!verifiedStat || !meta) {
+        return;
+      }
+      verifiedStat.textContent = meta.walkthroughVerified ? "Verified ✓" : "Required";
+      verifiedStat.style.color = meta.walkthroughVerified ? "var(--green)" : "var(--muted)";
+    };
+    syncVerifiedStat();
+
+    // Details: the starting room the world boots into. Saved immediately,
+    // like renames; the server validates the id against saved rooms.
+    const startSelect = document.getElementById("world-start-select");
+    if (meta && startSelect) {
+      const fillStartOptions = () => {
+        startSelect.innerHTML = "";
+        (authorData.existingLevels || []).forEach((level) => {
+          const option = document.createElement("option");
+          option.value = level.id;
+          option.textContent = level.label || level.id.replace("level_", "");
+          startSelect.append(option);
+        });
+        if (![...startSelect.options].some((option) => option.value === meta.startLevelId)) {
+          const option = document.createElement("option");
+          option.value = meta.startLevelId;
+          option.textContent = String(meta.startLevelId || "").replace("level_", "");
+          startSelect.prepend(option);
+        }
+        startSelect.value = meta.startLevelId || startSelect.options[0]?.value || "";
+      };
+      fillStartOptions();
+      startSelect.addEventListener("change", async () => {
+        const startLevelId = startSelect.value;
+        startSelect.disabled = true;
+        try {
+          const response = await fetch(meta.apiUrl, {
+            body: JSON.stringify({ start_level_id: startLevelId }),
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            method: "PATCH"
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.error || "Could not set the starting room.");
+          }
+          meta.startLevelId = payload.world?.editor_state?.start_level_id || startLevelId;
+          meta.walkthroughVerified = payload.world?.walkthrough_verified === true;
+          syncVerifiedStat();
+          setStatus("Starting room set to " + meta.startLevelId.replace("level_", "") + ".", "success");
+        } catch (error) {
+          startSelect.value = meta.startLevelId || "";
+          setStatus(error instanceof Error ? error.message : "Could not set the starting room.", "error");
+        } finally {
+          startSelect.disabled = false;
+        }
+      });
+    }
+
+    // Publish gate: the page's publish button asks the editor for a live
+    // checklist before it talks to the server (which re-enforces all of it).
+    const playerTokenPattern = /^(p|cp|p[rlud])$/;
+    window.__MAZEBENCH_AUTHOR_PUBLISH_CHECKS__ = async () => {
+      if (state.isDirty) {
+        const saved = await saveLevel({ refreshPreview: false });
+        if (!saved) {
+          return { ok: false, roomsMissingPlayer: [], startWalkthrough: null, totalGems: 0, verified: false };
+        }
+        if (meta) {
+          meta.walkthroughVerified = false;
+          syncVerifiedStat();
+        }
+      }
+      let totalGems = 0;
+      const roomsMissingPlayer = [];
+      (authorData.existingLevels || []).forEach((level) => {
+        const cells = level.id === state.levelId ? state.cells : level.cells;
+        let hasPlayer = false;
+        (cells || []).forEach((row) => {
+          (row || []).forEach((cell) => {
+            String(cell || "").split("+").forEach((part) => {
+              if (part === "G") totalGems += 1;
+              if (playerTokenPattern.test(part)) hasPlayer = true;
+            });
+          });
+        });
+        if (!hasPlayer) {
+          roomsMissingPlayer.push(level.id);
+        }
+      });
+      const verified = meta?.walkthroughVerified === true;
+      return {
+        ok: totalGems > 0 && roomsMissingPlayer.length === 0 && verified,
+        roomsMissingPlayer,
+        startWalkthrough: async () => {
+          if (state.isDirty) {
+            await saveLevel({ refreshPreview: false });
+          }
+          const worldId = String(meta?.apiUrl || "").split("/").pop() || "";
+          const startId = meta?.startLevelId || authorData.existingLevels?.[0]?.id || "level_AxA";
+          window.location.assign(
+            "/play/maze/" + encodeURIComponent(startId) +
+            "?world=" + encodeURIComponent(worldId) + "&draft=1&walkthrough=1"
+          );
+        },
+        totalGems,
+        verified
+      };
+    };
 
     // Entering test mode always saves first, so the run you play is the run
     // you just painted.
