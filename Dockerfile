@@ -13,8 +13,8 @@
 FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
 # Agent CLI versions — override with --build-arg CODEX_VERSION=... etc.
-ARG CODEX_VERSION=0.142.5
-ARG CLAUDE_VERSION=2.1.201
+ARG CODEX_VERSION=0.144.0
+ARG CLAUDE_VERSION=2.1.205
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     NODE_ENV=production \

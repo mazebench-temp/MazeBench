@@ -32,6 +32,12 @@
 
   const MODELS_LOADING_MARKUP =
     '<div class="models-loading" role="status" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span><span class="models-loading__label">Loading models</span></div>';
+  // Route, Gem, and Door Open from Lucide Icons (ISC License).
+  const RUN_METRIC_ICONS = {
+    moves: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle></svg>',
+    gems: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M10.5 3 8 9l4 13 4-13-2.5-6"></path><path d="M17 3a2 2 0 0 1 1.6.8l3 4a2 2 0 0 1 .013 2.382l-7.99 10.986a2 2 0 0 1-3.247 0l-7.99-10.986A2 2 0 0 1 2.4 7.8l2.998-3.997A2 2 0 0 1 7 3z"></path><path d="M2 9h20"></path></svg>',
+    rooms: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M11 20H2"></path><path d="M11 4.562v16.157a1 1 0 0 0 1.242.97L19 20V5.562a2 2 0 0 0-1.515-1.94l-4-1A2 2 0 0 0 11 4.561z"></path><path d="M11 4H8a2 2 0 0 0-2 2v14"></path><path d="M14 12h.01"></path><path d="M22 20h-3"></path></svg>'
+  };
   const resizeAnimations = new WeakMap();
   const visibilityAnimations = new WeakMap();
   const selectionTargets = new WeakMap();
@@ -1127,6 +1133,11 @@
           : "paused"
         : run.status;
     const modelName = run.model_name || run.model;
+    const providerName = {
+      codex: "Codex",
+      claude: "Claude Code",
+      prime: "Prime Intellect"
+    }[run.provider || run.model] || run.model;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");
     const continuation = run.continued
       ? ` · continued ×${run.continued}`
@@ -1135,10 +1146,7 @@
         : "";
 
     const actions = [
-      `<a class="button--primary" href="${escapeText(run.url)}">Watch</a>`,
-      run.has_video
-        ? `<a class="button" href="/agent-runs/${encodeURIComponent(run.id)}/files/maze_replay.mp4">Video</a>`
-        : "",
+      `<a class="button--primary" href="${escapeText(run.url)}">View</a>`,
       run.pausable ? '<button class="button" type="button" data-action="pause">Pause</button>' : "",
       run.resumable ? '<button class="button--primary" type="button" data-action="resume">Resume</button>' : "",
       run.continuable ? '<button class="button" type="button" data-action="continue">Continue</button>' : "",
@@ -1157,14 +1165,23 @@
       </div>
       <div class="run-card__main">
         <div class="run-card__identity">
-          <span class="run-card__provider">${escapeText(run.model)}</span>
-          <h3>${escapeText(modelName)}</h3>
-          <p>${escapeText(run.game_title || run.game_id)} / ${escapeText(levelLabel(run.level_id))}</p>
+          <span class="run-card__provider">${escapeText(providerName)}</span>
+          <h3 title="${escapeText(modelName)}">${escapeText(modelName)}</h3>
+          <p><span>${escapeText(run.game_title || run.game_id)}</span><i aria-hidden="true">·</i><span>${escapeText(levelLabel(run.level_id))}</span></p>
         </div>
-        <div class="run-card__metrics">
-          <span><strong>${escapeText(run.turns)}/${escapeText(run.moves)}</strong><small>moves</small></span>
-          <span><strong>${escapeText(run.gem_count ?? 0)}</strong><small>gems</small></span>
-          <span class="${run.solved ? "is-solved" : ""}"><strong>${run.solved ? "Yes" : "No"}</strong><small>solved</small></span>
+        <div class="run-card__metrics" aria-label="Run results">
+          <div class="run-metric run-metric--moves">
+            <span class="run-metric__icon" aria-hidden="true">${RUN_METRIC_ICONS.moves}</span>
+            <span class="run-metric__copy"><strong>${escapeText(run.turns)}<em>/ ${escapeText(run.moves)}</em></strong><small>Moves</small></span>
+          </div>
+          <div class="run-metric run-metric--gems">
+            <span class="run-metric__icon" aria-hidden="true">${RUN_METRIC_ICONS.gems}</span>
+            <span class="run-metric__copy"><strong>${escapeText(run.gem_count ?? 0)}<em>/ ${escapeText(run.gem_total ?? "—")}</em></strong><small>Gems</small></span>
+          </div>
+          <div class="run-metric run-metric--rooms">
+            <span class="run-metric__icon" aria-hidden="true">${RUN_METRIC_ICONS.rooms}</span>
+            <span class="run-metric__copy"><strong>${escapeText(run.room_count ?? 0)}<em>/ ${escapeText(run.room_total ?? "—")}</em></strong><small>Rooms</small></span>
+          </div>
         </div>
         <div class="run-card__actions">${actions}</div>
       </div>

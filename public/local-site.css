@@ -2448,18 +2448,25 @@ body.play-body {
 }
 
 .agent-run-card {
-  background: rgba(7, 10, 24, 0.64);
-  border: 1px solid rgba(124, 143, 255, 0.2);
-  border-radius: 10px;
+  background:
+    linear-gradient(105deg, rgba(52, 231, 240, 0.035), transparent 30%),
+    rgba(7, 10, 24, 0.72);
+  border: 1px solid rgba(124, 143, 255, 0.24);
+  border-radius: 12px;
   display: grid;
-  gap: 10px;
-  padding: 12px 14px;
-  transition: background 160ms ease, border-color 160ms ease;
+  gap: 12px;
+  overflow: hidden;
+  padding: 14px 16px 16px;
+  position: relative;
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
 
 .agent-run-card:hover {
-  background: rgba(12, 17, 34, 0.76);
-  border-color: rgba(124, 143, 255, 0.35);
+  background:
+    linear-gradient(105deg, rgba(52, 231, 240, 0.055), transparent 32%),
+    rgba(12, 17, 34, 0.8);
+  border-color: rgba(124, 143, 255, 0.42);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
 }
 
 .run-card__status {
@@ -2474,8 +2481,8 @@ body.play-body {
 .run-card__main {
   align-items: center;
   display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 0.8fr) auto;
+  gap: 20px;
+  grid-template-columns: minmax(250px, 1fr) minmax(360px, 0.9fr) auto;
 }
 
 .run-card__identity {
@@ -2484,52 +2491,117 @@ body.play-body {
 
 .run-card__provider {
   color: var(--cyan, #34e7f0);
-  font-size: 9px;
+  font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
 .run-card__identity h3 {
-  font-size: 13px;
-  margin: 2px 0;
+  color: #f4f6ff;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  margin: 4px 0 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .run-card__identity p {
+  align-items: center;
   color: var(--muted, #9aa3c7);
+  display: flex;
   font-size: 11px;
+  gap: 7px;
   margin: 0;
+}
+
+.run-card__identity p i {
+  color: rgba(124, 143, 255, 0.58);
+  font-style: normal;
 }
 
 .run-card__metrics {
   display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(3, minmax(60px, 1fr));
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(104px, 1fr));
 }
 
-.run-card__metrics span {
+.run-metric {
+  align-items: center;
+  background: rgba(3, 6, 16, 0.72);
+  border: 1px solid rgba(124, 143, 255, 0.17);
+  border-radius: 9px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-height: 52px;
+  padding: 7px 10px;
+}
+
+.run-metric__icon {
+  align-items: center;
+  background: rgba(124, 143, 255, 0.08);
+  border: 1px solid rgba(124, 143, 255, 0.18);
+  border-radius: 7px;
+  color: #aeb9ee;
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  text-shadow: 0 0 10px currentColor;
+  width: 28px;
+}
+
+.run-metric__icon svg {
+  display: block;
+  height: 16px;
+  width: 16px;
+}
+
+.run-metric--gems .run-metric__icon {
+  background: rgba(52, 231, 240, 0.09);
+  border-color: rgba(52, 231, 240, 0.22);
+  color: var(--cyan, #34e7f0);
+}
+
+.run-metric--rooms .run-metric__icon {
+  background: rgba(151, 132, 255, 0.09);
+  border-color: rgba(151, 132, 255, 0.22);
+  color: #aa9bff;
+}
+
+.run-metric__copy {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  min-width: 0;
 }
 
-.run-card__metrics strong {
+.run-metric__copy strong {
+  color: #f4f6ff;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.run-card__metrics small {
+.run-metric__copy strong em {
   color: var(--muted, #9aa3c7);
   font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-style: normal;
+  margin-left: 3px;
 }
 
-.run-card__metrics .is-solved strong {
-  color: var(--mint, #46f0a0);
+.run-metric__copy small {
+  color: var(--muted, #9aa3c7);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
 }
 
 .run-card__actions {
@@ -2543,9 +2615,10 @@ body.play-body {
 .run-card__actions .button--primary,
 .run-card__actions .button--ghost,
 .run-card__actions .button--coral {
+  border-radius: 8px;
   font-size: 10px;
-  min-height: 30px;
-  padding: 5px 9px;
+  min-height: 32px;
+  padding: 5px 10px;
 }
 
 @media (max-width: 940px) {
@@ -2650,6 +2723,10 @@ body.play-body {
     grid-row: auto;
   }
 
+  .run-card__metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .run-card__actions {
     justify-content: flex-start;
   }
@@ -2678,6 +2755,21 @@ body.play-body {
 
   .runs-filter:nth-child(n + 3) {
     border-top: 1px solid rgba(124, 143, 255, 0.18);
+  }
+}
+
+@media (max-width: 480px) {
+  .run-metric {
+    gap: 5px;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding: 8px 4px;
+    text-align: center;
+  }
+
+  .run-metric__copy {
+    align-items: center;
+    width: 100%;
   }
 }
 

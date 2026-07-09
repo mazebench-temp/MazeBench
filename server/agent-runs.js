@@ -22,9 +22,12 @@ function enrichedPathEnv() {
     "/usr/local/bin"
   ];
   const current = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
-  const merged = [...current];
+  // Prefer the running Node installation's bin directory. That is where this
+  // app installs npm-global agents, and it may be newer than a Homebrew cask
+  // that appears earlier in a GUI process's inherited PATH.
+  const merged = [];
 
-  extra.forEach((dir) => {
+  [extra[0], ...current, ...extra.slice(1)].forEach((dir) => {
     if (!merged.includes(dir) && fs.existsSync(dir)) {
       merged.push(dir);
     }
@@ -70,6 +73,7 @@ function createAgentRunService({
   const renderFrameScript = path.join(rootDir, "scripts", "maze-render-frame.js");
   const liveChildren = new Map();
   const liveFrameLocks = new Map();
+  const resolvedRunModels = new Map();
 
   // Container mode needs Docker installed AND its daemon running. Prefer the
   // shared (cached) environment probe; fall back to a direct check otherwise.
@@ -326,6 +330,79 @@ function createAgentRunService({
     return { reason: "quota", message: (line || "Out of funds/credits/usage.").trim().slice(0, 300) };
   }
 
+  function resolveClaudeCatalogModelId(modelName) {
+    const requested = String(modelName || "").trim();
+
+    if (!requested || !/^[a-z][a-z0-9-]*$/i.test(requested)) {
+      return requested;
+    }
+
+    const match = listProviderModels("claude").models.find(
+      (model) => String(model.id).toLowerCase() === requested.toLowerCase()
+    );
+    return String(match?.resolved_model_id || requested);
+  }
+
+  // Claude Code is launched with a stable alias, but its final result records
+  // the exact model id actually used. Prefer that authoritative id so completed
+  // run cards never collapse back to an ambiguous "sonnet" or "opus" label.
+  function readClaudeRunModelId(runId, requestedModel) {
+    if (resolvedRunModels.has(runId)) {
+      return resolvedRunModels.get(runId);
+    }
+
+    const eventsPath = path.join(runDirFor(runId), "agent-events.jsonl");
+
+    if (!fs.existsSync(eventsPath)) {
+      return "";
+    }
+
+    const family = String(requestedModel || "").toLowerCase().match(/(?:^|claude-)(fable|opus|sonnet|haiku)(?:-|$)/)?.[1] || "";
+    const lines = fs.readFileSync(eventsPath, "utf8").split(/\r?\n/).reverse();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      try {
+        const event = JSON.parse(line);
+        const usage = event && event.modelUsage;
+        if (!usage || typeof usage !== "object") continue;
+
+        const candidates = Object.entries(usage)
+          .filter(([id]) => /^claude-[a-z0-9.-]+$/i.test(id))
+          .map(([id, stats]) => ({
+            id,
+            tokens: Number(stats?.outputTokens || 0) + Number(stats?.inputTokens || 0)
+          }));
+        const familyMatches = family
+          ? candidates.filter((candidate) => candidate.id.toLowerCase().includes(`claude-${family}-`))
+          : [];
+        const selected = (familyMatches.length ? familyMatches : candidates)
+          .sort((left, right) => right.tokens - left.tokens)[0];
+
+        if (selected) {
+          resolvedRunModels.set(runId, selected.id);
+          return selected.id;
+        }
+      } catch (_error) {
+        /* skip partial/non-JSON stream lines */
+      }
+    }
+
+    return "";
+  }
+
+  function resolvedRunModelName(runId, meta) {
+    const modelName = String(meta.model_name || meta.model || "");
+
+    if (meta.model !== "claude") {
+      return modelName;
+    }
+
+    const requested = meta.model_alias || meta.launch_params?.model_name || modelName;
+    return readClaudeRunModelId(runId, requested) || resolveClaudeCatalogModelId(requested) || modelName;
+  }
+
   function summarizeRun(runId) {
     const meta = finalizeStatus(runId, readRunMeta(runId));
 
@@ -336,11 +413,23 @@ function createAgentRunService({
     const actions = readActions(runId);
     const last = actions[actions.length - 1] || null;
     const runDir = runDirFor(runId);
+    const modelName = resolvedRunModelName(runId, meta);
+    const scorecard = loadJson(path.join(runDir, "maze_scorecard.json"), null);
+    const observedRooms = new Set(
+      [meta.level_id, ...actions.map((action) => action.current_room)].filter(Boolean)
+    );
+    const scorecardRooms = Number(scorecard?.rooms?.visited);
+    const scorecardRoomTotal = Number(scorecard?.rooms?.total);
+    const scorecardGemTotal = Number(scorecard?.gems?.total);
 
     return {
       ...meta,
+      model_name: modelName,
       turns: actions.length,
       gem_count: last ? last.gem_count : 0,
+      gem_total: Number.isFinite(scorecardGemTotal) ? scorecardGemTotal : meta.gem_total ?? null,
+      room_count: Number.isFinite(scorecardRooms) ? scorecardRooms : observedRooms.size,
+      room_total: Number.isFinite(scorecardRoomTotal) ? scorecardRoomTotal : meta.room_total ?? null,
       current_room: last ? last.current_room : meta.level_id,
       solved: Boolean(last && last.solved),
       has_video: fs.existsSync(path.join(runDir, "maze_replay.mp4")),
@@ -773,6 +862,7 @@ function createAgentRunService({
       : [];
 
     const pickerLabels = new Map();
+    const pickerModelIds = new Map();
     const executable = spawnSync("sh", ["-c", "command -v claude"], {
       encoding: "utf8",
       env: enrichedPathEnv(),
@@ -828,7 +918,10 @@ function createAgentRunService({
 
         const alias = family.toLowerCase();
         const version = versions[0];
-        if (version) pickerLabels.set(alias, `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`);
+        if (version) {
+          pickerLabels.set(alias, `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`);
+          pickerModelIds.set(alias, `claude-${alias}-${version.replace(/\./g, "-")}`);
+        }
       }
     }
 
@@ -851,7 +944,8 @@ function createAgentRunService({
       models: aliases.map((alias) => ({
         id: alias,
         label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
-        description: descriptions[alias] || `Latest model behind the ${alias} alias`
+        description: descriptions[alias] || `Latest model behind the ${alias} alias`,
+        resolved_model_id: pickerModelIds.get(alias) || ""
       })),
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
@@ -1209,6 +1303,7 @@ function createAgentRunService({
     try {
       if (kind === "prime") {
         const command = buildPrimeCommand(params, runDir);
+        const game = normalizedGameForRun("maze");
 
         child = spawn(command.bin, command.argv, {
           cwd: rootDir,
@@ -1228,6 +1323,8 @@ function createAgentRunService({
           game_id: "maze",
           game_title: "Maze Bench Environment",
           level_id: "level_HxI",
+          gem_total: buildWorlds.countWorldGems(game),
+          room_total: game.worldMap?.levels?.length || 0,
           moves: command.maxTurns,
           mode: command.vision ? "vision" : "text",
           vision: command.vision,
@@ -1240,6 +1337,12 @@ function createAgentRunService({
       } else {
         const game = normalizedGameForRun(params.game_id);
         const { args, model, levelId, moves, gems, view } = buildLocalRunArgs(runId, params, game);
+        const requestedModelName = String(params.model_name || "");
+        const exactModelName = model === "claude"
+          ? resolveClaudeCatalogModelId(requestedModelName)
+          : requestedModelName;
+        const gemTotal = buildWorlds.countWorldGems(game);
+        const roomTotal = game.worldMap?.levels?.length || 0;
 
         child = spawn(process.execPath, [runnerScript, ...args], {
           cwd: rootDir,
@@ -1255,11 +1358,14 @@ function createAgentRunService({
           pid: child.pid,
           command: ["node", "scripts/maze-agent-local.js", ...args].join(" "),
           model,
-          model_name: params.model_name || "",
+          model_name: exactModelName,
+          model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
           reasoning: params.reasoning || "",
           game_id: game.id,
           game_title: game.name,
           level_id: levelId,
+          gem_total: gemTotal,
+          room_total: roomTotal,
           moves,
           gems,
           view,
