@@ -40,11 +40,12 @@
     provider: null,
     modelId: null,
     customModel: "",
-    reasoning: "",
-    worldId: data.worlds[0] ? data.worlds[0].id : null,
+    reasoning: null,
+    reasoningChosen: false,
+    worldId: null,
     levelId: null, // null = use the world's default from its metadata
-    mode: "text",
-    isolation: "docker",
+    mode: null,
+    isolation: null,
     catalogs: {},
     openFolders: new Set(),
     modelQuery: ""
@@ -108,7 +109,9 @@
       onComplete?.();
       return;
     }
-    visibilityAnimations.get(element)?.cancel();
+    const current = visibilityAnimations.get(element);
+    if (current?.show === show) return;
+    current?.animation.cancel();
 
     if (show && !element.hidden) {
       onComplete?.();
@@ -134,9 +137,10 @@
         : [{ height: `${fullHeight}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
       { duration, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
     );
-    visibilityAnimations.set(element, animation);
+    const entry = { animation, show };
+    visibilityAnimations.set(element, entry);
     const cleanup = (finished) => {
-      if (visibilityAnimations.get(element) !== animation) return;
+      if (visibilityAnimations.get(element) !== entry) return;
       visibilityAnimations.delete(element);
       element.style.overflow = previousOverflow;
       if (finished && !show) element.hidden = true;
@@ -144,6 +148,16 @@
     };
     animation.addEventListener("finish", () => cleanup(true), { once: true });
     animation.addEventListener("cancel", () => cleanup(false), { once: true });
+  }
+
+  async function waitForVisibilityTween(element) {
+    const entry = element ? visibilityAnimations.get(element) : null;
+    if (!entry) return;
+    try {
+      await entry.animation.finished;
+    } catch {
+      // Reversed or cancelled by a newer selection.
+    }
   }
 
   function selectedRect(host, selector) {
@@ -254,6 +268,53 @@
     return String(levelId || "").replace(/^level_/, "");
   }
 
+  function composerSettingsReady() {
+    return Boolean(
+      state.provider &&
+      state.modelId &&
+      state.reasoningChosen &&
+      (state.provider === "prime" || state.worldId)
+    );
+  }
+
+  function runOptionsReady() {
+    return Boolean(
+      composerSettingsReady() &&
+      state.mode &&
+      (state.provider === "prime" || state.isolation)
+    );
+  }
+
+  function moveBudget() {
+    const input = document.getElementById(state.provider === "prime" ? "run-prime-turns" : "run-moves");
+    return Math.max(0, Math.floor(Number(input?.value) || 0));
+  }
+
+  function runReady() {
+    return runOptionsReady() && moveBudget() > 0;
+  }
+
+  function syncComposerSteps(animate = true) {
+    const hasProvider = Boolean(state.provider);
+    const hasModel = Boolean(state.modelId);
+    const showTarget = hasProvider && hasModel && state.reasoningChosen && state.provider !== "prime";
+    const showSettings = composerSettingsReady();
+    const showRun = runReady();
+    const visibility = [
+      [document.querySelector(".composer-section--model"), hasProvider],
+      [document.querySelector(".composer-section--reasoning"), hasProvider && hasModel],
+      [document.getElementById("world-section"), showTarget],
+      [document.querySelector(".composer-section--settings"), showSettings],
+      [document.querySelector(".composer-section--run"), showRun]
+    ];
+
+    visibility.forEach(([element, show]) => {
+      if (!element) return;
+      if (animate) tweenVisibility(element, show, 440);
+      else element.hidden = !show;
+    });
+  }
+
   // ---- provider picker ----------------------------------------------------
 
   function renderProviders(selectionFrom = null) {
@@ -282,9 +343,15 @@
     state.modelId = null;
     state.customModel = "";
     state.modelQuery = "";
+    state.worldId = null;
+    state.levelId = null;
+    renderWorlds(null, false);
+    renderLevelSummary();
     const modelSearchInput = document.getElementById("model-search-input");
     if (modelSearchInput) modelSearchInput.value = "";
-    state.reasoning = "";
+    state.reasoning = null;
+    state.reasoningChosen = false;
+    resetRunOptions();
     document.getElementById("run-codex-fast").checked = false;
 
     providerHost.querySelectorAll(".provider-card").forEach((card) => {
@@ -295,7 +362,6 @@
     renderSelectionSlider(providerHost, ".provider-card.is-selected", providerSelectionFrom, "provider");
 
     const isPrime = providerId === "prime";
-    tweenVisibility(document.getElementById("world-section"), !isPrime, 440);
     tweenResize(document.querySelector(".settings-stage"), () => {
       document.getElementById("local-settings").hidden = isPrime;
       document.getElementById("prime-settings").hidden = !isPrime;
@@ -303,8 +369,7 @@
     tweenResize(document.querySelector(".model-browser"), () => {
       renderModels();
     }, 440);
-    syncBatch();
-    updateLaunchSummary();
+    syncComposerSteps();
     loadModels(providerId, { fresh: !state.catalogs[providerId] });
   }
 
@@ -312,10 +377,6 @@
 
   async function loadModels(providerId, { fresh = false } = {}) {
     if (state.catalogs[providerId] && !fresh) {
-      tweenResize(document.querySelector(".model-browser"), () => {
-        autoSelectModel();
-        renderModels();
-      });
       return;
     }
 
@@ -343,23 +404,16 @@
     }
 
     if (state.provider === providerId) {
+      await waitForVisibilityTween(document.querySelector(".composer-section--model"));
+      if (state.provider !== providerId) return;
       const models = state.catalogs[providerId]?.models || [];
       if (state.modelId !== "__custom__" && !models.some((model) => model.id === state.modelId)) {
         state.modelId = null;
       }
       tweenResize(document.querySelector(".model-browser"), () => {
-        autoSelectModel();
         renderModels(null, true);
       });
     }
-  }
-
-  // Pick the strongest model by default: the catalog's recommendation, else
-  // the first entry, else fall back to a custom id box.
-  function autoSelectModel() {
-    if (state.modelId !== null) return;
-    const catalog = state.catalogs[state.provider] || { models: [] };
-    state.modelId = catalog.default_model_id || catalog.models[0]?.id || "__custom__";
   }
 
   function selectedModel() {
@@ -381,7 +435,7 @@
         data-model-id="${escapeText(model.id)}" role="radio" aria-checked="${state.modelId === model.id}">
       ${showGroup && model.group ? `<span class="chip__eyebrow">${escapeText(model.group)}</span>` : ""}
       <span class="chip__topline">
-        <span class="chip__label">${escapeText(model.label)}${model.fast ? ' <span class="chip__badge">FAST</span>' : ""}</span>
+        <span class="chip__label">${escapeText(model.label)}</span>
       </span>
       ${details ? `<span class="chip__sub">${escapeText(details)}</span>` : ""}
     </button>`;
@@ -551,9 +605,12 @@
         tweenResize(document.querySelector(".model-browser"), () => {
           state.modelId = chip.dataset.modelId;
           if (state.modelId !== "__custom__") state.customModel = "";
-          if (state.provider === "codex") state.reasoning = "";
+          state.reasoning = null;
+          state.reasoningChosen = false;
+          resetRunOptions();
           renderModels(from);
         });
+        syncComposerSteps();
       });
     });
 
@@ -565,7 +622,6 @@
 
     renderReasoning();
     renderPrimeMode();
-    updateLaunchSummary();
     renderSelectionSlider(host, modelSelectionElement, selectionFrom, "model");
     if (reveal) requestAnimationFrame(() => revealModelChoices(host));
   }
@@ -599,7 +655,7 @@
     const host = document.getElementById("reasoning-picker");
     const fastSwitch = document.getElementById("fast-switch");
 
-    if (state.provider !== "codex" && state.provider !== "claude" && state.provider !== "prime") {
+    if (!state.modelId || (state.provider !== "codex" && state.provider !== "claude" && state.provider !== "prime")) {
       row.hidden = true;
       return;
     }
@@ -609,8 +665,10 @@
     const choices = state.provider === "prime"
       ? [{ id: "", label: "off" }, ...levels.map((level) => ({ id: level, label: level }))]
       : levels.map((level) => ({ id: level, label: level }));
-    const leftmost = state.provider === "prime" ? "" : levels.includes("low") ? "low" : levels[0] || "";
-    if (!choices.some((choice) => choice.id === state.reasoning)) state.reasoning = leftmost;
+    if (state.reasoning !== null && !choices.some((choice) => choice.id === state.reasoning)) {
+      state.reasoning = null;
+      state.reasoningChosen = false;
+    }
 
     row.hidden = false;
     host.innerHTML = choices
@@ -623,7 +681,9 @@
       chip.addEventListener("click", () => {
         const from = selectedRect(host, ".chip.is-selected");
         state.reasoning = chip.dataset.reasoning;
+        state.reasoningChosen = true;
         renderReasoning(from);
+        syncComposerSteps();
       });
     });
 
@@ -642,7 +702,7 @@
     return urls.map((url) => `<img src="${escapeText(url)}" alt="" loading="lazy">`).join("");
   }
 
-  function renderWorlds(selectionFrom = null) {
+  function renderWorlds(selectionFrom = null, syncSteps = true) {
     const host = document.getElementById("world-picker");
     host.innerHTML = data.worlds
       .map(
@@ -666,17 +726,21 @@
         else tweenVisibility(levelPicker, false, 440, renderLevelSummary);
       });
     });
-    updateLaunchSummary();
     renderSelectionSlider(host, ".world-tile.is-selected", selectionFrom, "world");
+    if (syncSteps) syncComposerSteps();
   }
 
   function renderLevelSummary() {
     const host = document.getElementById("level-summary");
     const world = currentWorld();
 
+    if (!state.worldId && data.worlds.length) {
+      host.innerHTML = '<span class="muted">Choose a world</span>';
+      return;
+    }
+
     if (!world) {
       host.innerHTML = '<span class="muted">No worlds available.</span>';
-      updateLaunchSummary();
       return;
     }
 
@@ -716,7 +780,6 @@
         tweenVisibility(picker, false, 440, renderLevelSummary);
       }
     });
-    updateLaunchSummary();
   }
 
   function renderLevelGrid() {
@@ -758,7 +821,25 @@
   // Text/Vision segmented control. Both the local #mode-picker and the Prime
   // #prime-mode-picker drive the same state.mode, so selecting in one syncs the
   // visual state of both.
-  function setMode(mode) {
+  function syncRunSettingCards() {
+    const localSettings = document.getElementById("local-settings");
+    const primeSettings = document.getElementById("prime-settings");
+    const hasObservation = Boolean(state.mode);
+    const hasAccess = Boolean(state.isolation);
+
+    const setCardVisibility = (card, show) => {
+      if (!card) return;
+      card.classList.toggle("is-gated", !show);
+      card.toggleAttribute("inert", !show);
+      card.setAttribute("aria-hidden", String(!show));
+    };
+
+    setCardVisibility(localSettings?.querySelector(".setting-card--access"), hasObservation);
+    setCardVisibility(localSettings?.querySelector(".setting-card--budget"), hasObservation && hasAccess);
+    setCardVisibility(primeSettings?.querySelector(".setting-card--budget"), hasObservation);
+  }
+
+  function setMode(mode, syncSteps = true) {
     state.mode = mode;
     document.querySelectorAll(".segmented__option[data-mode]").forEach((option) => {
       const selected = option.dataset.mode === mode;
@@ -766,16 +847,11 @@
       option.setAttribute("aria-pressed", String(selected));
     });
     document.querySelectorAll("#mode-picker, #prime-mode-picker").forEach((picker) => {
+      picker.classList.toggle("has-selection", Boolean(mode));
       picker.classList.toggle("is-second", mode === "vision");
     });
-    // View distance only applies to rendered vision frames.
-    const viewField = document.getElementById("vision-view-field");
-    if (viewField) {
-      tweenResize(viewField.closest(".setting-card"), () => {
-        viewField.hidden = mode !== "vision";
-      });
-    }
-    updateLaunchSummary();
+    syncRunSettingCards();
+    if (syncSteps) syncComposerSteps();
   }
 
   document.querySelectorAll(".segmented__option[data-mode]").forEach((option) => {
@@ -809,9 +885,10 @@
       visionOption.title = canVision ? "" : "This model is text-only — it can't accept image inputs.";
     }
 
-    // Never leave a text-only model stuck in Vision mode, then re-sync visuals.
-    if (!canVision && state.mode === "vision") state.mode = "text";
-    setMode(state.mode);
+    // An invalidated Vision choice must be selected again instead of silently
+    // falling back to Text.
+    if (!canVision && state.mode === "vision") state.mode = null;
+    setMode(state.mode, false);
 
     const note = document.getElementById("prime-vision-note");
     if (note) {
@@ -824,20 +901,31 @@
   // Isolation is a two-way choice — Docker (isolated container) or Full tools
   // (full host access). There is no host-sandbox middle mode: the codex/claude
   // workspace-write sandbox has no network, so it can't render vision frames.
-  function setIsolation(value) {
-    state.isolation = value === "full" ? "full" : "docker";
+  function setIsolation(value, syncSteps = true) {
+    state.isolation = value === "full" || value === "docker" ? value : null;
     document.querySelectorAll(".segmented__option[data-isolation]").forEach((option) => {
       const selected = option.dataset.isolation === state.isolation;
       option.classList.toggle("is-selected", selected);
       option.setAttribute("aria-pressed", String(selected));
     });
-    document.getElementById("isolation-picker")?.classList.toggle("is-second", state.isolation === "full");
-    updateLaunchSummary();
+    const picker = document.getElementById("isolation-picker");
+    picker?.classList.toggle("has-selection", Boolean(state.isolation));
+    picker?.classList.toggle("is-second", state.isolation === "full");
+    syncRunSettingCards();
+    if (syncSteps) syncComposerSteps();
+  }
+
+  function resetRunOptions() {
+    ["run-moves", "run-prime-turns"].forEach((id) => {
+      const input = document.getElementById(id);
+      if (input) input.value = "0";
+    });
+    setMode(null, false);
+    setIsolation(null, false);
   }
 
   // Docker mode needs Docker installed AND its daemon running. When it isn't,
-  // disable that option and fall back to Full tools so a run can never be
-  // launched that would immediately fail.
+  // disable that option and clear it so access must be chosen again.
   function syncIsolationPicker() {
     const dockerOption = document.querySelector('.segmented__option[data-isolation="docker"]');
     if (!dockerOption) return;
@@ -856,8 +944,7 @@
       dockerOption.title = env.docker_installed
         ? "Docker is installed but its daemon isn't running. Start it below, or use Full tools."
         : "Install Docker to isolate agent runs, or use Full tools.";
-      // Never leave a run stuck on an unavailable Docker mode.
-      if (state.isolation === "docker") setIsolation("full");
+      if (state.isolation === "docker") setIsolation(null);
     }
 
     renderDockerAction();
@@ -967,38 +1054,6 @@
 
   // ---- launch ---------------------------------------------------------------
 
-  function updateLaunchSummary() {
-    const title = document.getElementById("launch-summary-title");
-    const meta = document.getElementById("launch-summary-meta");
-    if (!title || !meta) return;
-
-    const provider = PROVIDERS.find((entry) => entry.id === state.provider);
-    const model = selectedModel();
-    const customModel = state.modelId === "__custom__"
-      ? (document.getElementById("model-custom-input")?.value || "").trim()
-      : "";
-    const modelLabel = model?.label || customModel || (state.modelId === "__custom__" ? "Custom model" : "Loading model…");
-    title.textContent = provider ? `${provider.name} · ${modelLabel}` : "Choose an agent and model";
-
-    const modeLabel = state.mode === "vision" ? "Vision" : "Text";
-    const parts = [];
-    if (state.provider === "prime") {
-      const turns = Number(document.getElementById("run-prime-turns")?.value) || 20;
-      parts.push("Verifier environment", modeLabel, `${turns} turns`);
-    } else {
-      const world = currentWorld();
-      const moves = Number(document.getElementById("run-moves")?.value) || 20;
-      if (world) parts.push(`${world.title} / ${levelLabel(effectiveLevelId())}`);
-      parts.push(modeLabel, state.isolation === "docker" ? "Docker" : "Full access", `${moves} moves`);
-      if (document.getElementById("run-video")?.checked) parts.push("Replay on");
-    }
-    meta.textContent = parts.join(" · ");
-
-    const count = Math.max(1, Math.min(8, Math.floor(Number(document.getElementById("run-batch")?.value) || 1)));
-    const launchLabel = document.querySelector(".launch-button__label");
-    if (launchLabel) launchLabel.textContent = count > 1 ? `Launch ${count} runs` : "Launch run";
-  }
-
   function resolvedModelName() {
     if (state.modelId === "__custom__") {
       return (document.getElementById("model-custom-input").value || "").trim();
@@ -1007,6 +1062,7 @@
   }
 
   document.getElementById("launch-run")?.addEventListener("click", async () => {
+    if (!runReady()) return;
     if (state.modelId === "__custom__" && !resolvedModelName() && (state.catalogs[state.provider]?.models || []).length) {
       setStatus("Type a model id or pick one from the list.", true);
       return;
@@ -1017,59 +1073,38 @@
         ? {
             kind: "prime",
             model_name: resolvedModelName(),
-            max_turns: Number(document.getElementById("run-prime-turns").value) || 20,
+            max_turns: moveBudget(),
             vision: state.mode === "vision",
             reasoning: state.reasoning,
-            video: true
+            video: false
           }
         : {
             kind: "local",
             model: state.provider,
             game_id: state.worldId,
             level_id: effectiveLevelId(),
-            moves: Number(document.getElementById("run-moves").value) || 20,
+            moves: moveBudget(),
             mode: state.mode,
-            vision_view: state.mode === "vision" ? document.getElementById("run-vision-view")?.value || "" : "",
+            vision_view: "",
             model_name: resolvedModelName(),
             reasoning: state.provider === "codex" || state.provider === "claude" ? state.reasoning : "",
             codex_fast: state.provider === "codex" && document.getElementById("run-codex-fast").checked,
             container: state.isolation === "docker",
-            video: document.getElementById("run-video").checked,
+            video: false,
             tools: state.isolation === "full"
           };
 
-    body.count = Math.max(1, Math.min(8, Math.floor(Number(document.getElementById("run-batch").value) || 1)));
+    body.count = 1;
 
     try {
-      setStatus(body.count > 1 ? `Launching ${body.count} runs…` : "Launching…");
+      setStatus("Launching…");
       const payload = await api(data.apiUrl, { method: "POST", body: JSON.stringify(body) });
       setStatus(payload.message);
-      // A batch stays on this page and surfaces in the runs list; a single run
-      // jumps straight to its live view.
-      if ((payload.runs || []).length > 1) {
-        runsView.page = 1;
-        refreshRuns();
-        document.querySelector('[aria-label="Runs"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
-      } else {
-        window.location.href = payload.run.url;
-      }
+      window.location.href = payload.run.url;
     } catch (error) {
       setStatus(error.message, true);
     }
   });
-
-  // Claude Code can't run multiple concurrent instances, so lock its batch to 1.
-  function syncBatch() {
-    const input = document.getElementById("run-batch");
-    const note = document.getElementById("batch-note");
-    if (!input) return;
-    const isClaude = state.provider === "claude";
-    input.disabled = isClaude;
-    if (isClaude) input.value = "1";
-    note.textContent = isClaude ? "Claude Code runs one at a time — batch is limited to a single run." : "";
-    note.hidden = !isClaude;
-    updateLaunchSummary();
-  }
 
   // ---- runs list (unchanged behavior) ---------------------------------------
 
@@ -1293,13 +1328,11 @@
   }
 
   function wireConfigurationSummary() {
-    ["run-moves", "run-prime-turns", "run-batch", "model-custom-input"].forEach((id) => {
-      document.getElementById(id)?.addEventListener("input", updateLaunchSummary);
+    ["run-moves", "run-prime-turns"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("input", () => {
+        syncComposerSteps();
+      });
     });
-    ["run-video", "run-vision-view"].forEach((id) => {
-      document.getElementById(id)?.addEventListener("change", updateLaunchSummary);
-    });
-
   }
 
   function wireSelectionResize() {
@@ -1321,7 +1354,6 @@
 
   // ---- boot -----------------------------------------------------------------
 
-  const firstAvailable = PROVIDERS.find((provider) => data.environment?.[provider.envKey]);
   renderProviders();
   renderWorlds();
   renderLevelSummary();
@@ -1332,11 +1364,12 @@
     });
   });
   syncIsolationPicker();
+  syncRunSettingCards();
   describeEnvironment();
   wireModelCatalog();
   wireConfigurationSummary();
   wireSelectionResize();
   wireRunsToolbar();
   refreshRuns();
-  selectProvider((firstAvailable || PROVIDERS[0]).id);
+  syncComposerSteps(false);
 })();

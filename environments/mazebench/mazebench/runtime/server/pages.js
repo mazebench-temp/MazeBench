@@ -47,7 +47,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-18">
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-30">
     ${extraHeadHtml}`
     })}
   </head>
@@ -252,7 +252,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-18">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-30">`;
   }
 
   function renderPlayPage(game, level) {
@@ -364,7 +364,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-18">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-30">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -755,7 +755,7 @@ function createPageRenderer({
             <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent provider"></div>
           </section>
 
-          <section class="composer-section composer-section--model">
+          <section class="composer-section composer-section--model" hidden>
             <div class="composer-section-head">
               <div class="composer-section-title">
                 <span class="composer-step">02</span>
@@ -776,21 +776,27 @@ function createPageRenderer({
               <div id="model-custom" class="model-custom" hidden>
                 <label class="field"><span>Model id</span><input id="model-custom-input" type="text" placeholder="e.g. gpt-5.5 or openai/gpt-5-nano" autocomplete="off" spellcheck="false"></label>
               </div>
-              <div id="reasoning-row" class="model-tuning" hidden>
-                <div><span class="model-tuning__title">Reasoning</span></div>
-                <div id="reasoning-picker" class="chip-row chip-row--small" role="radiogroup" aria-label="Reasoning effort"></div>
-                <label id="fast-switch" class="switch" hidden>
-                  <input id="run-codex-fast" type="checkbox">
-                  <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
-                  <span class="switch__label">Fast mode</span>
-                </label>
-              </div>
             </div>
           </section>
 
-          <section id="world-section" class="composer-section composer-section--target">
+          <section class="composer-section composer-section--reasoning" hidden>
             <div class="composer-section-title">
               <span class="composer-step">03</span>
+              <div><h3>Reasoning effort</h3></div>
+            </div>
+            <div id="reasoning-row" class="model-tuning" hidden>
+              <div id="reasoning-picker" class="chip-row chip-row--small" role="radiogroup" aria-label="Reasoning effort"></div>
+              <label id="fast-switch" class="switch" hidden>
+                <input id="run-codex-fast" type="checkbox">
+                <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+                <span class="switch__label">Fast mode</span>
+              </label>
+            </div>
+          </section>
+
+          <section id="world-section" class="composer-section composer-section--target" hidden>
+            <div class="composer-section-title">
+              <span class="composer-step">04</span>
               <div><h3>Target</h3></div>
             </div>
             <div class="target-grid">
@@ -806,9 +812,9 @@ function createPageRenderer({
             <div id="level-picker" class="level-grid-wrap" hidden></div>
           </section>
 
-          <section class="composer-section composer-section--settings">
+          <section class="composer-section composer-section--settings" hidden>
             <div class="composer-section-title">
-              <span class="composer-step">04</span>
+              <span class="composer-step">05</span>
               <div><h3>Run settings</h3></div>
             </div>
             <div class="settings-stage">
@@ -817,37 +823,22 @@ function createPageRenderer({
                 <div class="setting-card__head"><span>Observation</span></div>
                 <div class="animated-segmented" id="mode-picker" role="radiogroup" aria-label="Observation mode">
                   <span class="segmented__glider" aria-hidden="true"></span>
-                  <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true"><span class="segmented__icon">TXT</span><span>Text</span></button>
+                  <button type="button" class="segmented__option" data-mode="text" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
                   <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false"><span class="segmented__icon">IMG</span><span>Vision</span></button>
                 </div>
-                <label class="field setting-card__field" id="vision-view-field" hidden><span>Vision range</span>
-                  <select id="run-vision-view">
-                    <option value="1" selected>3×3 rooms (default)</option>
-                    <option value="2">5×5 rooms</option>
-                    <option value="3">7×7 rooms</option>
-                    <option value="world">Whole world</option>
-                  </select>
-                </label>
               </article>
-              <article class="setting-card setting-card--access">
+              <article class="setting-card setting-card--access is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Access</span></div>
                 <div class="animated-segmented" id="isolation-picker" role="radiogroup" aria-label="Isolation">
                   <span class="segmented__glider" aria-hidden="true"></span>
-                  <button type="button" class="segmented__option is-selected" data-isolation="docker" aria-pressed="true"><span class="segmented__icon">BOX</span><span>Docker</span></button>
+                  <button type="button" class="segmented__option" data-isolation="docker" aria-pressed="false"><span class="segmented__icon">BOX</span><span>Docker</span></button>
                   <button type="button" class="segmented__option" data-isolation="full" aria-pressed="false"><span class="segmented__icon">ROOT</span><span>Full access</span></button>
                 </div>
                 <div id="docker-action" class="docker-action" hidden></div>
               </article>
-              <article class="setting-card setting-card--budget">
+              <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <div class="setting-input-row">
-                  <label class="field"><span>Move limit</span><input id="run-moves" type="number" min="1" max="500" value="20" inputmode="numeric"></label>
-                  <label class="switch setting-video-switch">
-                    <input id="run-video" type="checkbox" checked>
-                    <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
-                    <span class="switch__label">Replay video</span>
-                  </label>
-                </div>
+                <label class="field setting-card__field setting-card__field--budget"><span>Move limit</span><input id="run-moves" type="number" min="0" max="500" value="0" inputmode="numeric"></label>
               </article>
               </div>
               <div id="prime-settings" class="settings-deck settings-deck--prime" hidden>
@@ -855,32 +846,31 @@ function createPageRenderer({
                 <div class="setting-card__head"><span>Observation</span></div>
                 <div class="animated-segmented" id="prime-mode-picker" role="radiogroup" aria-label="Observation mode">
                   <span class="segmented__glider" aria-hidden="true"></span>
-                  <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true"><span class="segmented__icon">TXT</span><span>Text</span></button>
+                  <button type="button" class="segmented__option" data-mode="text" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
                   <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false"><span class="segmented__icon">IMG</span><span>Vision</span></button>
                 </div>
                 <p id="prime-vision-note" class="muted" hidden></p>
               </article>
-              <article class="setting-card setting-card--budget">
+              <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <label class="field"><span>Max turns</span><input id="run-prime-turns" type="number" min="1" max="200" value="20" inputmode="numeric"></label>
+                <label class="field"><span>Max turns</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
               </article>
               </div>
             </div>
           </section>
 
-          <div class="launch-dock">
-            <div class="launch-summary">
-              <span class="launch-summary__eyebrow">Ready to run</span>
-              <strong id="launch-summary-title">Choose an agent and model</strong>
-              <span id="launch-summary-meta">Your configuration will appear here.</span>
+          <section class="composer-section composer-section--run" hidden>
+            <div class="composer-section-title">
+              <span class="composer-step">06</span>
+              <div><h3>Run</h3></div>
             </div>
-            <div class="launch-controls">
-              <label class="field launch-count" id="batch-field"><span>Runs</span><input id="run-batch" type="number" min="1" max="8" value="1" inputmode="numeric"></label>
-              <button id="launch-run" class="button--primary launch-button" type="button"><span class="launch-button__label">Launch run</span><span aria-hidden="true">→</span></button>
+            <div class="launch-dock">
+              <div class="launch-controls">
+                <button id="launch-run" class="button--primary launch-button" type="button"><span class="launch-button__label">Launch</span><span class="launch-button__arrow" aria-hidden="true">↗</span></button>
+              </div>
             </div>
-          </div>
-          <p id="batch-note" class="muted launch-note" hidden></p>
-          <p id="agent-environment" class="composer-health"></p>
+            <p id="agent-environment" class="composer-health"></p>
+          </section>
         </section>
         <section class="panel agent-runs-panel" aria-label="Runs">
           <div class="runs-head">
@@ -914,7 +904,7 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260709-agent-redesign-18" defer></script>`
+        <script src="/agent.js?v=20260709-agent-redesign-30" defer></script>`
     });
   }
 
