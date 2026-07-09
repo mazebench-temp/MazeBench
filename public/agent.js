@@ -13,28 +13,28 @@
     {
       id: "codex",
       name: "Codex",
-      sub: "Codex CLI — your ChatGPT login",
       envKey: "codex",
       logo: '<img src="/logos/codex.png" alt="" loading="lazy">'
     },
     {
       id: "claude",
       name: "Claude Code",
-      sub: "Claude Code — your Claude subscription",
       envKey: "claude",
       logo: '<img src="/logos/claude.png" alt="" loading="lazy">'
     },
     {
       id: "prime",
       name: "Prime Intellect",
-      sub: "Verifiers v1 eval (uv run eval)",
       envKey: "uv",
       logo: '<img src="/logos/prime.png" alt="" loading="lazy">'
     }
   ];
 
   const MODELS_LOADING_MARKUP =
-    '<div class="models-loading"><span class="inline-spinner" aria-hidden="true"></span><span class="muted">Loading models…</span></div>';
+    '<div class="models-loading" role="status" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span><span class="models-loading__label">Loading models</span></div>';
+  const resizeAnimations = new WeakMap();
+  const visibilityAnimations = new WeakMap();
+  const selectionTargets = new WeakMap();
 
   const state = {
     provider: null,
@@ -69,6 +69,175 @@
     return el.innerHTML;
   }
 
+  function tweenResize(element, mutate, duration = 380) {
+    if (!element) {
+      mutate();
+      return;
+    }
+
+    resizeAnimations.get(element)?.cancel();
+    const startHeight = element.getBoundingClientRect().height;
+    mutate();
+    const endHeight = element.getBoundingClientRect().height;
+
+    if (
+      Math.abs(startHeight - endHeight) < 1 ||
+      !element.animate ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+
+    const previousOverflow = element.style.overflow;
+    element.style.overflow = "clip";
+    const animation = element.animate(
+      [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
+      { duration, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+    );
+    resizeAnimations.set(element, animation);
+    const cleanup = () => {
+      if (resizeAnimations.get(element) === animation) resizeAnimations.delete(element);
+      element.style.overflow = previousOverflow;
+    };
+    animation.addEventListener("finish", cleanup, { once: true });
+    animation.addEventListener("cancel", cleanup, { once: true });
+  }
+
+  function tweenVisibility(element, show, duration = 380, onComplete) {
+    if (!element) {
+      onComplete?.();
+      return;
+    }
+    visibilityAnimations.get(element)?.cancel();
+
+    if (show && !element.hidden) {
+      onComplete?.();
+      return;
+    }
+    if (!show && element.hidden) {
+      onComplete?.();
+      return;
+    }
+    if (!element.animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      element.hidden = !show;
+      onComplete?.();
+      return;
+    }
+
+    if (show) element.hidden = false;
+    const fullHeight = element.getBoundingClientRect().height;
+    const previousOverflow = element.style.overflow;
+    element.style.overflow = "clip";
+    const animation = element.animate(
+      show
+        ? [{ height: "0px", opacity: 0 }, { height: `${fullHeight}px`, opacity: 1 }]
+        : [{ height: `${fullHeight}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
+      { duration, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+    );
+    visibilityAnimations.set(element, animation);
+    const cleanup = (finished) => {
+      if (visibilityAnimations.get(element) !== animation) return;
+      visibilityAnimations.delete(element);
+      element.style.overflow = previousOverflow;
+      if (finished && !show) element.hidden = true;
+      if (finished) onComplete?.();
+    };
+    animation.addEventListener("finish", () => cleanup(true), { once: true });
+    animation.addEventListener("cancel", () => cleanup(false), { once: true });
+  }
+
+  function selectedRect(host, selector) {
+    const selected = typeof selector === "function" ? selector(host) : host?.querySelector(selector);
+    if (!host || !selected) return null;
+    const hostRect = host.getBoundingClientRect();
+    const rect = selected.getBoundingClientRect();
+    return {
+      left: rect.left - hostRect.left + host.scrollLeft,
+      top: rect.top - hostRect.top + host.scrollTop,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  function renderSelectionSlider(host, selector, fromRect, variant) {
+    if (!host) return;
+    host.querySelector(":scope > .selection-slider")?.remove();
+    if (variant === "model") {
+      selectionTargets.delete(host);
+      return;
+    }
+    selectionTargets.set(host, { selector, variant });
+    const toRect = selectedRect(host, selector);
+    if (!toRect) return;
+
+    const slider = document.createElement("span");
+    slider.className = `selection-slider selection-slider--${variant}`;
+    slider.setAttribute("aria-hidden", "true");
+    Object.assign(slider.style, {
+      left: `${toRect.left}px`,
+      top: `${toRect.top}px`,
+      width: `${toRect.width}px`,
+      height: `${toRect.height}px`
+    });
+    host.appendChild(slider);
+
+    if (
+      variant === "world" ||
+      !fromRect ||
+      !slider.animate ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+
+    slider.animate(
+      [
+        {
+          left: `${fromRect.left}px`,
+          top: `${fromRect.top}px`,
+          width: `${fromRect.width}px`,
+          height: `${fromRect.height}px`
+        },
+        {
+          left: `${toRect.left}px`,
+          top: `${toRect.top}px`,
+          width: `${toRect.width}px`,
+          height: `${toRect.height}px`
+        }
+      ],
+      { duration: 420, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+    );
+  }
+
+  function syncSelectionSlider(host) {
+    const target = selectionTargets.get(host);
+    const slider = host?.querySelector(":scope > .selection-slider");
+    if (!target || !slider) return;
+    const rect = selectedRect(host, target.selector);
+    if (!rect) return;
+    Object.assign(slider.style, {
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`
+    });
+  }
+
+  function syncAllSelectionSliders() {
+    ["provider-picker", "model-picker", "world-picker", "reasoning-picker"].forEach((id) => {
+      syncSelectionSlider(document.getElementById(id));
+    });
+  }
+
+  function modelSelectionElement(host) {
+    return [...(host?.querySelectorAll(".chip.is-selected") || [])].find((chip) => {
+      const folder = chip.closest(".model-folder");
+      return chip.offsetParent !== null && (!folder || folder.classList.contains("is-open"));
+    })
+      || host?.querySelector(".model-folder.has-selected .model-folder__head")
+      || null;
+  }
+
   function currentWorld() {
     return data.worlds.find((world) => world.id === state.worldId) || data.worlds[0] || null;
   }
@@ -87,7 +256,7 @@
 
   // ---- provider picker ----------------------------------------------------
 
-  function renderProviders() {
+  function renderProviders(selectionFrom = null) {
     const host = document.getElementById("provider-picker");
     host.innerHTML = PROVIDERS.map((provider) => {
       const available = Boolean(data.environment?.[provider.envKey]);
@@ -95,52 +264,65 @@
           data-provider="${provider.id}" role="radio" aria-checked="${state.provider === provider.id}">
         <span class="provider-card__logo">${provider.logo}</span>
         <span class="provider-card__name">${escapeText(provider.name)}</span>
-        <span class="provider-card__sub">${escapeText(provider.sub)}</span>
-        <span class="provider-card__avail ${available ? "is-ok" : "is-missing"}">${available ? "installed" : "not on PATH"}</span>
+        <span class="provider-card__avail ${available ? "is-ok" : "is-missing"}">${available ? "ACTIVE" : "INACTIVE"}</span>
       </button>`;
     }).join("");
 
     host.querySelectorAll(".provider-card").forEach((card) => {
       card.addEventListener("click", () => selectProvider(card.dataset.provider));
     });
+    renderSelectionSlider(host, ".provider-card.is-selected", selectionFrom, "provider");
   }
 
   function selectProvider(providerId) {
     if (state.provider === providerId) return;
+    const providerHost = document.getElementById("provider-picker");
+    const providerSelectionFrom = selectedRect(providerHost, ".provider-card.is-selected");
     state.provider = providerId;
     state.modelId = null;
     state.customModel = "";
     state.modelQuery = "";
     const modelSearchInput = document.getElementById("model-search-input");
     if (modelSearchInput) modelSearchInput.value = "";
-    // Codex/Claude default to the model's own reasoning; Prime models only emit
-    // reasoning when we ask for it (esp. Claude's extended thinking), so default
-    // Prime to a real effort level so the reasoning feed populates out of the box.
-    state.reasoning = providerId === "prime" ? "medium" : "";
+    state.reasoning = "";
     document.getElementById("run-codex-fast").checked = false;
 
-    const isPrime = providerId === "prime";
-    document.getElementById("world-section").hidden = isPrime;
-    document.getElementById("local-settings").hidden = isPrime;
-    document.getElementById("prime-settings").hidden = !isPrime;
+    providerHost.querySelectorAll(".provider-card").forEach((card) => {
+      const selected = card.dataset.provider === providerId;
+      card.classList.toggle("is-selected", selected);
+      card.setAttribute("aria-checked", String(selected));
+    });
+    renderSelectionSlider(providerHost, ".provider-card.is-selected", providerSelectionFrom, "provider");
 
-    renderProviders();
-    renderModels();
-    loadModels(providerId, { fresh: !state.catalogs[providerId] });
+    const isPrime = providerId === "prime";
+    tweenVisibility(document.getElementById("world-section"), !isPrime, 440);
+    tweenResize(document.querySelector(".settings-stage"), () => {
+      document.getElementById("local-settings").hidden = isPrime;
+      document.getElementById("prime-settings").hidden = !isPrime;
+    }, 440);
+    tweenResize(document.querySelector(".model-browser"), () => {
+      renderModels();
+    }, 440);
     syncBatch();
+    updateLaunchSummary();
+    loadModels(providerId, { fresh: !state.catalogs[providerId] });
   }
 
   // ---- model picker ---------------------------------------------------------
 
   async function loadModels(providerId, { fresh = false } = {}) {
     if (state.catalogs[providerId] && !fresh) {
-      autoSelectModel();
-      renderModels();
+      tweenResize(document.querySelector(".model-browser"), () => {
+        autoSelectModel();
+        renderModels();
+      });
       return;
     }
 
     const host = document.getElementById("model-picker");
-    host.innerHTML = MODELS_LOADING_MARKUP;
+    tweenResize(document.querySelector(".model-browser"), () => {
+      host.innerHTML = MODELS_LOADING_MARKUP;
+    });
     const refreshButton = document.getElementById("refresh-models");
     if (refreshButton) {
       refreshButton.disabled = true;
@@ -165,8 +347,10 @@
       if (state.modelId !== "__custom__" && !models.some((model) => model.id === state.modelId)) {
         state.modelId = null;
       }
-      autoSelectModel();
-      renderModels();
+      tweenResize(document.querySelector(".model-browser"), () => {
+        autoSelectModel();
+        renderModels(null, true);
+      });
     }
   }
 
@@ -192,11 +376,13 @@
   }
 
   function modelChip(model, { showGroup = false } = {}) {
-    const details = [model.description, modelPrice(model.pricing)].filter(Boolean).join(" · ");
+    const details = modelPrice(model.pricing);
     return `<button type="button" class="chip${state.modelId === model.id ? " is-selected" : ""}"
         data-model-id="${escapeText(model.id)}" role="radio" aria-checked="${state.modelId === model.id}">
       ${showGroup && model.group ? `<span class="chip__eyebrow">${escapeText(model.group)}</span>` : ""}
-      <span class="chip__label">${escapeText(model.label)}${model.fast ? ' <span class="chip__badge">FAST</span>' : ""}</span>
+      <span class="chip__topline">
+        <span class="chip__label">${escapeText(model.label)}${model.fast ? ' <span class="chip__badge">FAST</span>' : ""}</span>
+      </span>
       ${details ? `<span class="chip__sub">${escapeText(details)}</span>` : ""}
     </button>`;
   }
@@ -214,7 +400,41 @@
     })}`;
   }
 
-  function renderModels() {
+  function revealModelChoices(host) {
+    if (!host || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const choices = [...host.querySelectorAll(
+      ".model-recent .chip, .model-search-results .chip, .model-folders > .model-folder, .model-grid--primary > .chip, .model-custom-row > .chip"
+    )].filter((choice) => choice.offsetParent !== null);
+
+    choices.forEach((choice, index) => {
+      choice.animate(
+        [
+          { opacity: 0, transform: "translateY(8px) scale(0.985)" },
+          { opacity: 1, transform: "translateY(0) scale(1)" }
+        ],
+        {
+          delay: index * 28,
+          duration: 260,
+          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+          fill: "backwards"
+        }
+      );
+    });
+
+    const selectedTarget = modelSelectionElement(host);
+    const selectedIndex = Math.max(0, choices.findIndex((choice) => choice === selectedTarget || choice.contains(selectedTarget)));
+    host.querySelector(":scope > .selection-slider")?.animate(
+      [{ opacity: 0 }, { opacity: 1 }],
+      {
+        delay: selectedIndex * 28,
+        duration: 220,
+        easing: "ease-out",
+        fill: "backwards"
+      }
+    );
+  }
+
+  function renderModels(selectionFrom = null, reveal = false) {
     const host = document.getElementById("model-picker");
     const noteEl = document.getElementById("model-note");
     const metaEl = document.getElementById("model-meta");
@@ -222,7 +442,7 @@
     const catalog = state.catalogs[state.provider];
 
     if (!catalog) {
-      host.innerHTML = '<span class="muted">Loading models…</span>';
+      host.innerHTML = MODELS_LOADING_MARKUP;
       noteEl.hidden = true;
       metaEl.textContent = "";
       searchWrap.hidden = true;
@@ -230,8 +450,9 @@
       return;
     }
 
-    noteEl.textContent = catalog.note || "";
-    noteEl.hidden = !catalog.note;
+    const showCatalogNote = Boolean(catalog.note) && !catalog.models.length;
+    noteEl.textContent = showCatalogNote ? catalog.note : "";
+    noteEl.hidden = !showCatalogNote;
     metaEl.textContent = [catalog.source, catalogTime(catalog)].filter(Boolean).join(" · ");
 
     const customChip = { id: "__custom__", label: "Custom…", description: "type any model id" };
@@ -264,12 +485,16 @@
           const orderedModels = [...models].sort((a, b) => (b.created_at || 0) - (a.created_at || 0) || a.label.localeCompare(b.label));
           return `<div class="model-folder${open ? " is-open" : ""}${containsSelected ? " has-selected" : ""}">
             <button type="button" class="model-folder__head" data-folder="${escapeText(group)}" aria-expanded="${open}">
-              <span class="model-folder__glyph">${open ? "▾" : "▸"}</span>
+              <span class="model-folder__glyph">›</span>
               <span class="model-folder__name">${escapeText(group)}</span>
               <span class="model-folder__count">${models.length}</span>
               ${containsSelected && !open ? `<span class="model-folder__selected">${escapeText(selected?.label || "")}</span>` : ""}
             </button>
-            ${open ? `<div class="model-grid model-folder__body">${orderedModels.map((model) => modelChip(model)).join("")}</div>` : ""}
+            <div class="model-folder__reveal" aria-hidden="${!open}"${open ? "" : " inert"}>
+              <div class="model-folder__clip">
+                <div class="model-grid model-folder__body">${orderedModels.map((model) => modelChip(model)).join("")}</div>
+              </div>
+            </div>
           </div>`;
         })
         .join("");
@@ -286,24 +511,49 @@
 
       host.querySelectorAll(".model-folder__head").forEach((head) => {
         head.addEventListener("click", () => {
+          const folder = head.closest(".model-folder");
+          const reveal = folder.querySelector(".model-folder__reveal");
+          const selectedLabel = head.querySelector(".model-folder__selected");
           const group = head.dataset.folder;
-          if (state.openFolders.has(group)) state.openFolders.delete(group);
-          else state.openFolders.add(group);
-          renderModels();
+          const opening = !state.openFolders.has(group);
+          const from = selectedRect(host, modelSelectionElement);
+
+          head.setAttribute("aria-expanded", String(opening));
+
+          if (opening) {
+            state.openFolders.add(group);
+            folder.classList.add("is-open");
+            reveal.removeAttribute("inert");
+            reveal.setAttribute("aria-hidden", "false");
+            selectedLabel?.remove();
+          } else {
+            state.openFolders.delete(group);
+            folder.classList.remove("is-open");
+            reveal.setAttribute("inert", "");
+            reveal.setAttribute("aria-hidden", "true");
+            if (folder.classList.contains("has-selected") && !head.querySelector(".model-folder__selected")) {
+              const label = selectedModel()?.label || "";
+              head.insertAdjacentHTML("beforeend", `<span class="model-folder__selected">${escapeText(label)}</span>`);
+            }
+          }
+
+          renderSelectionSlider(host, modelSelectionElement, from, "model");
+          requestAnimationFrame(syncAllSelectionSliders);
         });
       });
     } else {
-      host.innerHTML = `<div class="model-grid">${[...catalog.models, customChip].map((model) => modelChip(model)).join("")}</div>`;
+      host.innerHTML = `<div class="model-grid model-grid--primary">${[...catalog.models, customChip].map((model) => modelChip(model)).join("")}</div>`;
     }
 
     host.querySelectorAll(".chip[data-model-id]").forEach((chip) => {
       chip.addEventListener("click", () => {
-        state.modelId = chip.dataset.modelId;
-        if (state.modelId !== "__custom__") state.customModel = "";
-        // Codex reasoning levels are per-model, so reset on model change; Claude
-        // and Prime effort is provider-wide, so keep the current choice.
-        if (state.provider === "codex") state.reasoning = "";
-        renderModels();
+        const from = selectedRect(host, modelSelectionElement);
+        tweenResize(document.querySelector(".model-browser"), () => {
+          state.modelId = chip.dataset.modelId;
+          if (state.modelId !== "__custom__") state.customModel = "";
+          if (state.provider === "codex") state.reasoning = "";
+          renderModels(from);
+        });
       });
     });
 
@@ -315,6 +565,9 @@
 
     renderReasoning();
     renderPrimeMode();
+    updateLaunchSummary();
+    renderSelectionSlider(host, modelSelectionElement, selectionFrom, "model");
+    if (reveal) requestAnimationFrame(() => revealModelChoices(host));
   }
 
   // Both Codex and Claude Code expose a reasoning-effort setting. Codex reads it
@@ -326,30 +579,22 @@
       // Passed through to the eval as --sampling.reasoning-effort. OpenAI
       // reasoning models and Claude (extended thinking) honor it; models that
       // don't support reasoning simply ignore it. "" = off (no effort sent).
-      return { levels: ["low", "medium", "high"], defaultLevel: "" };
+      return ["low", "medium", "high"];
     }
 
     if (state.provider === "claude") {
-      return {
-        levels:
-          Array.isArray(catalog.reasoning_levels) && catalog.reasoning_levels.length
-            ? catalog.reasoning_levels
-            : ["low", "medium", "high", "xhigh", "max"],
-        defaultLevel: catalog.reasoning_default || ""
-      };
+      return Array.isArray(catalog.reasoning_levels) && catalog.reasoning_levels.length
+        ? catalog.reasoning_levels
+        : ["low", "medium", "high", "xhigh", "max"];
     }
 
     const model = selectedModel();
-    return {
-      levels:
-        model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
-          ? model.reasoning_levels
-          : ["low", "medium", "high", "xhigh"],
-      defaultLevel: model?.default_reasoning || ""
-    };
+    return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
+      ? model.reasoning_levels
+      : ["low", "medium", "high", "xhigh"];
   }
 
-  function renderReasoning() {
+  function renderReasoning(selectionFrom = null) {
     const row = document.getElementById("reasoning-row");
     const host = document.getElementById("reasoning-picker");
     const fastSwitch = document.getElementById("fast-switch");
@@ -360,16 +605,15 @@
     }
 
     const model = selectedModel();
-    const { levels, defaultLevel } = reasoningOptions();
-    // The "" chip means "no reasoning effort". For Codex/Claude that's the
-    // model's own default; for Prime it means reasoning is off entirely.
-    const offLabel = state.provider === "prime" ? "off" : defaultLevel ? `default (${defaultLevel})` : "default";
+    const levels = reasoningOptions();
+    const choices = state.provider === "prime"
+      ? [{ id: "", label: "off" }, ...levels.map((level) => ({ id: level, label: level }))]
+      : levels.map((level) => ({ id: level, label: level }));
+    const leftmost = state.provider === "prime" ? "" : levels.includes("low") ? "low" : levels[0] || "";
+    if (!choices.some((choice) => choice.id === state.reasoning)) state.reasoning = leftmost;
 
     row.hidden = false;
-    host.innerHTML = [
-      { id: "", label: offLabel },
-      ...levels.map((level) => ({ id: level, label: level }))
-    ]
+    host.innerHTML = choices
       .map(
         (level) => `<button type="button" class="chip chip--small${state.reasoning === level.id ? " is-selected" : ""}"
             data-reasoning="${escapeText(level.id)}">${escapeText(level.label)}</button>`
@@ -377,13 +621,15 @@
       .join("");
     host.querySelectorAll(".chip").forEach((chip) => {
       chip.addEventListener("click", () => {
+        const from = selectedRect(host, ".chip.is-selected");
         state.reasoning = chip.dataset.reasoning;
-        renderReasoning();
+        renderReasoning(from);
       });
     });
 
     // Fast mode is a Codex-only tier; only offer it when the model supports it.
     fastSwitch.hidden = state.provider !== "codex" || (Boolean(model) && !model.fast);
+    renderSelectionSlider(host, ".chip.is-selected", selectionFrom, "reasoning");
   }
 
   // ---- world + level pickers ------------------------------------------------
@@ -396,7 +642,7 @@
     return urls.map((url) => `<img src="${escapeText(url)}" alt="" loading="lazy">`).join("");
   }
 
-  function renderWorlds() {
+  function renderWorlds(selectionFrom = null) {
     const host = document.getElementById("world-picker");
     host.innerHTML = data.worlds
       .map(
@@ -411,13 +657,17 @@
 
     host.querySelectorAll(".world-tile").forEach((tile) => {
       tile.addEventListener("click", () => {
+        const from = selectedRect(host, ".world-tile.is-selected");
+        const levelPicker = document.getElementById("level-picker");
         state.worldId = tile.dataset.worldId;
         state.levelId = null;
-        document.getElementById("level-picker").hidden = true;
-        renderWorlds();
-        renderLevelSummary();
+        renderWorlds(from);
+        if (levelPicker.hidden) renderLevelSummary();
+        else tweenVisibility(levelPicker, false, 440, renderLevelSummary);
       });
     });
+    updateLaunchSummary();
+    renderSelectionSlider(host, ".world-tile.is-selected", selectionFrom, "world");
   }
 
   function renderLevelSummary() {
@@ -426,6 +676,7 @@
 
     if (!world) {
       host.innerHTML = '<span class="muted">No worlds available.</span>';
+      updateLaunchSummary();
       return;
     }
 
@@ -448,15 +699,24 @@
       ${!isDefault ? '<button type="button" id="level-reset">Use world default</button>' : ""}`;
 
     document.getElementById("level-change").addEventListener("click", () => {
-      picker.hidden = !picker.hidden;
-      if (!picker.hidden) renderLevelGrid();
-      renderLevelSummary();
+      const opening = picker.hidden;
+      if (opening) {
+        renderLevelGrid();
+        tweenVisibility(picker, true, 480);
+        renderLevelSummary();
+      } else {
+        tweenVisibility(picker, false, 440, renderLevelSummary);
+      }
     });
     document.getElementById("level-reset")?.addEventListener("click", () => {
       state.levelId = null;
-      picker.hidden = true;
-      renderLevelSummary();
+      if (picker.hidden) {
+        renderLevelSummary();
+      } else {
+        tweenVisibility(picker, false, 440, renderLevelSummary);
+      }
     });
+    updateLaunchSummary();
   }
 
   function renderLevelGrid() {
@@ -468,7 +728,7 @@
     const axis = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const selectedId = effectiveLevelId();
     picker.innerHTML = `<p class="muted picker-note">Pick where the agent starts. The outlined room is the world's default start from its metadata.</p>
-      <div class="level-grid" style="grid-template-columns: repeat(${world.world_width}, var(--level-cell, 44px))">
+      <div class="level-grid" style="grid-template-columns: repeat(${world.world_width}, minmax(0, 1fr))">
         ${world.levels
           .map((level) => {
             const column = axis.indexOf(level.column) + 1;
@@ -488,35 +748,10 @@
       cell.addEventListener("click", () => {
         const world = currentWorld();
         state.levelId = cell.dataset.levelId === world.default_level_id ? null : cell.dataset.levelId;
-        picker.hidden = true;
-        renderLevelSummary();
+        tweenVisibility(picker, false, 440, renderLevelSummary);
       });
     });
   }
-
-  // ---- online world download --------------------------------------------
-
-  document.getElementById("online-world-pull")?.addEventListener("click", async () => {
-    const input = document.getElementById("online-world-id");
-    const worldId = (input.value || "").trim();
-
-    if (!worldId) {
-      setStatus("Paste a world id first (it looks like mbw_… — find it in the world's URL on the site).", true);
-      return;
-    }
-
-    try {
-      setStatus(`Downloading ${worldId}…`);
-      const result = await api(`/api/remote/worlds/${encodeURIComponent(worldId)}/pull`, {
-        method: "POST",
-        body: JSON.stringify({ kind: "online" })
-      });
-      setStatus(`${result.message} Reloading…`);
-      window.location.reload();
-    } catch (error) {
-      setStatus(error.message, true);
-    }
-  });
 
   // ---- run settings ---------------------------------------------------------
 
@@ -530,9 +765,17 @@
       option.classList.toggle("is-selected", selected);
       option.setAttribute("aria-pressed", String(selected));
     });
+    document.querySelectorAll("#mode-picker, #prime-mode-picker").forEach((picker) => {
+      picker.classList.toggle("is-second", mode === "vision");
+    });
     // View distance only applies to rendered vision frames.
     const viewField = document.getElementById("vision-view-field");
-    if (viewField) viewField.hidden = mode !== "vision";
+    if (viewField) {
+      tweenResize(viewField.closest(".setting-card"), () => {
+        viewField.hidden = mode !== "vision";
+      });
+    }
+    updateLaunchSummary();
   }
 
   document.querySelectorAll(".segmented__option[data-mode]").forEach((option) => {
@@ -588,6 +831,8 @@
       option.classList.toggle("is-selected", selected);
       option.setAttribute("aria-pressed", String(selected));
     });
+    document.getElementById("isolation-picker")?.classList.toggle("is-second", state.isolation === "full");
+    updateLaunchSummary();
   }
 
   // Docker mode needs Docker installed AND its daemon running. When it isn't,
@@ -712,14 +957,47 @@
     else if (env.docker_installed) missing.push("Docker (installed, daemon not running)");
     else missing.push("Docker");
 
-    const parts = [];
-    if (found.length) parts.push(`Available: ${found.join(", ")}.`);
-    if (missing.length) parts.push(`Not available: ${missing.join(", ")}.`);
-    if (!env.docker) parts.push("Without Docker, runs need Full tool access (there is no host-sandbox mode).");
-    document.getElementById("agent-environment").textContent = parts.join(" ");
+    const environmentEl = document.getElementById("agent-environment");
+    environmentEl.classList.toggle("is-ready", missing.length === 0);
+    environmentEl.classList.toggle("is-warning", missing.length > 0);
+    environmentEl.textContent = missing.length
+      ? `Needs attention: ${missing.join(", ")}. ${!env.docker ? "Full access remains available." : ""}`
+      : `System ready · ${found.join(" · ")}`;
   }
 
   // ---- launch ---------------------------------------------------------------
+
+  function updateLaunchSummary() {
+    const title = document.getElementById("launch-summary-title");
+    const meta = document.getElementById("launch-summary-meta");
+    if (!title || !meta) return;
+
+    const provider = PROVIDERS.find((entry) => entry.id === state.provider);
+    const model = selectedModel();
+    const customModel = state.modelId === "__custom__"
+      ? (document.getElementById("model-custom-input")?.value || "").trim()
+      : "";
+    const modelLabel = model?.label || customModel || (state.modelId === "__custom__" ? "Custom model" : "Loading model…");
+    title.textContent = provider ? `${provider.name} · ${modelLabel}` : "Choose an agent and model";
+
+    const modeLabel = state.mode === "vision" ? "Vision" : "Text";
+    const parts = [];
+    if (state.provider === "prime") {
+      const turns = Number(document.getElementById("run-prime-turns")?.value) || 20;
+      parts.push("Verifier environment", modeLabel, `${turns} turns`);
+    } else {
+      const world = currentWorld();
+      const moves = Number(document.getElementById("run-moves")?.value) || 20;
+      if (world) parts.push(`${world.title} / ${levelLabel(effectiveLevelId())}`);
+      parts.push(modeLabel, state.isolation === "docker" ? "Docker" : "Full access", `${moves} moves`);
+      if (document.getElementById("run-video")?.checked) parts.push("Replay on");
+    }
+    meta.textContent = parts.join(" · ");
+
+    const count = Math.max(1, Math.min(8, Math.floor(Number(document.getElementById("run-batch")?.value) || 1)));
+    const launchLabel = document.querySelector(".launch-button__label");
+    if (launchLabel) launchLabel.textContent = count > 1 ? `Launch ${count} runs` : "Launch run";
+  }
 
   function resolvedModelName() {
     if (state.modelId === "__custom__") {
@@ -790,11 +1068,12 @@
     if (isClaude) input.value = "1";
     note.textContent = isClaude ? "Claude Code runs one at a time — batch is limited to a single run." : "";
     note.hidden = !isClaude;
+    updateLaunchSummary();
   }
 
   // ---- runs list (unchanged behavior) ---------------------------------------
 
-  const runsView = { page: 1, pageSize: 10, provider: "", model: "", query: "", sort: "newest" };
+  const runsView = { page: 1, pageSize: 5, provider: "", model: "", query: "", sort: "newest" };
 
   function runStatusClass(status) {
     if (status === "running" || status === "stopping") return "agent-chip--running";
@@ -810,15 +1089,16 @@
           ? "paused · out of funds"
           : "paused"
         : run.status;
-    const summary = [
-      run.model_name || run.model,
-      `${escapeText(run.game_title || run.game_id)} / ${escapeText(levelLabel(run.level_id))}`,
-      `${run.turns}/${run.moves} moves`,
-      `${run.gem_count ?? 0} gems${run.solved ? " — solved!" : ""}`
-    ].join(" &middot; ");
+    const modelName = run.model_name || run.model;
+    const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");
+    const continuation = run.continued
+      ? ` · continued ×${run.continued}`
+      : run.continue_of
+        ? " · continued"
+        : "";
 
     const actions = [
-      `<a class="button" href="${escapeText(run.url)}">Watch</a>`,
+      `<a class="button--primary" href="${escapeText(run.url)}">Watch</a>`,
       run.has_video
         ? `<a class="button" href="/agent-runs/${encodeURIComponent(run.id)}/files/maze_replay.mp4">Video</a>`
         : "",
@@ -828,18 +1108,30 @@
       run.status === "running" || run.status === "stopping"
         ? '<button class="button--coral" type="button" data-action="stop">Stop</button>'
         : "",
-      '<button class="button--ghost run-trash" type="button" data-action="delete" title="Delete run" aria-label="Delete run">🗑</button>'
+      '<button class="button--ghost run-trash" type="button" data-action="delete" title="Delete run" aria-label="Delete run">Delete</button>'
     ]
       .filter(Boolean)
       .join("");
 
-    return `<div class="world-card agent-run-card" data-run-id="${escapeText(run.id)}">
-      <div class="card-body">
-        <h3 class="card-title"><span class="agent-chip ${runStatusClass(run.status)}">${escapeText(statusLabel)}</span> ${escapeText(run.model)} on ${escapeText(run.game_title || run.game_id)}</h3>
-        <p class="card-by">${summary}<br>${escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "")}${run.continued ? ` &middot; continued ×${run.continued}` : run.continue_of ? " &middot; continued" : ""}</p>
-        <div class="card-actions">${actions}</div>
+    return `<article class="agent-run-card" data-run-id="${escapeText(run.id)}" data-provider="${escapeText(run.model)}">
+      <div class="run-card__status">
+        <span class="agent-chip ${runStatusClass(run.status)}">${escapeText(statusLabel)}</span>
+        <span>${createdAt}${continuation}</span>
       </div>
-    </div>`;
+      <div class="run-card__main">
+        <div class="run-card__identity">
+          <span class="run-card__provider">${escapeText(run.model)}</span>
+          <h3>${escapeText(modelName)}</h3>
+          <p>${escapeText(run.game_title || run.game_id)} / ${escapeText(levelLabel(run.level_id))}</p>
+        </div>
+        <div class="run-card__metrics">
+          <span><strong>${escapeText(run.turns)}/${escapeText(run.moves)}</strong><small>moves</small></span>
+          <span><strong>${escapeText(run.gem_count ?? 0)}</strong><small>gems</small></span>
+          <span class="${run.solved ? "is-solved" : ""}"><strong>${run.solved ? "Yes" : "No"}</strong><small>solved</small></span>
+        </div>
+        <div class="run-card__actions">${actions}</div>
+      </div>
+    </article>`;
   }
 
   function runsQuery() {
@@ -854,11 +1146,11 @@
     return params.toString();
   }
 
-  function syncFilterSelect(id, values, current, allLabel) {
+  function syncFilterSelect(id, values, current, allLabel, format = (value) => value) {
     const select = document.getElementById(id);
     if (!select) return;
     select.innerHTML = [`<option value="">${allLabel}</option>`]
-      .concat(values.map((value) => `<option value="${escapeText(value)}">${escapeText(value)}</option>`))
+      .concat(values.map((value) => `<option value="${escapeText(value)}">${escapeText(format(value))}</option>`))
       .join("");
     select.value = values.includes(current) ? current : "";
   }
@@ -917,15 +1209,23 @@
       const total = payload.total ?? runs.length;
 
       document.getElementById("runs-total").textContent = total ? `${total} run${total === 1 ? "" : "s"}` : "";
-      syncFilterSelect("runs-provider", payload.providers || [], runsView.provider, "All providers");
-      syncFilterSelect("runs-model", payload.models || [], runsView.model, "All models");
+      syncFilterSelect(
+        "runs-provider",
+        payload.providers || [],
+        runsView.provider,
+        "All",
+        (value) => PROVIDERS.find((provider) => provider.id === value)?.name || value
+      );
+      syncFilterSelect("runs-model", payload.models || [], runsView.model, "All");
 
-      runsEl.innerHTML = runs.length
-        ? runs.map(runCard).join("")
-        : total
-          ? '<div class="empty-state"><span class="glyph">▤</span><p>No runs match your filters.</p></div>'
-          : '<div class="empty-state"><span class="glyph">▶</span><p>No runs yet. Launch one above — you can watch it live.</p></div>';
-      wireRunActions();
+      tweenResize(runsEl, () => {
+        runsEl.innerHTML = runs.length
+          ? runs.map(runCard).join("")
+          : total
+            ? '<div class="empty-state"><span class="glyph">▤</span><p>No matching runs.</p></div>'
+            : '<div class="empty-state"><span class="glyph">▶</span><p>No runs yet.</p></div>';
+        wireRunActions();
+      });
 
       const pages = payload.pages || 1;
       const pager = document.getElementById("runs-pager");
@@ -963,7 +1263,7 @@
     onFilter("runs-provider", "provider");
     onFilter("runs-model", "model");
     onFilter("runs-sort", "sort");
-    onFilter("runs-page-size", "pageSize", (value) => Number(value) || 10);
+    onFilter("runs-page-size", "pageSize", (value) => Number(value) || 5);
 
     document.getElementById("runs-prev")?.addEventListener("click", () => {
       if (runsView.page > 1) {
@@ -983,14 +1283,46 @@
     });
 
     document.getElementById("model-search-input")?.addEventListener("input", (event) => {
-      state.modelQuery = event.target.value;
-      renderModels();
+      const host = document.getElementById("model-picker");
+      const from = selectedRect(host, modelSelectionElement);
+      tweenResize(document.querySelector(".model-browser"), () => {
+        state.modelQuery = event.target.value;
+        renderModels(from);
+      });
+    });
+  }
+
+  function wireConfigurationSummary() {
+    ["run-moves", "run-prime-turns", "run-batch", "model-custom-input"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("input", updateLaunchSummary);
+    });
+    ["run-video", "run-vision-view"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("change", updateLaunchSummary);
+    });
+
+  }
+
+  function wireSelectionResize() {
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(syncAllSelectionSliders);
+    };
+
+    window.addEventListener("resize", schedule, { passive: true });
+    if (!("ResizeObserver" in window)) return;
+
+    const observer = new ResizeObserver(schedule);
+    ["provider-picker", "model-picker", "world-picker", "reasoning-picker"].forEach((id) => {
+      const host = document.getElementById(id);
+      if (host) observer.observe(host);
     });
   }
 
   // ---- boot -----------------------------------------------------------------
 
   const firstAvailable = PROVIDERS.find((provider) => data.environment?.[provider.envKey]);
+  renderProviders();
   renderWorlds();
   renderLevelSummary();
   document.querySelectorAll(".segmented__option[data-isolation]").forEach((option) => {
@@ -1002,6 +1334,8 @@
   syncIsolationPicker();
   describeEnvironment();
   wireModelCatalog();
+  wireConfigurationSummary();
+  wireSelectionResize();
   wireRunsToolbar();
   refreshRuns();
   selectProvider((firstAvailable || PROVIDERS[0]).id);

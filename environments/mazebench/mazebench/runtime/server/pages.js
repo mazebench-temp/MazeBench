@@ -47,7 +47,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-catalog-4">
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-18">
     ${extraHeadHtml}`
     })}
   </head>
@@ -252,7 +252,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-catalog-4">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-18">`;
   }
 
   function renderPlayPage(game, level) {
@@ -364,7 +364,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-catalog-4">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-18">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -738,126 +738,173 @@ function createPageRenderer({
 
     return renderSitePage({
       title: "Agent — Maze Bench",
-      main: `<div class="page-head">
+      main: `<div class="page-head agent-page-head">
           <h1>Agent</h1>
-          <p class="page-sub">Benchmark Codex CLI, Claude Code, or Prime Verifiers on any world and watch the runs live.</p>
           <p id="agent-status" class="author-status" role="status" aria-live="polite"></p>
         </div>
-        <section class="panel" aria-label="Launch a run">
-          <h2>New Run</h2>
+        <section class="panel agent-composer" aria-label="Launch a run">
+          <div class="composer-head">
+            <h2>New run</h2>
+          </div>
 
-          <h3 class="picker-label">Agent</h3>
-          <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent provider"></div>
-
-          <div class="picker-heading">
-            <h3 class="picker-label">Model</h3>
-            <div class="model-catalog-actions">
-              <span id="model-meta" class="model-meta" aria-live="polite"></span>
-              <button id="refresh-models" class="catalog-refresh" type="button" aria-label="Refresh model catalog">↻ Refresh</button>
+          <section class="composer-section composer-section--agent">
+            <div class="composer-section-title">
+              <span class="composer-step">01</span>
+              <div><h3>Agent</h3></div>
             </div>
-          </div>
-          <p id="model-note" class="muted picker-note" hidden></p>
-          <label id="model-search" class="model-search" hidden>
-            <span class="model-search__label">Search models</span>
-            <input id="model-search-input" type="search" placeholder="Search 100+ models by provider or name…" autocomplete="off" spellcheck="false">
-          </label>
-          <div id="model-picker" class="chip-row" role="radiogroup" aria-label="Model"></div>
-          <div id="model-custom" class="model-custom" hidden>
-            <label class="field"><span>Model id</span><input id="model-custom-input" type="text" placeholder="e.g. gpt-5.5 or openai/gpt-5-nano" autocomplete="off" spellcheck="false"></label>
-          </div>
-          <div id="reasoning-row" class="picker-subrow" hidden>
-            <span class="picker-sublabel">Reasoning</span>
-            <div id="reasoning-picker" class="chip-row chip-row--small" role="radiogroup" aria-label="Reasoning effort"></div>
-            <label id="fast-switch" class="switch" hidden>
-              <input id="run-codex-fast" type="checkbox">
-              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
-              <span class="switch__label">Fast mode</span>
-            </label>
-          </div>
+            <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent provider"></div>
+          </section>
 
-          <div id="world-section">
-            <h3 class="picker-label">World</h3>
-            <div id="world-picker" class="world-tile-row" role="radiogroup" aria-label="World"></div>
-            <div class="online-pull">
-              <label class="field"><span>Or download a published world from ${escapeHtml(
-                (remoteStatusSafe().origin || "https://dev.mazebench.com").replace(/^https?:\/\//, "")
-              )} by id</span><input id="online-world-id" type="text" placeholder="mbw_…" autocomplete="off" spellcheck="false"></label>
-              <button id="online-world-pull" type="button">Download</button>
+          <section class="composer-section composer-section--model">
+            <div class="composer-section-head">
+              <div class="composer-section-title">
+                <span class="composer-step">02</span>
+                <div><h3>Model</h3></div>
+              </div>
+              <div class="model-catalog-actions">
+                <span id="model-meta" class="model-meta" aria-live="polite"></span>
+                <button id="refresh-models" class="catalog-refresh" type="button" aria-label="Refresh model catalog">↻ Refresh</button>
+              </div>
             </div>
+            <div class="model-browser">
+              <p id="model-note" class="muted picker-note" hidden></p>
+              <label id="model-search" class="model-search" hidden>
+                <span class="model-search__label">Find a model</span>
+                <input id="model-search-input" type="search" placeholder="Search by provider or model name…" autocomplete="off" spellcheck="false">
+              </label>
+              <div id="model-picker" class="chip-row" role="radiogroup" aria-label="Model"></div>
+              <div id="model-custom" class="model-custom" hidden>
+                <label class="field"><span>Model id</span><input id="model-custom-input" type="text" placeholder="e.g. gpt-5.5 or openai/gpt-5-nano" autocomplete="off" spellcheck="false"></label>
+              </div>
+              <div id="reasoning-row" class="model-tuning" hidden>
+                <div><span class="model-tuning__title">Reasoning</span></div>
+                <div id="reasoning-picker" class="chip-row chip-row--small" role="radiogroup" aria-label="Reasoning effort"></div>
+                <label id="fast-switch" class="switch" hidden>
+                  <input id="run-codex-fast" type="checkbox">
+                  <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+                  <span class="switch__label">Fast mode</span>
+                </label>
+              </div>
+            </div>
+          </section>
 
-            <h3 class="picker-label">Start level</h3>
-            <div id="level-summary" class="level-summary"></div>
+          <section id="world-section" class="composer-section composer-section--target">
+            <div class="composer-section-title">
+              <span class="composer-step">03</span>
+              <div><h3>Target</h3></div>
+            </div>
+            <div class="target-grid">
+              <div class="target-block">
+                <span class="target-block__label">World</span>
+                <div id="world-picker" class="world-tile-row" role="radiogroup" aria-label="World"></div>
+              </div>
+              <div class="target-block target-block--level">
+                <span class="target-block__label">Start room</span>
+                <div id="level-summary" class="level-summary"></div>
+              </div>
+            </div>
             <div id="level-picker" class="level-grid-wrap" hidden></div>
-          </div>
+          </section>
 
-          <h3 class="picker-label">Run settings</h3>
-          <div id="local-settings">
-            <div class="settings-row">
-              <label class="field field--narrow"><span>Move budget</span><input id="run-moves" type="number" min="1" max="500" value="20" inputmode="numeric"></label>
-              <div class="segmented" id="mode-picker" role="radiogroup" aria-label="Observation mode">
-                <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true">Text<small>ASCII board</small></button>
-                <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false">Vision<small>rendered PNGs</small></button>
-              </div>
-              <label class="field field--narrow" id="vision-view-field" hidden><span>Vision view distance</span>
-                <select id="run-vision-view">
-                  <option value="1" selected>3×3 rooms (default)</option>
-                  <option value="2">5×5 rooms</option>
-                  <option value="3">7×7 rooms</option>
-                  <option value="world">Whole world</option>
-                </select>
-              </label>
+          <section class="composer-section composer-section--settings">
+            <div class="composer-section-title">
+              <span class="composer-step">04</span>
+              <div><h3>Run settings</h3></div>
             </div>
-            <div class="settings-row">
-              <div class="segmented" id="isolation-picker" role="radiogroup" aria-label="Isolation">
-                <button type="button" class="segmented__option is-selected" data-isolation="docker" aria-pressed="true">Docker<small>isolated from your files</small></button>
-                <button type="button" class="segmented__option" data-isolation="full" aria-pressed="false">Full tools<small>full host access</small></button>
+            <div class="settings-stage">
+              <div id="local-settings" class="settings-deck">
+              <article class="setting-card setting-card--observation">
+                <div class="setting-card__head"><span>Observation</span></div>
+                <div class="animated-segmented" id="mode-picker" role="radiogroup" aria-label="Observation mode">
+                  <span class="segmented__glider" aria-hidden="true"></span>
+                  <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true"><span class="segmented__icon">TXT</span><span>Text</span></button>
+                  <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false"><span class="segmented__icon">IMG</span><span>Vision</span></button>
+                </div>
+                <label class="field setting-card__field" id="vision-view-field" hidden><span>Vision range</span>
+                  <select id="run-vision-view">
+                    <option value="1" selected>3×3 rooms (default)</option>
+                    <option value="2">5×5 rooms</option>
+                    <option value="3">7×7 rooms</option>
+                    <option value="world">Whole world</option>
+                  </select>
+                </label>
+              </article>
+              <article class="setting-card setting-card--access">
+                <div class="setting-card__head"><span>Access</span></div>
+                <div class="animated-segmented" id="isolation-picker" role="radiogroup" aria-label="Isolation">
+                  <span class="segmented__glider" aria-hidden="true"></span>
+                  <button type="button" class="segmented__option is-selected" data-isolation="docker" aria-pressed="true"><span class="segmented__icon">BOX</span><span>Docker</span></button>
+                  <button type="button" class="segmented__option" data-isolation="full" aria-pressed="false"><span class="segmented__icon">ROOT</span><span>Full access</span></button>
+                </div>
+                <div id="docker-action" class="docker-action" hidden></div>
+              </article>
+              <article class="setting-card setting-card--budget">
+                <div class="setting-card__head"><span>Budget</span></div>
+                <div class="setting-input-row">
+                  <label class="field"><span>Move limit</span><input id="run-moves" type="number" min="1" max="500" value="20" inputmode="numeric"></label>
+                  <label class="switch setting-video-switch">
+                    <input id="run-video" type="checkbox" checked>
+                    <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+                    <span class="switch__label">Replay video</span>
+                  </label>
+                </div>
+              </article>
               </div>
-              <label class="switch">
-                <input id="run-video" type="checkbox" checked>
-                <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
-                <span class="switch__label">Replay video<small>rendered when the run ends</small></span>
-              </label>
-            </div>
-            <div id="docker-action" class="docker-action" hidden></div>
-          </div>
-          <div id="prime-settings" hidden>
-            <div class="settings-row">
-              <label class="field field--narrow"><span>Max turns</span><input id="run-prime-turns" type="number" min="1" max="200" value="20" inputmode="numeric"></label>
-              <div class="segmented" id="prime-mode-picker" role="radiogroup" aria-label="Observation mode">
-                <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true">Text<small>ASCII board</small></button>
-                <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false">Vision<small>rendered PNGs</small></button>
+              <div id="prime-settings" class="settings-deck settings-deck--prime" hidden>
+              <article class="setting-card setting-card--observation">
+                <div class="setting-card__head"><span>Observation</span></div>
+                <div class="animated-segmented" id="prime-mode-picker" role="radiogroup" aria-label="Observation mode">
+                  <span class="segmented__glider" aria-hidden="true"></span>
+                  <button type="button" class="segmented__option is-selected" data-mode="text" aria-pressed="true"><span class="segmented__icon">TXT</span><span>Text</span></button>
+                  <button type="button" class="segmented__option" data-mode="vision" aria-pressed="false"><span class="segmented__icon">IMG</span><span>Vision</span></button>
+                </div>
+                <p id="prime-vision-note" class="muted" hidden></p>
+              </article>
+              <article class="setting-card setting-card--budget">
+                <div class="setting-card__head"><span>Budget</span></div>
+                <label class="field"><span>Max turns</span><input id="run-prime-turns" type="number" min="1" max="200" value="20" inputmode="numeric"></label>
+              </article>
               </div>
             </div>
-            <p id="prime-vision-note" class="muted" hidden></p>
-          </div>
+          </section>
 
-          <div class="card-actions launch-row">
-            <label class="field field--narrow" id="batch-field"><span>How many runs</span><input id="run-batch" type="number" min="1" max="8" value="1" inputmode="numeric"></label>
-            <button id="launch-run" class="button--primary" type="button">Launch Run</button>
+          <div class="launch-dock">
+            <div class="launch-summary">
+              <span class="launch-summary__eyebrow">Ready to run</span>
+              <strong id="launch-summary-title">Choose an agent and model</strong>
+              <span id="launch-summary-meta">Your configuration will appear here.</span>
+            </div>
+            <div class="launch-controls">
+              <label class="field launch-count" id="batch-field"><span>Runs</span><input id="run-batch" type="number" min="1" max="8" value="1" inputmode="numeric"></label>
+              <button id="launch-run" class="button--primary launch-button" type="button"><span class="launch-button__label">Launch run</span><span aria-hidden="true">→</span></button>
+            </div>
           </div>
-          <p id="batch-note" class="muted" hidden></p>
-          <p id="agent-environment" class="muted" style="margin-bottom: 0"></p>
+          <p id="batch-note" class="muted launch-note" hidden></p>
+          <p id="agent-environment" class="composer-health"></p>
         </section>
-        <section class="panel" aria-label="Runs">
+        <section class="panel agent-runs-panel" aria-label="Runs">
           <div class="runs-head">
-            <h2>Runs</h2>
-            <span id="runs-total" class="muted"></span>
+            <div><h2>Recent runs</h2></div>
+            <span id="runs-total" class="runs-total"></span>
           </div>
           <div class="runs-toolbar">
-            <input id="runs-search" type="search" placeholder="Search runs…" autocomplete="off" spellcheck="false">
-            <select id="runs-provider" aria-label="Filter by provider"><option value="">All providers</option></select>
-            <select id="runs-model" aria-label="Filter by model"><option value="">All models</option></select>
-            <select id="runs-sort" aria-label="Sort">
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-              <option value="status">By status</option>
-            </select>
-            <select id="runs-page-size" aria-label="Per page">
-              <option value="10">10 / page</option>
-              <option value="20">20 / page</option>
-              <option value="50">50 / page</option>
-              <option value="100">100 / page</option>
-            </select>
+            <label class="runs-search"><span aria-hidden="true">⌕</span><input id="runs-search" type="search" placeholder="Search runs…" autocomplete="off" spellcheck="false"></label>
+            <div class="runs-filters">
+              <label class="runs-filter"><span>Agent</span><select id="runs-provider" aria-label="Filter by provider"><option value="">All</option></select></label>
+              <label class="runs-filter"><span>Model</span><select id="runs-model" aria-label="Filter by model"><option value="">All</option></select></label>
+              <label class="runs-filter"><span>Sort</span><select id="runs-sort" aria-label="Sort">
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="status">Status</option>
+              </select></label>
+              <label class="runs-filter runs-filter--count"><span>Show</span><select id="runs-page-size" aria-label="Per page">
+                <option value="5" selected>5</option>
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select></label>
+            </div>
           </div>
           <div id="agent-runs"></div>
           <div id="runs-pager" class="runs-pager" hidden>
@@ -867,7 +914,7 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260709-agent-catalog-3" defer></script>`
+        <script src="/agent.js?v=20260709-agent-redesign-18" defer></script>`
     });
   }
 
