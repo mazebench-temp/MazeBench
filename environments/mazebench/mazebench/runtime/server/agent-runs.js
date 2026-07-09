@@ -717,6 +717,10 @@ function createAgentRunService({
   const PROVIDER_MODEL_TTL_MS = 10 * 60 * 1000;
   const PROVIDER_MODEL_ERROR_TTL_MS = 60 * 1000;
 
+  function modelCatalogCheckedAt() {
+    return new Date().toISOString();
+  }
+
   function codexModelCatalog() {
     const models = loadCodexModels().map((model) => ({
       id: model.slug,
@@ -726,35 +730,76 @@ function createAgentRunService({
       default_reasoning: model.defaultReasoning,
       fast: Boolean(model.fast)
     }));
+    let updatedAt = "";
+
+    try {
+      const cache = JSON.parse(
+        fs.readFileSync(path.join(process.env.HOME || "", ".codex", "models_cache.json"), "utf8")
+      );
+      updatedAt = String(cache.fetched_at || "");
+    } catch (_error) {
+      /* loadCodexModels reports the missing cache below */
+    }
 
     return {
       models,
+      source: "Codex model cache",
+      updated_at: updatedAt,
+      checked_at: modelCatalogCheckedAt(),
       // The Codex app orders its catalog strongest-first.
       default_model_id: models[0]?.id || "",
       note: models.length
-        ? ""
+        ? "This is the model list available to the installed Codex app. Refresh after Codex receives a catalog update."
         : "No Codex model cache found (~/.codex/models_cache.json) — run the Codex app once, or type a model id."
     };
   }
 
   function claudeModelCatalog() {
-    // Claude Code publishes no machine-readable catalog (unlike Codex's
-    // ~/.codex/models_cache.json), so these are the tier aliases its `--model`
-    // flag accepts — each resolves to the latest model in that tier. Any full
-    // model id also works via the Custom… box. Ordered strongest-first.
+    // Claude Code has no JSON model-catalog command, but its installed CLI help
+    // lists the aliases accepted by --model. Read those aliases on every fresh
+    // request so newly added tiers appear without a code change.
+    const help = spawnSync("claude", ["--help"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 5000,
+      maxBuffer: 2 * 1024 * 1024
+    });
+    const helpText = String(help.stdout || help.stderr || "");
+    const aliasExample = helpText.match(/alias for the latest model[\s\S]{0,180}?\((?:e\.g\.\s*)?([^)]*)\)/i);
+    const detectedAliases = aliasExample
+      ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
+      : [];
+    const aliases = [...new Set(detectedAliases.length ? detectedAliases : ["fable", "opus", "sonnet"])]
+      .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias));
+    const descriptions = {
+      fable: "Latest Fable tier — highest capability",
+      opus: "Latest Opus tier — deep reasoning",
+      sonnet: "Latest Sonnet tier — balanced speed and capability",
+      haiku: "Latest Haiku tier — fastest responses"
+    };
+    const version = spawnSync("claude", ["--version"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 5000
+    });
+    const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
+
     return {
-      models: [
-        { id: "fable", label: "Fable", description: "Most capable — Claude 5 / Mythos tier" },
-        { id: "opus", label: "Opus", description: "High capability" },
-        { id: "sonnet", label: "Sonnet", description: "Balanced speed and smarts" },
-        { id: "haiku", label: "Haiku", description: "Fastest" }
-      ],
-      default_model_id: "fable",
+      models: aliases.map((alias) => ({
+        id: alias,
+        label: `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
+        description: descriptions[alias] || `Latest model behind the ${alias} alias`
+      })),
+      source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
+      checked_at: modelCatalogCheckedAt(),
+      default_model_id: aliases[0] || "",
       // Claude Code's `claude --effort <level>` accepts these (verified from the
       // CLI); it's provider-wide, not per model.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
-      note: "Aliases — each maps to the latest model in its tier. Use Custom… for a full model id."
+      note: detectedAliases.length
+        ? "Aliases detected from the installed CLI; each automatically resolves to the latest model in that tier."
+        : "Claude did not expose its alias list, so the standard latest-model aliases are shown. Use Custom… for a full model id."
     };
   }
 
@@ -816,6 +861,8 @@ function createAgentRunService({
     if (result.error && result.error.code === "ENOENT") {
       return {
         models: [],
+        source: "Prime CLI",
+        checked_at: modelCatalogCheckedAt(),
         note: "The `prime` CLI is not installed — type a model id (e.g. openai/gpt-5-nano), or install it from docs.primeintellect.ai."
       };
     }
@@ -826,6 +873,8 @@ function createAgentRunService({
 
       return {
         models: [],
+        source: "Prime CLI",
+        checked_at: modelCatalogCheckedAt(),
         note: authProblem
           ? "Prime is not logged in — run `prime login` in a terminal, then reopen this page. You can still type a model id (e.g. openai/gpt-5-nano)."
           : `Could not load the Prime model catalog (${detail || "unknown error"}). Type a model id instead.`
@@ -845,31 +894,45 @@ function createAgentRunService({
             label: slash === -1 ? id : id.slice(slash + 1),
             description: "",
             group: slash === -1 ? "other" : id.slice(0, slash),
-            vision: primeModelVision(id)
+            vision: primeModelVision(id),
+            created_at: Number(row.created) || 0,
+            pricing: row.pricing && typeof row.pricing === "object"
+              ? {
+                  input: Number(row.pricing.input_usd_per_mtok),
+                  output: Number(row.pricing.output_usd_per_mtok)
+                }
+              : null
           };
         })
         .filter((model) => model.id);
 
       return {
         models,
+        source: "Prime Inference live catalog",
+        checked_at: modelCatalogCheckedAt(),
         default_model_id: models[0]?.id || "",
         note: models.length
-          ? "Image-input support is inferred from the model id; text-only models can't be run in Vision mode."
+          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id.`
           : "The Prime catalog came back empty — type a model id instead."
       };
     } catch (error) {
-      return { models: [], note: "Could not parse the Prime model catalog — type a model id instead." };
+      return {
+        models: [],
+        source: "Prime CLI",
+        checked_at: modelCatalogCheckedAt(),
+        note: "Could not parse the Prime model catalog — type a model id instead."
+      };
     }
   }
 
-  function listProviderModels(provider) {
+  function listProviderModels(provider, { fresh = false } = {}) {
     const normalized = String(provider || "").toLowerCase();
 
     if (!["codex", "claude", "prime"].includes(normalized)) {
       throw new Error(`Unknown provider "${provider}".`);
     }
 
-    const cached = providerModelCache.get(normalized);
+    const cached = fresh ? null : providerModelCache.get(normalized);
 
     if (cached && Date.now() < cached.expiresAt) {
       return cached.value;

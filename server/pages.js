@@ -47,7 +47,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css">
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-catalog-4">
     ${extraHeadHtml}`
     })}
   </head>
@@ -252,7 +252,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-catalog-4">`;
   }
 
   function renderPlayPage(game, level) {
@@ -364,7 +364,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-catalog-4">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -749,8 +749,18 @@ function createPageRenderer({
           <h3 class="picker-label">Agent</h3>
           <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent provider"></div>
 
-          <h3 class="picker-label">Model</h3>
+          <div class="picker-heading">
+            <h3 class="picker-label">Model</h3>
+            <div class="model-catalog-actions">
+              <span id="model-meta" class="model-meta" aria-live="polite"></span>
+              <button id="refresh-models" class="catalog-refresh" type="button" aria-label="Refresh model catalog">↻ Refresh</button>
+            </div>
+          </div>
           <p id="model-note" class="muted picker-note" hidden></p>
+          <label id="model-search" class="model-search" hidden>
+            <span class="model-search__label">Search models</span>
+            <input id="model-search-input" type="search" placeholder="Search 100+ models by provider or name…" autocomplete="off" spellcheck="false">
+          </label>
           <div id="model-picker" class="chip-row" role="radiogroup" aria-label="Model"></div>
           <div id="model-custom" class="model-custom" hidden>
             <label class="field"><span>Model id</span><input id="model-custom-input" type="text" placeholder="e.g. gpt-5.5 or openai/gpt-5-nano" autocomplete="off" spellcheck="false"></label>
@@ -857,7 +867,7 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js" defer></script>`
+        <script src="/agent.js?v=20260709-agent-catalog-3" defer></script>`
     });
   }
 

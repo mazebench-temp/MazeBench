@@ -121,7 +121,13 @@ function createRequestRouter({
         return;
       }
 
-      sendJson(response, 200, agentRuns.listProviderModels(decodeURIComponent(segments[3])));
+      sendJson(
+        response,
+        200,
+        agentRuns.listProviderModels(decodeURIComponent(segments[3]), {
+          fresh: url.searchParams.get("refresh") === "1"
+        })
+      );
       return;
     }
 

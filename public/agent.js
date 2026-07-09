@@ -46,7 +46,8 @@
     mode: "text",
     isolation: "docker",
     catalogs: {},
-    openFolders: new Set()
+    openFolders: new Set(),
+    modelQuery: ""
   };
 
   function setStatus(message, isError = false) {
@@ -109,6 +110,9 @@
     state.provider = providerId;
     state.modelId = null;
     state.customModel = "";
+    state.modelQuery = "";
+    const modelSearchInput = document.getElementById("model-search-input");
+    if (modelSearchInput) modelSearchInput.value = "";
     // Codex/Claude default to the model's own reasoning; Prime models only emit
     // reasoning when we ask for it (esp. Claude's extended thinking), so default
     // Prime to a real effort level so the reasoning feed populates out of the box.
@@ -122,14 +126,14 @@
 
     renderProviders();
     renderModels();
-    loadModels(providerId);
+    loadModels(providerId, { fresh: !state.catalogs[providerId] });
     syncBatch();
   }
 
   // ---- model picker ---------------------------------------------------------
 
-  async function loadModels(providerId) {
-    if (state.catalogs[providerId]) {
+  async function loadModels(providerId, { fresh = false } = {}) {
+    if (state.catalogs[providerId] && !fresh) {
       autoSelectModel();
       renderModels();
       return;
@@ -137,15 +141,30 @@
 
     const host = document.getElementById("model-picker");
     host.innerHTML = MODELS_LOADING_MARKUP;
+    const refreshButton = document.getElementById("refresh-models");
+    if (refreshButton) {
+      refreshButton.disabled = true;
+      refreshButton.textContent = "Refreshing…";
+    }
 
     try {
-      const catalog = await api(`${data.modelsApiBase}/${encodeURIComponent(providerId)}`);
+      const suffix = fresh ? `?refresh=1&t=${Date.now()}` : "";
+      const catalog = await api(`${data.modelsApiBase}/${encodeURIComponent(providerId)}${suffix}`);
       state.catalogs[providerId] = catalog;
     } catch (error) {
       state.catalogs[providerId] = { models: [], note: error.message };
+    } finally {
+      if (refreshButton) {
+        refreshButton.disabled = false;
+        refreshButton.textContent = "↻ Refresh";
+      }
     }
 
     if (state.provider === providerId) {
+      const models = state.catalogs[providerId]?.models || [];
+      if (state.modelId !== "__custom__" && !models.some((model) => model.id === state.modelId)) {
+        state.modelId = null;
+      }
       autoSelectModel();
       renderModels();
     }
@@ -164,34 +183,64 @@
     return catalog.models.find((model) => model.id === state.modelId) || null;
   }
 
-  function modelChip(model) {
+  function modelPrice(pricing) {
+    if (!pricing) return "";
+    const money = (value) => Number(value).toFixed(3).replace(/\.?0+$/, "");
+    const input = Number.isFinite(pricing.input) ? `$${money(pricing.input)}` : "";
+    const output = Number.isFinite(pricing.output) ? `$${money(pricing.output)}` : "";
+    return input && output ? `${input} in / ${output} out per MTok` : "";
+  }
+
+  function modelChip(model, { showGroup = false } = {}) {
+    const details = [model.description, modelPrice(model.pricing)].filter(Boolean).join(" · ");
     return `<button type="button" class="chip${state.modelId === model.id ? " is-selected" : ""}"
         data-model-id="${escapeText(model.id)}" role="radio" aria-checked="${state.modelId === model.id}">
+      ${showGroup && model.group ? `<span class="chip__eyebrow">${escapeText(model.group)}</span>` : ""}
       <span class="chip__label">${escapeText(model.label)}${model.fast ? ' <span class="chip__badge">FAST</span>' : ""}</span>
-      ${model.description ? `<span class="chip__sub">${escapeText(model.description)}</span>` : ""}
+      ${details ? `<span class="chip__sub">${escapeText(details)}</span>` : ""}
     </button>`;
+  }
+
+  function catalogTime(catalog) {
+    const value = catalog.updated_at || catalog.checked_at;
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return `${catalog.updated_at ? "updated" : "checked"} ${date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    })}`;
   }
 
   function renderModels() {
     const host = document.getElementById("model-picker");
     const noteEl = document.getElementById("model-note");
+    const metaEl = document.getElementById("model-meta");
+    const searchWrap = document.getElementById("model-search");
     const catalog = state.catalogs[state.provider];
 
     if (!catalog) {
       host.innerHTML = '<span class="muted">Loading models…</span>';
       noteEl.hidden = true;
+      metaEl.textContent = "";
+      searchWrap.hidden = true;
       renderReasoning();
       return;
     }
 
     noteEl.textContent = catalog.note || "";
     noteEl.hidden = !catalog.note;
+    metaEl.textContent = [catalog.source, catalogTime(catalog)].filter(Boolean).join(" · ");
 
     const customChip = { id: "__custom__", label: "Custom…", description: "type any model id" };
     const grouped = catalog.models.some((model) => model.group);
+    searchWrap.hidden = !grouped;
 
     if (grouped) {
-      // Prime: one folder per inference provider; click a folder to browse it.
+      // Prime: recent additions stay visible up front, with provider folders for
+      // the full live catalog and a search path for quickly narrowing 100+ ids.
       const groups = new Map();
       catalog.models.forEach((model) => {
         const key = model.group || "other";
@@ -199,11 +248,20 @@
         groups.get(key).push(model);
       });
       const selected = catalog.models.find((model) => model.id === state.modelId);
-
-      host.innerHTML = `<div class="model-folders">${[...groups.entries()]
+      const query = state.modelQuery.trim().toLowerCase();
+      const filteredModels = query
+        ? catalog.models.filter((model) => `${model.group || ""}/${model.label} ${model.id}`.toLowerCase().includes(query))
+        : [];
+      const recentModels = [...catalog.models]
+        .filter((model) => model.created_at)
+        .sort((a, b) => b.created_at - a.created_at)
+        .slice(0, 6);
+      const folderMarkup = [...groups.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
         .map(([group, models]) => {
           const open = state.openFolders.has(group);
           const containsSelected = models.some((model) => model.id === state.modelId);
+          const orderedModels = [...models].sort((a, b) => (b.created_at || 0) - (a.created_at || 0) || a.label.localeCompare(b.label));
           return `<div class="model-folder${open ? " is-open" : ""}${containsSelected ? " has-selected" : ""}">
             <button type="button" class="model-folder__head" data-folder="${escapeText(group)}" aria-expanded="${open}">
               <span class="model-folder__glyph">${open ? "▾" : "▸"}</span>
@@ -211,11 +269,20 @@
               <span class="model-folder__count">${models.length}</span>
               ${containsSelected && !open ? `<span class="model-folder__selected">${escapeText(selected?.label || "")}</span>` : ""}
             </button>
-            ${open ? `<div class="chip-row model-folder__body">${models.map(modelChip).join("")}</div>` : ""}
+            ${open ? `<div class="model-grid model-folder__body">${orderedModels.map((model) => modelChip(model)).join("")}</div>` : ""}
           </div>`;
         })
-        .join("")}</div>
-        <div class="chip-row" style="margin-top: 10px">${modelChip(customChip)}</div>`;
+        .join("");
+
+      host.innerHTML = query
+        ? `<div class="model-search-results">
+            <div class="model-section-title">${filteredModels.length} match${filteredModels.length === 1 ? "" : "es"}</div>
+            ${filteredModels.length ? `<div class="model-grid">${filteredModels.map((model) => modelChip(model, { showGroup: true })).join("")}</div>` : '<p class="muted model-empty">No models match that search.</p>'}
+          </div>
+          <div class="model-custom-row">${modelChip(customChip)}</div>`
+        : `${recentModels.length ? `<div class="model-recent"><div class="model-section-title">Recently added</div><div class="model-grid">${recentModels.map((model) => modelChip(model, { showGroup: true })).join("")}</div></div>` : ""}
+          <div class="model-folders">${folderMarkup}</div>
+          <div class="model-custom-row">${modelChip(customChip)}</div>`;
 
       host.querySelectorAll(".model-folder__head").forEach((head) => {
         head.addEventListener("click", () => {
@@ -226,7 +293,7 @@
         });
       });
     } else {
-      host.innerHTML = [...catalog.models, customChip].map(modelChip).join("");
+      host.innerHTML = `<div class="model-grid">${[...catalog.models, customChip].map((model) => modelChip(model)).join("")}</div>`;
     }
 
     host.querySelectorAll(".chip[data-model-id]").forEach((chip) => {
@@ -910,6 +977,17 @@
     });
   }
 
+  function wireModelCatalog() {
+    document.getElementById("refresh-models")?.addEventListener("click", () => {
+      loadModels(state.provider, { fresh: true });
+    });
+
+    document.getElementById("model-search-input")?.addEventListener("input", (event) => {
+      state.modelQuery = event.target.value;
+      renderModels();
+    });
+  }
+
   // ---- boot -----------------------------------------------------------------
 
   const firstAvailable = PROVIDERS.find((provider) => data.environment?.[provider.envKey]);
@@ -923,6 +1001,7 @@
   });
   syncIsolationPicker();
   describeEnvironment();
+  wireModelCatalog();
   wireRunsToolbar();
   refreshRuns();
   selectProvider((firstAvailable || PROVIDERS[0]).id);
