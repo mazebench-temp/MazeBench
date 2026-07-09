@@ -2453,6 +2453,7 @@ body.play-body {
     rgba(7, 10, 24, 0.72);
   border: 1px solid rgba(124, 143, 255, 0.24);
   border-radius: 12px;
+  cursor: pointer;
   display: grid;
   gap: 12px;
   overflow: hidden;
@@ -2467,6 +2468,18 @@ body.play-body {
     rgba(12, 17, 34, 0.8);
   border-color: rgba(124, 143, 255, 0.42);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+.run-card__open {
+  border-radius: inherit;
+  inset: 0;
+  position: absolute;
+  z-index: 1;
+}
+
+.run-card__open:focus-visible {
+  outline: 2px solid var(--cyan, #34e7f0);
+  outline-offset: -3px;
 }
 
 .run-card__status {
@@ -2609,6 +2622,8 @@ body.play-body {
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+  position: relative;
+  z-index: 2;
 }
 
 .run-card__actions .button,

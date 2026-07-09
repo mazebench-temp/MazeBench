@@ -1146,7 +1146,6 @@
         : "";
 
     const actions = [
-      `<a class="button--primary" href="${escapeText(run.url)}">View</a>`,
       run.pausable ? '<button class="button" type="button" data-action="pause">Pause</button>' : "",
       run.resumable ? '<button class="button--primary" type="button" data-action="resume">Resume</button>' : "",
       run.continuable ? '<button class="button" type="button" data-action="continue">Continue</button>' : "",
@@ -1159,6 +1158,7 @@
       .join("");
 
     return `<article class="agent-run-card" data-run-id="${escapeText(run.id)}" data-provider="${escapeText(run.model)}">
+      <a class="run-card__open" href="${escapeText(run.url)}" aria-label="Open ${escapeText(modelName)} run"></a>
       <div class="run-card__status">
         <span class="agent-chip ${runStatusClass(run.status)}">${escapeText(statusLabel)}</span>
         <span>${createdAt}${continuation}</span>
