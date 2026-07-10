@@ -234,6 +234,10 @@ function createWorker(requestedId, options = {}) {
   if (fs.existsSync(sourceActions)) {
     fs.copyFileSync(sourceActions, path.join(directory, "actions.jsonl"));
   }
+  const sourceInitialStatus = path.join(sourceDirectory, "initial-status.json");
+  if (fs.existsSync(sourceInitialStatus)) {
+    fs.copyFileSync(sourceInitialStatus, path.join(directory, "initial-status.json"));
+  }
   const sourceFrames = path.join(sourceDirectory, "frames");
   if (fs.existsSync(sourceFrames)) {
     const latestFrame = fs.readdirSync(sourceFrames)

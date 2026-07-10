@@ -427,6 +427,7 @@ async function main() {
     session.initial = response.status || response;
     session.lastStatus = session.initial;
     writeJson(options.state, session);
+    writeJson(path.join(path.dirname(options.state), "initial-status.json"), session.initial);
     if (!(await emitStatus(session, response, 0, options.state))) process.exitCode = 1;
     return;
   }

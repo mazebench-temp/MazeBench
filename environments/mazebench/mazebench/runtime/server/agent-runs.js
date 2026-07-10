@@ -97,6 +97,7 @@ function createAgentRunService({
   const codexSessionPaths = new Map();
   const primeResultsPaths = new Map();
   const tokenUsageCache = new Map();
+  const jsonLineIndexes = new Map();
   const stableCodexCatalogPath = path.join(runsDir, ".codex-model-catalog.json");
   let stableCodexCatalog;
   let claudeQueueOrder = Date.now() * 1000;
@@ -1470,6 +1471,73 @@ function createAgentRunService({
     return null;
   }
 
+  function jsonLineIndexFor(filePath) {
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (_error) {
+      return { size: 0, mtimeMs: 0, offsets: [] };
+    }
+
+    const existing = jsonLineIndexes.get(filePath);
+    if (existing && existing.size === stat.size && existing.mtimeMs === stat.mtimeMs) return existing;
+
+    const incremental = Boolean(existing && stat.size > existing.size);
+    const offsets = incremental ? [...existing.offsets] : stat.size ? [0] : [];
+    const start = incremental ? existing.size : 0;
+
+    if (incremental && start > 0) {
+      const previous = Buffer.alloc(1);
+      const previousFd = fs.openSync(filePath, "r");
+      try {
+        fs.readSync(previousFd, previous, 0, 1, start - 1);
+      } finally {
+        fs.closeSync(previousFd);
+      }
+      if (previous[0] === 10 && start < stat.size && offsets[offsets.length - 1] !== start) offsets.push(start);
+    }
+
+    if (stat.size > start) {
+      const buffer = Buffer.alloc(stat.size - start);
+      const fd = fs.openSync(filePath, "r");
+      try {
+        fs.readSync(fd, buffer, 0, buffer.length, start);
+      } finally {
+        fs.closeSync(fd);
+      }
+      for (let index = 0; index < buffer.length; index += 1) {
+        if (buffer[index] !== 10) continue;
+        const next = start + index + 1;
+        if (next < stat.size && offsets[offsets.length - 1] !== next) offsets.push(next);
+      }
+    }
+
+    const value = { size: stat.size, mtimeMs: stat.mtimeMs, offsets };
+    jsonLineIndexes.set(filePath, value);
+    return value;
+  }
+
+  function readJsonLineAt(filePath, lineIndex) {
+    const index = jsonLineIndexFor(filePath);
+    const start = index.offsets[lineIndex];
+    if (!Number.isFinite(start)) return null;
+    const end = index.offsets[lineIndex + 1] ?? index.size;
+    const length = Math.max(0, end - start);
+    if (!length) return null;
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      return JSON.parse(buffer.toString("utf8").trim());
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function latestSwarmFrame(runId, workerId, workerDir) {
     const framesDir = path.join(workerDir, "frames");
     if (!fs.existsSync(framesDir)) return null;
@@ -1845,6 +1913,69 @@ function createAgentRunService({
     } finally {
       if (liveFrameLocks.get(runId) === lock) liveFrameLocks.delete(runId);
     }
+  }
+
+  function getRunObservation(runId, { instanceId = "primary", turn = 0 } = {}) {
+    const summary = summarizeRun(runId);
+    if (!summary) return null;
+
+    const requestedInstance = String(instanceId || "primary");
+    const primary = requestedInstance === "primary";
+    if (!primary && !/^[a-z0-9_-]{1,48}$/i.test(requestedInstance)) return null;
+
+    const runDir = runDirFor(runId);
+    const instanceDir = primary ? runDir : path.join(runDir, "swarm", requestedInstance);
+    if (!primary && (!fs.existsSync(instanceDir) || !fs.statSync(instanceDir).isDirectory())) return null;
+
+    const metadata = primary ? {} : loadJson(path.join(instanceDir, "worker.json"), {}) || {};
+    const actionsPath = path.join(instanceDir, "actions.jsonl");
+    const actionIndex = jsonLineIndexFor(actionsPath);
+    const forkActionCount = primary ? 0 : Math.max(0, Number(metadata.fork_action_count) || 0);
+    const total = Math.max(0, actionIndex.offsets.length - forkActionCount);
+    const relativeTurn = Math.max(0, Math.min(total, Math.floor(Number(turn) || 0)));
+    const absoluteTurn = forkActionCount + relativeTurn;
+    const record = absoluteTurn > 0 ? readJsonLineAt(actionsPath, absoluteTurn - 1) : null;
+    let status = record?.status || null;
+
+    if (!status && absoluteTurn === 0) {
+      status = loadJson(path.join(instanceDir, "initial-status.json"), null);
+      if (!status) {
+        const session = loadJson(path.join(instanceDir, "session.json"), null);
+        status = session?.initial || session?.lastStatus || null;
+      }
+    }
+
+    const mode = String(metadata.observation_mode || summary.mode || "text") === "vision" ? "vision" : "text";
+    const frameName = `frame-${String(absoluteTurn).padStart(3, "0")}.png`;
+    const exactFrame = path.join(instanceDir, "frames", frameName);
+    let frameUrl = null;
+
+    if (fs.existsSync(exactFrame)) {
+      frameUrl = primary
+        ? `/agent-runs/${encodeURIComponent(runId)}/files/frames/${frameName}`
+        : `/agent-runs/${encodeURIComponent(runId)}/files/swarm/${encodeURIComponent(requestedInstance)}/frames/${frameName}`;
+    } else if (primary && mode === "text") {
+      const liveName = `live-${String(absoluteTurn).padStart(3, "0")}.png`;
+      if (fs.existsSync(path.join(instanceDir, "frames", liveName))) {
+        frameUrl = `/agent-runs/${encodeURIComponent(runId)}/files/frames/${liveName}`;
+      }
+    }
+
+    return {
+      instance_id: requestedInstance,
+      label: primary ? "Primary" : String(metadata.label || requestedInstance),
+      mode,
+      turn: relativeTurn,
+      absolute_turn: absoluteTurn,
+      total,
+      command_text: String(record?.command_text || ""),
+      board: String(status?.level || ""),
+      frame_url: frameUrl,
+      current_room: String(status?.current_room || ""),
+      gem_count: Math.max(0, Number(status?.gem_count) || 0),
+      player: status?.player || null,
+      yaw: Number(status?.yaw) || 0
+    };
   }
 
   function getRunProgress(runId, { afterTurn = 0, logOffset = 0 } = {}) {
@@ -3083,6 +3214,9 @@ function createAgentRunService({
     liveChildren.delete(runId);
     stopLegacyClaudeSnapshots(runId);
     stopLiveRenderer(runId);
+    for (const filePath of jsonLineIndexes.keys()) {
+      if (filePath.startsWith(`${runDir}${path.sep}`)) jsonLineIndexes.delete(filePath);
+    }
     fs.rmSync(runDir, { recursive: true, force: true });
     if (meta?.model === "claude") startNextWaitingClaudeRun();
     return { id: runId, deleted: true };
@@ -3188,6 +3322,7 @@ function createAgentRunService({
     deleteRun,
     generateRunVideo,
     getEnvironment,
+    getRunObservation,
     getRunProgress,
     launchRun,
     launchRuns,

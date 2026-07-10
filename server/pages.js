@@ -13,6 +13,9 @@ const HOME_MODE_ICONS = Object.freeze({
 // https://lucide.dev/icons/trash-2
 const TRASH_ICON = `<svg class="trash-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
 
+// Folder Closed from Lucide Icons (ISC License).
+const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path><path d="M2 10h20"></path></svg>`;
+
 // Page renderers. The chrome (topbar, footer, fonts, site.css) is ported from
 // the MazeJam repo so the local site looks exactly like the hosted one:
 //   - site pages load /site.css + /build-theme.css + /local-site.css
@@ -59,7 +62,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-trash-icon-59">
+    <link rel="stylesheet" href="/local-site.css?v=20260710-replay-speed-65">
     ${extraHeadHtml}`
     })}
   </head>
@@ -263,7 +266,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-trash-icon-59">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260710-replay-speed-65">`;
   }
 
   function renderPlayPage(game, level) {
@@ -375,7 +378,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-trash-icon-59">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260710-replay-speed-65">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -993,16 +996,19 @@ function createPageRenderer({
       : `<section class="panel run-live">
           <h2>Live view</h2>
           <div id="run-live-grid" class="run-live__grid">
-            <figure class="run-live__frame">
-              <img id="run-live-image" alt="Live maze view" hidden>
-              <div id="run-live-placeholder" class="run-live__placeholder">
-                <span class="inline-spinner" aria-hidden="true"></span>
-                <span>Loading move 0…</span>
-              </div>
-              <figcaption id="run-live-caption" class="run-live__caption" hidden></figcaption>
-            </figure>
+            <div class="run-live__viewer">
+              <figure class="run-live__frame">
+                <img id="run-live-image" alt="Live maze view" hidden>
+                <div id="run-live-placeholder" class="run-live__placeholder">
+                  <span class="inline-spinner" aria-hidden="true"></span>
+                  <span>Loading move 0…</span>
+                </div>
+                <figcaption id="run-live-caption" class="run-live__caption" hidden></figcaption>
+              </figure>
+            </div>
             ${boardWrap}
           </div>
+          <div class="replay-controls replay-controls--main" id="run-main-replay-controls"></div>
         </section>
 
         <section class="panel run-swarm" id="run-swarm-section" hidden>
@@ -1012,7 +1018,7 @@ function createPageRenderer({
           </div>
           <div class="run-swarm__grid" id="run-swarm-grid"></div>
           <details class="run-swarm__finished" id="run-finished-agents" hidden>
-            <summary><span>Finished agents</span><strong id="run-finished-count"></strong></summary>
+            <summary><span class="run-swarm__finished-label">${FOLDER_ICON}<span>Finished agents</span></span><strong id="run-finished-count"></strong></summary>
             <div class="run-swarm__grid" id="run-finished-grid"></div>
           </details>
         </section>
@@ -1060,7 +1066,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
-        <script src="/agent-run.js?v=20260710-finished-agents-58" defer></script>`
+        <script src="/agent-run.js?v=20260710-replay-speed-65" defer></script>`
     });
   }
 

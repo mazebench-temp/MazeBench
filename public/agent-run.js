@@ -18,6 +18,8 @@
   const deleteButton = document.getElementById("delete-run");
   const liveImage = document.getElementById("run-live-image");
   const livePlaceholder = document.getElementById("run-live-placeholder");
+  const liveGrid = document.getElementById("run-live-grid");
+  const mainReplayControls = document.getElementById("run-main-replay-controls");
   const tokenChart = document.getElementById("run-token-chart");
   const tokenEmpty = document.getElementById("run-token-empty");
   const tokenBadge = document.getElementById("run-token-badge");
@@ -43,6 +45,19 @@
     swarmAgents: { running: 0, ran: 0 },
     instanceActivity: { active: 0, instances: 0, auxiliary_actions: 0, auxiliary_action_attempts: 0 },
     expandedInstance: "",
+    instanceViews: [],
+    replayCursors: new Map(),
+    replayObservations: new Map(),
+    replayRequests: new Map(),
+    replayRates: new Map(),
+    activeReplay: "primary",
+    playingView: "",
+    playbackTimer: null,
+    playbackTick: null,
+    mainControlSignature: "",
+    keyboardStepAt: 0,
+    suppressCardToggleView: "",
+    suppressCardToggleUntil: 0,
     // -1 makes move 0 a real render target instead of waiting for move 1.
     lastRenderedTurn: -1,
     lastImageUrl: null,
@@ -69,45 +84,275 @@
 
   const levelLabel = (id) => String(id || "").replace(/^level_/, "");
 
+  // Chevrons, Play, and Pause from Lucide Icons (ISC License).
+  // https://lucide.dev/
+  const REPLAY_ICONS = {
+    first: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5"></path><path d="m18 17-5-5 5-5"></path></svg>',
+    previous: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>',
+    play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path></svg>',
+    pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"></rect><rect x="5" y="3" width="5" height="18" rx="1"></rect></svg>',
+    next: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>',
+    last: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 17 5-5-5-5"></path><path d="m13 17 5-5-5-5"></path></svg>'
+  };
+
+  function replayTotal(viewId) {
+    if (viewId === "primary") return Math.max(0, Number(state.afterTurn) || 0);
+    const view = state.instanceViews.find((entry) => entry.id === viewId);
+    return Math.max(0, Number(view?.auxiliary_actions) || 0);
+  }
+
+  function replayTurn(viewId) {
+    return state.replayCursors.has(viewId)
+      ? Math.max(0, Number(state.replayCursors.get(viewId)) || 0)
+      : replayTotal(viewId);
+  }
+
+  function replayRate(viewId) {
+    const rate = Number(state.replayRates.get(viewId));
+    return [1, 2, 5, 10, 20].includes(rate) ? rate : 10;
+  }
+
+  function replayDelay(viewId) {
+    return Math.max(50, Math.round(1000 / replayRate(viewId)));
+  }
+
+  function replayControlsMarkup(viewId) {
+    const total = replayTotal(viewId);
+    const turn = Math.min(total, replayTurn(viewId));
+    const playing = state.playingView === viewId;
+    const rate = replayRate(viewId);
+    const followingLatest = !state.replayCursors.has(viewId) && turn >= total;
+    const active = state.activeReplay === viewId ? " is-active" : "";
+    const button = (action, icon, label, disabled = false, extra = "") =>
+      `<button type="button" class="replay-control${extra}" data-replay-view="${escapeText(viewId)}" data-replay-action="${action}" aria-label="${label}" title="${label}"${disabled ? " disabled" : ""}>${icon}</button>`;
+    return `<div class="replay-controls__buttons${active}" role="group" aria-label="Observation playback">
+      ${button("first", REPLAY_ICONS.first, "First observation", turn <= 0)}
+      ${button("previous", REPLAY_ICONS.previous, "Previous observation", turn <= 0)}
+      ${button("play", playing ? REPLAY_ICONS.pause : REPLAY_ICONS.play, playing ? "Pause playback" : `Play at ${rate} action${rate === 1 ? "" : "s"} per second`, total <= 0, " replay-control--play")}
+      ${button("next", REPLAY_ICONS.next, "Next observation", turn >= total)}
+      ${button("last", REPLAY_ICONS.last, "Latest observation", followingLatest)}
+      <label class="replay-rate" title="Playback speed">
+        <span class="sr-only">Actions per second</span>
+        <select data-replay-rate data-replay-view="${escapeText(viewId)}" aria-label="Actions per second">
+          ${[1, 2, 5, 10, 20].map((option) => `<option value="${option}"${option === rate ? " selected" : ""}>${option}/s</option>`).join("")}
+        </select>
+      </label>
+      <span class="replay-controls__position" aria-live="polite">${turn} / ${total}</span>
+    </div>`;
+  }
+
+  function refreshReplayControls(viewId) {
+    if (viewId === "primary") {
+      renderMainReplayControls();
+      return;
+    }
+    state.swarmSignature = "";
+    renderSwarmViews(state.instanceViews);
+  }
+
+  function stopPlayback() {
+    if (state.playbackTimer) clearTimeout(state.playbackTimer);
+    state.playbackTimer = null;
+    state.playbackTick = null;
+    const previous = state.playingView;
+    state.playingView = "";
+    if (previous) refreshReplayControls(previous);
+  }
+
+  async function setReplayTurn(viewId, requestedTurn) {
+    const total = replayTotal(viewId);
+    const turn = Math.max(0, Math.min(total, Math.floor(Number(requestedTurn) || 0)));
+    state.replayCursors.set(viewId, turn);
+
+    const requestId = (state.replayRequests.get(viewId) || 0) + 1;
+    state.replayRequests.set(viewId, requestId);
+    try {
+      const params = new URLSearchParams({ instance: viewId, turn: String(turn) });
+      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/observation?${params}`);
+      if (!response.ok) return null;
+      const observation = await response.json();
+      if (state.replayRequests.get(viewId) !== requestId) return null;
+      state.replayObservations.set(viewId, observation);
+      if (viewId === "primary") applyMainObservation(observation);
+      refreshReplayControls(viewId);
+      return observation;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function goToLatestObservation(viewId) {
+    const observation = await setReplayTurn(viewId, replayTotal(viewId));
+    state.replayCursors.delete(viewId);
+    if (viewId !== "primary") state.replayObservations.delete(viewId);
+    if (viewId === "primary" && observation?.mode === "text" && !observation.frame_url) {
+      liveGrid?.classList.add("is-text-history");
+    }
+    refreshReplayControls(viewId);
+  }
+
+  async function startPlayback(viewId) {
+    if (state.playingView === viewId) {
+      stopPlayback();
+      return;
+    }
+    stopPlayback();
+    state.activeReplay = viewId;
+    state.playingView = viewId;
+    if (replayTurn(viewId) >= replayTotal(viewId)) await setReplayTurn(viewId, 0);
+    if (state.playingView !== viewId) return;
+    refreshReplayControls(viewId);
+
+    const tick = async () => {
+      if (state.playingView !== viewId) return;
+      const total = replayTotal(viewId);
+      const current = replayTurn(viewId);
+      if (current >= total) {
+        stopPlayback();
+        return;
+      }
+      await setReplayTurn(viewId, current + 1);
+      if (state.playingView === viewId) state.playbackTimer = setTimeout(tick, replayDelay(viewId));
+    };
+    state.playbackTick = tick;
+    state.playbackTimer = setTimeout(tick, replayDelay(viewId));
+  }
+
+  function handleReplayAction(viewId, action) {
+    const previousActive = state.activeReplay;
+    state.activeReplay = viewId;
+    if (previousActive === "primary" && viewId !== "primary") renderMainReplayControls();
+    if (action !== "play") stopPlayback();
+    const current = replayTurn(viewId);
+    if (action === "first") void setReplayTurn(viewId, 0);
+    else if (action === "previous") void setReplayTurn(viewId, current - 1);
+    else if (action === "play") void startPlayback(viewId);
+    else if (action === "next") void setReplayTurn(viewId, current + 1);
+    else if (action === "last") void goToLatestObservation(viewId);
+    refreshReplayControls(viewId);
+  }
+
+  function wireReplayControls(container, { immediate = false } = {}) {
+    container?.querySelectorAll("[data-replay-action]").forEach((control) => {
+      const activate = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const viewId = control.dataset.replayView || "primary";
+        if (immediate && event.type === "pointerdown") {
+          state.suppressCardToggleView = viewId;
+          state.suppressCardToggleUntil = Date.now() + 750;
+        }
+        handleReplayAction(viewId, control.dataset.replayAction || "");
+      };
+      if (immediate) {
+        control.addEventListener("pointerdown", activate);
+        control.addEventListener("click", (event) => {
+          // Pointer activation already ran on pointerdown. Preserve keyboard clicks.
+          if (event.detail === 0) activate(event);
+          else {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        });
+      } else {
+        control.addEventListener("click", activate);
+      }
+    });
+    container?.querySelectorAll("[data-replay-rate]").forEach((control) => {
+      control.addEventListener("pointerdown", (event) => event.stopPropagation());
+      control.addEventListener("click", (event) => event.stopPropagation());
+      control.addEventListener("change", (event) => {
+        event.stopPropagation();
+        const viewId = control.dataset.replayView || "primary";
+        const rate = Number(control.value);
+        if (![1, 2, 5, 10, 20].includes(rate)) return;
+        state.replayRates.set(viewId, rate);
+        if (state.playingView === viewId && state.playbackTick) {
+          if (state.playbackTimer) clearTimeout(state.playbackTimer);
+          state.playbackTimer = setTimeout(state.playbackTick, replayDelay(viewId));
+        }
+        refreshReplayControls(viewId);
+      });
+    });
+  }
+
+  function renderMainReplayControls() {
+    if (!mainReplayControls) return;
+    const markup = replayControlsMarkup("primary");
+    if (markup === state.mainControlSignature) return;
+    state.mainControlSignature = markup;
+    mainReplayControls.innerHTML = markup;
+    wireReplayControls(mainReplayControls);
+  }
+
   function instanceCards(workers) {
     return workers.map((worker) => {
-      const player = worker.player ? `@ ${worker.player.x},${worker.player.y}` : "no player";
-      const frame = worker.frame_url
-        ? `<img class="run-swarm-card__image" src="${escapeText(worker.frame_url)}" alt="${escapeText(worker.id)} exact current vision observation">`
-        : worker.observation_mode === "vision"
+      const history = state.replayCursors.has(worker.id) ? state.replayObservations.get(worker.id) : null;
+      const displayed = history
+        ? {
+            ...worker,
+            board: history.board,
+            frame_url: history.frame_url,
+            gem_count: history.gem_count,
+            player: history.player,
+            room: history.current_room,
+            observation_mode: history.mode,
+            last_action: history.command_text
+          }
+        : worker;
+      const player = displayed.player ? `@ ${displayed.player.x},${displayed.player.y}` : "no player";
+      const frame = displayed.frame_url
+        ? `<img class="run-swarm-card__image" src="${escapeText(displayed.frame_url)}" alt="${escapeText(worker.id)} exact observation">`
+        : displayed.observation_mode === "vision"
           ? `<div class="run-swarm-card__waiting">Waiting for vision frame…</div>`
-          : `<pre class="run-swarm-card__text" aria-label="${escapeText(worker.id)} exact current text observation">${escapeText(worker.board || "Waiting for observation…")}</pre>`;
+          : `<pre class="run-swarm-card__text" aria-label="${escapeText(worker.id)} exact text observation">${escapeText(displayed.board || "Waiting for observation…")}</pre>`;
       const owner = worker.owner_kind === "tool" ? "tool branch" : "subagent";
       const attempts = Math.max(0, Number(worker.auxiliary_action_attempts) || 0);
       const applied = Math.max(0, Number(worker.auxiliary_actions) || 0);
       const attemptLabel = attempts === applied ? `${applied} actions` : `${applied}/${attempts} applied`;
       const parent = worker.parent_instance_id === "primary" ? `forked at primary ${worker.inherited_action_count || 0}` : `forked from ${worker.parent_instance_id}`;
-      const expanded = state.expandedInstance === worker.id ? " is-expanded" : "";
+      const isExpanded = state.expandedInstance === worker.id;
+      const expanded = isExpanded ? " is-expanded" : "";
       return `<article class="run-swarm-card${expanded}" data-instance-id="${escapeText(worker.id)}" role="button" tabindex="0" aria-expanded="${expanded ? "true" : "false"}">
         <div class="run-swarm-card__screen">
           ${frame}
           <span class="run-swarm-card__activity is-${escapeText(worker.activity.replaceAll(" ", "-"))}"><i></i>${escapeText(worker.activity)}</span>
-          <span class="run-swarm-card__mode">${escapeText(worker.observation_mode || (worker.frame_url ? "vision" : "text"))}</span>
+          <span class="run-swarm-card__mode">${escapeText(displayed.observation_mode || (displayed.frame_url ? "vision" : "text"))}</span>
         </div>
+        ${isExpanded ? `<div class="replay-controls replay-controls--instance">${replayControlsMarkup(worker.id)}</div>` : ""}
         <div class="run-swarm-card__copy">
           <strong>${escapeText(worker.label || worker.id.replaceAll("_", " "))}</strong>
-          <span>${escapeText(owner)} · ${escapeText(levelLabel(worker.room))} · ${escapeText(player)}</span>
-          <small>${escapeText(attemptLabel)} · ${escapeText(worker.gem_count)} gems</small>
-          <small>${escapeText(parent)}${worker.last_action ? ` · last: ${escapeText(worker.last_action)}` : ""}</small>
+          <span>${escapeText(owner)} · ${escapeText(levelLabel(displayed.room))} · ${escapeText(player)}</span>
+          <small>${escapeText(attemptLabel)} · ${escapeText(displayed.gem_count)} gems</small>
+          <small>${escapeText(parent)}${displayed.last_action ? ` · last: ${escapeText(displayed.last_action)}` : ""}</small>
         </div>
       </article>`;
     }).join("");
   }
 
   function wireInstanceCards(container, workers) {
+    wireReplayControls(container, { immediate: true });
     container.querySelectorAll(".run-swarm-card").forEach((card) => {
       const toggle = () => {
         const id = card.dataset.instanceId || "";
+        const previousActive = state.activeReplay;
+        state.activeReplay = id;
+        if (previousActive === "primary") renderMainReplayControls();
         state.expandedInstance = state.expandedInstance === id ? "" : id;
         state.swarmSignature = "";
         renderSwarmViews(workers);
       };
-      card.addEventListener("click", toggle);
+      card.addEventListener("click", (event) => {
+        if (event.target.closest(".replay-controls")) return;
+        const suppressToggle = state.suppressCardToggleView === card.dataset.instanceId
+          && Date.now() <= state.suppressCardToggleUntil;
+        if (suppressToggle) {
+          state.suppressCardToggleView = "";
+          state.suppressCardToggleUntil = 0;
+          return;
+        }
+        toggle();
+      });
       card.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -120,6 +365,7 @@
   function renderSwarmViews(views) {
     if (!swarmSection || !swarmGrid || !swarmCount || !finishedAgents || !finishedGrid || !finishedCount) return;
     const workers = Array.isArray(views) ? views : [];
+    state.instanceViews = workers;
     const signature = JSON.stringify(workers);
     if (signature === state.swarmSignature) return;
     state.swarmSignature = signature;
@@ -137,6 +383,9 @@
     wireInstanceCards(swarmGrid, workers);
 
     finishedAgents.hidden = finishedWorkers.length === 0;
+    if (finishedWorkers.some((worker) => worker.id === state.activeReplay) && (state.playingView || state.expandedInstance)) {
+      finishedAgents.open = true;
+    }
     finishedCount.textContent = String(finishedWorkers.length);
     finishedGrid.innerHTML = instanceCards(finishedWorkers);
     wireInstanceCards(finishedGrid, workers);
@@ -463,7 +712,7 @@
         state.moves.set(action.turn, nextMove);
         state.feedVersion += 1;
       }
-      if (action.level && !isVision) {
+      if (action.level && !isVision && !state.replayCursors.has("primary")) {
         boardEl.textContent = action.level;
         boardWrap.hidden = false;
       }
@@ -576,6 +825,8 @@
 
   function showImage(url, turn) {
     if (!url) return;
+    liveGrid?.classList.remove("is-text-history");
+    livePlaceholder?.classList.remove("is-history");
     // Each turn gets its own frame URL, so only touch the <img> when the URL
     // actually changes — the poll loop calls this every tick, and resetting
     // src re-downloads the frame and makes it flicker.
@@ -591,11 +842,37 @@
     }
   }
 
+  function applyMainObservation(observation) {
+    if (!observation) return;
+    const turn = Math.max(0, Number(observation.turn) || 0);
+    if (observation.board && observation.mode === "text") {
+      boardEl.textContent = observation.board;
+      boardWrap.hidden = false;
+    }
+    if (observation.frame_url) {
+      showImage(observation.frame_url, turn);
+      return;
+    }
+
+    liveImage.hidden = true;
+    livePlaceholder.hidden = false;
+    livePlaceholder.classList.add("is-history");
+    const label = livePlaceholder.querySelector("span:last-child");
+    if (label) label.textContent = observation.mode === "vision"
+      ? `No saved vision frame for move ${turn}`
+      : `Text observation · move ${turn}`;
+    liveGrid?.classList.toggle("is-text-history", observation.mode === "text");
+    if (captionEl) {
+      captionEl.textContent = turn === 0 ? "move 0 · starting state" : `after move ${turn}`;
+      captionEl.hidden = false;
+    }
+  }
+
   // Text-mode runs always use an on-demand frame. Vision runs use the same
   // renderer for move 0 until the agent's own first vision frame is available.
   // Throttle to one render at a time so we never queue browser boots.
   async function maybeRenderLocalFrame() {
-    if (state.frameRendering) return;
+    if (state.frameRendering || state.replayCursors.has("primary")) return;
     const latest = state.afterTurn;
     if (latest <= state.lastRenderedTurn) return;
 
@@ -603,7 +880,7 @@
     try {
       const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/frame?turn=${latest}`);
       const payload = await response.json();
-      if (payload.url) {
+      if (payload.url && !state.replayCursors.has("primary")) {
         const renderedTurn = Number.isFinite(Number(payload.turn)) ? Number(payload.turn) : latest;
         state.frameFailures = 0;
         showImage(payload.url, renderedTurn);
@@ -689,6 +966,7 @@
         ingestActions(progress.actions || []);
         ingestReasoning(progress.reasoning || []);
         renderFeed();
+        renderMainReplayControls();
         const seeEmpty = document.getElementById("run-see-empty");
         if (seeEmpty && boardEl && boardEl.textContent) {
           seeEmpty.hidden = true;
@@ -698,12 +976,13 @@
         ingestActions(progress.actions || []);
         ingestReasoning(progress.reasoning || []);
         renderFeed();
+        renderMainReplayControls();
 
         const mayRenderLiveFrame = !["paused", "stopping", "stopped", "waiting", "failed"].includes(
           progress.run.status
         );
 
-        if (isVision && progress.vision_frame_url) {
+        if (!state.replayCursors.has("primary") && isVision && progress.vision_frame_url) {
           const match = String(progress.vision_frame_url).match(/frame-(\d+)\.png(?:$|\?)/);
           const visionTurn = match ? Number(match[1]) : state.afterTurn;
           if (visionTurn >= state.afterTurn && visionTurn >= state.lastRenderedTurn) {
@@ -711,7 +990,7 @@
             state.lastRenderedTurn = visionTurn;
           }
           if (mayRenderLiveFrame && state.lastRenderedTurn < state.afterTurn) maybeRenderLocalFrame();
-        } else if (mayRenderLiveFrame) {
+        } else if (!state.replayCursors.has("primary") && mayRenderLiveFrame) {
           maybeRenderLocalFrame();
         }
 
@@ -882,6 +1161,26 @@
     }
   });
 
+  liveGrid?.addEventListener("pointerdown", () => {
+    const previous = state.activeReplay;
+    state.activeReplay = "primary";
+    if (previous && previous !== "primary") refreshReplayControls(previous);
+    renderMainReplayControls();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (!mainReplayControls && state.activeReplay === "primary") return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const target = event.target;
+    if (target?.matches?.("input, textarea, select") || target?.isContentEditable) return;
+    const now = Date.now();
+    if (event.repeat && now - state.keyboardStepAt < replayDelay(state.activeReplay || "primary")) return;
+    state.keyboardStepAt = now;
+    event.preventDefault();
+    handleReplayAction(state.activeReplay || "primary", event.key === "ArrowLeft" ? "previous" : "next");
+  });
+
   // In vision mode the ASCII board is irrelevant (the agent only sees images),
   // so show just the image, centered.
   if (!isPrime && isVision) {
@@ -898,5 +1197,6 @@
 
   describeRun(initial);
   renderStats(initial);
+  renderMainReplayControls();
   poll();
 })();

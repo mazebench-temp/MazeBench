@@ -100,17 +100,18 @@ try {
   }));
   fs.writeFileSync(
     path.join(swarmWorkerDir, "actions.jsonl"),
-    `${JSON.stringify({
-      turn: 7,
+    Array.from({ length: 7 }, (_, index) => JSON.stringify({
+      turn: index + 1,
+      command_text: index < 5 ? "inherited" : index === 5 ? "right" : "up",
       status: {
         current_room: "level_GxH",
         current_view: "top-diagonal",
-        gem_count: 2,
-        level: "AAAP",
-        player: { elevation: 0, x: 3, y: 0 },
+        gem_count: index === 6 ? 2 : 0,
+        level: `BOARD-${index + 1}`,
+        player: { elevation: 0, x: index + 1, y: 0 },
         yaw: 1
       }
-    })}\n`
+    })).join("\n") + "\n"
   );
   fs.writeFileSync(path.join(swarmWorkerDir, "frames", "frame-007.png"), "png");
   const swarmProgress = service.getRunProgress(hostReadOnlySwarm.id);
@@ -128,8 +129,24 @@ try {
   assert.equal(swarmProgress.run.explorer_instances, 1);
   assert.equal(swarmProgress.run.auxiliary_actions, 2);
   assert.equal(swarmProgress.run.simulated_actions, swarmProgress.run.turns + 2);
-  assert.deepEqual(swarmProgress.swarm_views[0].player, { elevation: 0, x: 3, y: 0 });
+  assert.deepEqual(swarmProgress.swarm_views[0].player, { elevation: 0, x: 7, y: 0 });
   assert.match(swarmProgress.swarm_views[0].frame_url, /swarm\/scout_one\/frames\/frame-007\.png$/);
+  const forkObservation = service.getRunObservation(hostReadOnlySwarm.id, {
+    instanceId: "scout_one",
+    turn: 0
+  });
+  const latestObservation = service.getRunObservation(hostReadOnlySwarm.id, {
+    instanceId: "scout_one",
+    turn: 2
+  });
+  assert.equal(forkObservation.turn, 0);
+  assert.equal(forkObservation.absolute_turn, 5);
+  assert.equal(forkObservation.total, 2);
+  assert.equal(forkObservation.board, "BOARD-5");
+  assert.equal(latestObservation.turn, 2);
+  assert.equal(latestObservation.absolute_turn, 7);
+  assert.equal(latestObservation.command_text, "up");
+  assert.match(latestObservation.frame_url, /swarm\/scout_one\/frames\/frame-007\.png$/);
   assert.equal(
     service.resolveRunFilePath(hostReadOnlySwarm.id, "swarm/scout_one/frames/frame-007.png"),
     path.join(swarmWorkerDir, "frames", "frame-007.png")

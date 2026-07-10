@@ -61,6 +61,9 @@ try {
   assert.equal(nestedSession.actions.length, 2);
   assert.equal(nestedTelemetry.actions_applied, 1);
   assert.equal(nestedTelemetry.own_action_count, 1);
+  assert(fs.existsSync(path.join(runDir, "initial-status.json")));
+  assert(fs.existsSync(path.join(runDir, "swarm", "scout", "initial-status.json")));
+  assert(fs.existsSync(path.join(runDir, "swarm", "scout-branch", "initial-status.json")));
   assert(fs.existsSync(path.join(runDir, "swarm", "scout", "frames", "frame-000.png")));
   assert(fs.existsSync(path.join(runDir, "swarm", "scout-branch", "frames", "frame-000.png")));
   assert.equal(responses.find((response) => response.id === 6)?.result?.isError, true, "the MCP boundary enforces the lead budget");

@@ -267,6 +267,19 @@ function createRequestRouter({
         return;
       }
 
+      if (segments[4] === "observation" && request.method === "GET") {
+        const observation = await agentRuns.getRunObservation(runId, {
+          instanceId: url.searchParams.get("instance") || "primary",
+          turn: Math.max(0, Number(url.searchParams.get("turn")) || 0)
+        });
+        if (!observation) {
+          sendHtml(response, 404, renderNotFound());
+          return;
+        }
+        sendJson(response, 200, observation);
+        return;
+      }
+
       sendHtml(response, 404, renderNotFound());
       return;
     }
