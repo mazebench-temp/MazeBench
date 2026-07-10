@@ -1,0 +1,12 @@
+name = "MazeBench · Qwen3.5-0.8B"
+model = "Qwen/Qwen3.5-0.8B"
+max_steps = 100
+batch_size = 512
+rollouts_per_example = 16
+
+[sampling]
+max_tokens = 1024
+temperature = 1
+
+[[env]]
+id = "mazebench/mazebench"

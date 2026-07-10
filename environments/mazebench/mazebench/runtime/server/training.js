@@ -207,6 +207,9 @@ function createTrainingService({ buildWorlds, getGame, rootDir, worldMaps }) {
 
     const defaults = worldDefaults();
     const observationMode = payload.observation_mode === "vision" ? "vision" : "ascii";
+    if (observationMode !== "ascii") {
+      throw new Error("Hosted Training currently supports MazeBench Text observations only.");
+    }
     return {
       model,
       name: String(payload.name || "MazeBench").trim().slice(0, 80) || "MazeBench",
@@ -237,6 +240,18 @@ function createTrainingService({ buildWorlds, getGame, rootDir, worldMaps }) {
       "",
       "[[env]]",
       `id = ${tomlString(environmentId)}`,
+      "",
+      "[env.args]",
+      "num_train_examples = 1",
+      "num_eval_examples = 1",
+      `start_level_id = ${tomlString(config.startLevelId)}`,
+      `game_won_gem_count = ${config.gameWonGemCount}`,
+      `gem_reward_weight = ${config.rewards.gems}`,
+      `room_reward_weight = ${config.rewards.rooms}`,
+      `push_reward_weight = ${config.rewards.pushes}`,
+      `max_actions = ${config.maxActions}`,
+      "allow_quit = false",
+      `observation_mode = ${tomlString(config.observationMode)}`,
       ""
     ].join("\n");
   }
@@ -251,18 +266,7 @@ function createTrainingService({ buildWorlds, getGame, rootDir, worldMaps }) {
     const configPath = path.join(generatedConfigDir, `mazebench-${stamp}.toml`);
     fs.writeFileSync(configPath, trainingConfigToml(config), "utf8");
 
-    const env = [
-      `MAZEBENCH_GEM_REWARD_WEIGHT=${config.rewards.gems}`,
-      `MAZEBENCH_ROOM_REWARD_WEIGHT=${config.rewards.rooms}`,
-      `MAZEBENCH_PUSH_REWARD_WEIGHT=${config.rewards.pushes}`,
-      `MAZEBENCH_OBSERVATION_MODE=${config.observationMode}`,
-      `MAZEBENCH_MAX_ACTIONS=${config.maxActions}`,
-      `MAZEBENCH_START_LEVEL_ID=${config.startLevelId}`,
-      `MAZEBENCH_GAME_WON_GEM_COUNT=${config.gameWonGemCount}`,
-      "MAZEBENCH_ALLOW_QUIT=false"
-    ];
-    const args = ["train", "run", configPath, "--yes", "--output", "json"];
-    env.forEach((value) => args.push("--env-var", value));
+    const args = ["train", configPath, "--yes", "--output", "json"];
     const result = parseJsonOutput(runPrime(args, { timeout: 120_000 }).stdout) || {};
     return {
       run: result.run || result,

@@ -1090,6 +1090,13 @@ class MazeBenchConfig(vf.TasksetConfig):
     user: vf.UserConfig = Field(default_factory=vf.UserConfig)
 
 
+class MazeBenchEnvConfig(vf.EnvConfig):
+    """Typed v1 environment config with usable local/Hub defaults."""
+
+    taskset: MazeBenchConfig = Field(default_factory=MazeBenchConfig)
+    max_turns: int | None = DEFAULT_MAX_TURNS
+
+
 class MazeBenchState(vf.State):
     game_lost: bool = False
     game_won: bool = False
@@ -1427,15 +1434,22 @@ def load_taskset(config: MazeBenchConfig) -> MazeBenchTaskset:
     return MazeBenchTaskset(config=config)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Environment:
+def load_environment(
+    config: MazeBenchEnvConfig | vf.EnvConfig | dict[str, Any] | None = None,
+) -> vf.Environment:
     """Load the JS-backed ASCII maze benchmark as a Verifiers v1 environment."""
+    if config is None:
+        config = MazeBenchEnvConfig()
+    elif not isinstance(config, MazeBenchEnvConfig):
+        raw_config = config if isinstance(config, dict) else config.model_dump()
+        config = MazeBenchEnvConfig.model_validate(raw_config)
     if not config.taskset.id:
         taskset_config = MazeBenchConfig.model_validate(config.taskset.model_dump())
         config = config.model_copy(update={"taskset": taskset_config})
     return vf.Environment(config=config)
 
 
-__all__ = ["MazeBenchTaskset"]
+__all__ = ["MazeBenchConfig", "MazeBenchEnvConfig", "MazeBenchTaskset"]
 
 
 if __name__ == "__main__":

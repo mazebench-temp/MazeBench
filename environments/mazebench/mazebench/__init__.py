@@ -1,3 +1,18 @@
-from .mazebench import MazeBenchTaskset, load_environment
+from .mazebench import (
+    MazeBenchConfig,
+    MazeBenchEnvConfig,
+    MazeBenchTaskset,
+    load_environment as load_v1_environment,
+    load_taskset,
+)
+from .legacy import LegacyMazeEnv, load_environment
 
-__all__ = ["MazeBenchTaskset", "load_environment"]
+__all__ = [
+    "LegacyMazeEnv",
+    "MazeBenchConfig",
+    "MazeBenchEnvConfig",
+    "MazeBenchTaskset",
+    "load_environment",
+    "load_taskset",
+    "load_v1_environment",
+]

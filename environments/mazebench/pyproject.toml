@@ -2,11 +2,12 @@
 name = "mazebench"
 description = "JS-backed ASCII maze benchmark for multi-turn language models."
 tags = ["maze", "game", "ascii", "reasoning", "train", "eval"]
-version = "0.1.0"
+version = "0.1.3"
 license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@main",
+    "nodejs-wheel==24.16.0",
+    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@18740ec9ea7418cbd55cd1e9fbf051080059be15",
 ]
 
 [build-system]

@@ -25,11 +25,63 @@ const toml = service.trainingConfigToml({
   batchSize: 32,
   rolloutsPerExample: 8,
   maxTokens: 1024,
-  temperature: 1
+  temperature: 1,
+  startLevelId: "level_HxI",
+  gameWonGemCount: 69,
+  rewards: { gems: 1, rooms: 0.1, pushes: 0.05 },
+  maxActions: 256,
+  observationMode: "ascii"
 });
 assert.match(toml, /model = "Qwen\/Qwen3\.5-0\.8B"/);
 assert.match(toml, /rollouts_per_example = 8/);
 assert.match(toml, /\[\[env\]\]\nid = "mazebench\/mazebench"/);
+assert.match(toml, /\[env\.args\]/);
+assert.match(toml, /game_won_gem_count = 69/);
+assert.match(toml, /push_reward_weight = 0\.05/);
+assert.match(toml, /max_actions = 256/);
+assert.match(toml, /allow_quit = false/);
+assert.match(toml, /observation_mode = "ascii"/);
+const parsedToml = JSON.parse(
+  execFileSync(
+    "python3",
+    ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))"],
+    { encoding: "utf8", input: toml }
+  )
+);
+assert.equal(parsedToml.env[0].id, "mazebench/mazebench");
+assert.deepEqual(parsedToml.env[0].args, {
+  num_train_examples: 1,
+  num_eval_examples: 1,
+  start_level_id: "level_HxI",
+  game_won_gem_count: 69,
+  gem_reward_weight: 1,
+  room_reward_weight: 0.1,
+  push_reward_weight: 0.05,
+  max_actions: 256,
+  allow_quit: false,
+  observation_mode: "ascii"
+});
+
+const legacyProbe = execFileSync(
+  "uv",
+  [
+    "run",
+    "--project",
+    path.join(ROOT_DIR, "environments", "mazebench"),
+    "python",
+    "-c",
+    [
+      "import verifiers",
+      "env=verifiers.load_environment('mazebench', max_actions=1, allow_quit=False)",
+      "assert env.env_id == 'mazebench'",
+      "assert env.__class__.__name__ == 'LegacyMazeEnv'",
+      "assert len(env.get_dataset(-1)) == 1",
+      "print('legacy hosted adapter ready')"
+    ].join("; ")
+  ],
+  { cwd: ROOT_DIR, encoding: "utf8" }
+);
+assert.match(legacyProbe, /legacy hosted adapter ready/);
 
 const input = [
   { command: "observe" },

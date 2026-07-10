@@ -1,183 +1,258 @@
-# MazeBench (`mazebench`)
+# MazeBench
 
-### Overview
-- **Environment ID**: `mazebench`
-- **Short description**: JS-backed ASCII maze navigation benchmark for multi-turn language models.
-- **Tags**: maze, game, ascii, reasoning, train, eval
+MazeBench is a long-horizon maze-navigation environment for reinforcement learning and evaluation with [Prime Intellect Verifiers](https://github.com/PrimeIntellect-ai/verifiers).
 
-### Datasets
-- **Primary dataset(s)**: local world-map levels from the MazeBench maze game.
-- **Default starter level**: `level_HxI`.
-- **Source links**: `games/maze/levels`, `games/maze/world_map.json`, `scripts/maze-terminal.js`, and `scripts/maze-bridge.js`.
-- **Task count**: configurable; defaults to 1 generated task.
+Models navigate a real JavaScript maze world one action at a time, preserve state across rooms, collect gems, discover new rooms, and push blocks. Every rollout produces deterministic rewards, metrics, and replay data from the same game engine used by the local MazeBench site.
 
-### Task
-- **Default type**: Verifiers v1 `Taskset` with a framework-driven `User` simulator backed by the real JS maze runtime.
-- **Default commands**: `up`, `down`, `left`, `right`, `rotate camera <direction>`, `undo`, `reset`, `go to level X Y`, `quit`.
-- **Goal**: collect `game_won_gem_count` unique gems across the run. Not every room has a gem, and some rooms have multiple gems.
-- **Terminal states**: `game_won` fires when the run has collected `game_won_gem_count` unique gems. `game_lost` fires when the model types `quit`. Both terminal states end the loop and return a final scorecard.
-- **Scorecard result**: includes `won` and `percent`. `percent` is `100 * collected_gems / game_won_gem_count`.
-- **Reward overview**: three independent v1 reward components score unique gems, newly visited rooms, and novel pushed-block positions. Their default per-event weights are `1.0`, `0.1`, and `0.05`. Counting a block only when it reaches a new position prevents reward farming by pushing it back and forth. If `target_gems > 0`, the gem reward is normalized to that target, but the semantic win condition remains `game_won_gem_count`.
+> **Environment:** `mazebench/mazebench`
+> **Native API:** Verifiers v1 `Taskset` + `Harness`
+> **Hosted compatibility:** Classic `MultiTurnEnv` adapter for Prime CLI 0.6.x
+> **Default observation:** ASCII
+> **Visibility:** Private
 
-Each assistant response should be exactly one text command. The v1 user simulator then replies as the next `user` message with the current ASCII room layout, metadata, and the allowed commands. Framework-level v1 limits such as `max_turns`, token caps, and timeouts are configured on the eval environment, while MazeBench-specific task generation lives under the taskset config.
+## Support status
 
-### Quickstart
-Run an evaluation with default settings:
+| Capability | Hosted Training | Local evaluation |
+| --- | --- | --- |
+| ASCII observations | Supported | Supported |
+| Gem, room, and block rewards | Supported | Supported |
+| Configurable start room, view, yaw, and action limit | Supported | Supported |
+| Replay state and per-action metadata | Supported | Supported |
+| Perspective image observations | Not yet self-contained | Experimental |
+| Local Codex CLI harness | Not supported | Experimental |
+| Claude Code, Docker/full-access, tools, and swarm modes | Not part of this environment | Available through the separate local Agent runner |
+
+The package brings its own Node runtime for the JavaScript maze engine. Perspective vision additionally needs `playwright-core` and a compatible Chromium binary, which Prime's current Hosted Training image does not provide. Until that renderer is self-contained and tested, use ASCII mode for Hosted Training.
+
+## The task
+
+The model receives the current observation and must answer with exactly one command. MazeBench applies that command to a persistent game session and returns the next observation.
+
+The default objective is to collect **100 unique gems** across the world. A rollout wins only when `game_won_gem_count` is reached; collecting one gem does not mark the world complete.
+
+### Commands
+
+| Command | Effect |
+| --- | --- |
+| `up`, `down`, `left`, `right` | Move one screen-relative step. |
+| `rotate camera up`, `rotate camera down`, `rotate camera left`, `rotate camera right` | Change the camera pitch or yaw. |
+| `undo` | Undo the most recent movement. Collected-gem progress remains monotonic. |
+| `reset` | Reset the current room to its entry state. Global score remains monotonic. |
+| `go to level X Y` | Return to a previously visited room. |
+| `quit` | End the rollout as a loss when quitting is enabled. |
+
+Movement remains screen-relative after camera rotation. `go to level` is restricted to rooms already present in `visited_levels`.
+
+## Rewards
+
+MazeBench exposes three independent deterministic reward signals:
+
+| Reward | Default weight | Definition |
+| --- | ---: | --- |
+| `gem_score` | `1.0` | Unique gems collected. When `target_gems > 0`, this component is normalized to that target. |
+| `room_exploration_score` | `0.1` | Newly visited rooms after the starting room. |
+| `block_progress_score` | `0.05` | Novel block positions reached by pushing. Repeating the same positions does not farm reward. |
+
+These are final rollout scores calculated from authoritative game state. Reward weights shape learning without changing the semantic win condition.
+
+Additional metrics include:
+
+- `collected_gems`
+- `visited_level_count`
+- `current_level_solved`
+- `block_pushes`
+- `novel_block_positions`
+
+## Install
+
+Install the latest private Hub version while authenticated as an authorized Prime account:
 
 ```bash
-prime eval run mazebench
+prime env install mazebench/mazebench
 ```
 
-Configure model and sampling:
+Install a specific version for reproducibility:
 
 ```bash
-prime eval run mazebench \
-  -m openai/gpt-4.1-mini \
-  -n 1 -r 3 \
-  --sampling.max-tokens 512 \
-  --sampling.temperature 0.2
+prime env install mazebench/mazebench@0.1.3
 ```
 
-Save replay data and the JS scorecard:
+## Evaluate locally
 
-```bash
-prime eval run mazebench \
-  -m openai/gpt-5-nano \
-  -n 1 -r 1 \
-  --max-turns 8 \
-  -d
-```
-
-For Prime-routed GPT-5 models, avoid small `--sampling.max-tokens` caps. Hidden
-reasoning tokens count against the cap and can produce an empty assistant message
-before a command is emitted.
-
-The saved v1 `results.jsonl` trace includes `info.maze_actions` as the normalized
-action list, `info.maze_scorecard` as the final JS scorecard, and
-`info.maze_replay` as a compact replay payload with initial state, actions, and scorecard.
-
-Run with perspective image observations instead of ASCII boards:
+MazeBench uses the Verifiers v1 evaluator:
 
 ```bash
 uv run eval mazebench \
   -m openai/gpt-4.1-mini \
-  -n 1 -r 1 \
-  --taskset.observation-mode vision \
-  --taskset.vision-width 512 \
-  --taskset.vision-height 512 \
-  --max-turns 8 \
+  -n 1 \
+  -r 1 \
+  --max-turns 40 \
+  --taskset.max-actions 40 \
   --rich false
 ```
 
-Vision mode uses the same JS game state, action parser, terminal conditions, and
-reward functions as ASCII mode. The user simulator sends a short text status with
-allowed commands plus a perspective PNG image of the current room; it does not
-include the ASCII board. Local vision runs require the repo's Node dependencies
-and a Chromium-compatible browser for Playwright.
-
-Run MazeBench through the local Codex CLI and Verifiers v1:
+Use the Hub identifier directly when the environment is not already installed under its local name:
 
 ```bash
-uv run eval mazebench_codex \
+uv run eval mazebench/mazebench \
+  -m openai/gpt-4.1-mini \
+  -n 1 \
+  -r 1 \
+  --max-turns 40 \
+  --rich false
+```
+
+The saved `results.jsonl` trace contains:
+
+- `info.maze_actions` — normalized action records and per-action game status
+- `info.maze_scorecard` — the final authoritative scorecard
+- `info.maze_replay` — initial state, accepted actions, and final scorecard
+- `rewards` — all three reward components
+- `metrics` — gems, rooms, room state, and block progress
+
+## Hosted Training
+
+Choose an available model with:
+
+```bash
+prime train models
+```
+
+Minimal Hosted Training configuration:
+
+```toml
+name = "MazeBench"
+model = "Qwen/Qwen3.5-0.8B"
+max_steps = 100
+batch_size = 512
+rollouts_per_example = 16
+
+[sampling]
+max_tokens = 1024
+temperature = 1.0
+
+[[env]]
+id = "mazebench/mazebench"
+
+[env.args]
+num_train_examples = 1
+num_eval_examples = 1
+observation_mode = "ascii"
+start_level_id = "level_HxI"
+max_actions = 256
+game_won_gem_count = 100
+gem_reward_weight = 1.0
+room_reward_weight = 0.1
+push_reward_weight = 0.05
+allow_quit = false
+```
+
+Launch it from a CPU machine; Prime hosts the training infrastructure:
+
+```bash
+prime train configs/rl/mazebench.toml
+```
+
+For long-horizon maze rollouts, keep `batch_size` divisible by `rollouts_per_example`. Start conservatively and inspect early reward distributions before increasing the run size.
+
+### Monitor a training run
+
+```bash
+# Overall lifecycle status
+prime train get <run-id>
+
+# Orchestrator and environment-server health
+prime train components <run-id>
+
+# Latest completed training step
+prime train progress <run-id>
+
+# Reward and optimization metrics
+prime train metrics <run-id>
+
+# Live orchestrator logs
+prime train logs <run-id> -f
+
+# Environment-server logs
+prime train logs <run-id> --env mazebench/0 -f
+
+# Tokens and estimated cost
+prime train usage <run-id>
+```
+
+A run is truly producing training work when `progress.latest_step` is non-null, metrics contain records, and token usage begins increasing. A `RUNNING` lifecycle status with zero tokens can still mean the infrastructure is starting or the environment is loading.
+
+## Configuration reference
+
+Prime CLI 0.6.x passes these settings under `[env.args]` to MazeBench's hosted compatibility adapter. The package also exports the same settings through its native v1 `MazeBenchConfig` for local v1 evaluation and future hosted taskset support.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `num_examples` | integer | `1` | Number of generated tasks. |
+| `start_level_id` | string | `level_HxI` | Starting room used when `level_ids` is unset. |
+| `level_ids` | string or list | `None` | Optional starting-room set. Accepts `HxI` or `level_HxI`. |
+| `view` | string | `top-diagonal` | Initial ASCII camera view. |
+| `yaw` | integer | `0` | Initial camera yaw. |
+| `game_won_gem_count` | integer | `100` | Unique gems required for a semantic win. |
+| `gem_reward_weight` | number | `1.0` | Gem reward multiplier. |
+| `room_reward_weight` | number | `0.1` | New-room reward multiplier. |
+| `push_reward_weight` | number | `0.05` | Novel-block-position reward multiplier. |
+| `max_actions` | integer | `256` | Maximum accepted MazeBench actions. |
+| `allow_quit` | boolean | `true` | Whether `quit` may end the rollout. |
+| `target_gems` | integer | `0` | Optional gem-score normalization target. `0` uses raw gem count. |
+| `observation_mode` | `ascii` or `vision` | `ascii` | Observation surface. Hosted Training should currently use `ascii`. |
+| `repo_root` | string or null | `None` | Optional MazeBench runtime override. |
+| `node_bin` | string | `node` | Node executable used by the JS bridge. |
+| `timeout_seconds` | integer | `20` | Timeout for JS observation and scoring calls. |
+| `vision_width` | integer | `512` | Experimental local vision-frame width. |
+| `vision_height` | integer | `512` | Experimental local vision-frame height. |
+| `vision_view` | string | `1` | Experimental vision radius: `1`–`26` rings or `world`. |
+| `system_prompt` | string | packaged prompt | Optional instruction override. |
+
+Framework controls such as `max_turns`, token limits, sampling, batch size, and rollout count belong outside the taskset configuration.
+
+## Experimental local vision
+
+Vision mode uses the same persistent game state, commands, stop conditions, rewards, and metrics as ASCII mode. Instead of an ASCII board, the model receives a short status message and a perspective PNG frame.
+
+It currently requires a full MazeBench checkout with Node dependencies plus a compatible Chrome or Chromium binary:
+
+```bash
+npm install
+
+uv run --project environments/mazebench eval mazebench \
+  -m openai/gpt-4.1-mini \
+  -n 1 \
+  -r 1 \
+  --max-turns 8 \
+  --taskset.observation-mode vision \
+  --taskset.vision-width 512 \
+  --taskset.vision-height 512 \
+  --rich false
+```
+
+Do not select vision for Hosted Training until the environment publishes a self-contained renderer runtime and the Hub action includes a real frame-render smoke test.
+
+## Local agent tooling
+
+The repository also contains a `mazebench_codex` plugin and a much broader local Agent runner supporting Codex, Claude Code, Docker access, tools, orchestration, live views, pause/resume, and replay controls. Those capabilities are separate from the `mazebench/mazebench` Hosted Training environment.
+
+The local Codex v1 harness can be exercised from a full checkout with:
+
+```bash
+uv run --project environments/mazebench eval mazebench_codex \
   -m openai/gpt-5-codex \
-  -n 1 -r 1 \
+  -n 1 \
+  -r 1 \
   --taskset.max-actions 100 \
   --max-turns 40 \
   --rich false
 ```
 
-The `mazebench_codex` plugin bundles a local host harness for `codex exec`
-instead of using Prime's stock Linux Codex harness. It still routes all Codex
-model calls through the v1 interception server, then finalizes from
-`outputs/maze-codex-v1/<trace-id>/session.json` and `scorecard.json`.
-By default, the harness removes the `openai/` provider prefix for the local
-Codex CLI invocation, while the v1 relay keeps the full Prime model id upstream.
+## Runtime and reproducibility
 
-Export standalone replay artifacts from a saved eval directory:
+The wheel bundles the JavaScript maze bridge, game engine, world map, levels, renderer source, images, and 3D assets. ASCII evaluation does not require a user-managed background server.
 
-```bash
-npm run maze:replay -- environments/mazebench/outputs/evals/<model>/<run-id>
-```
+The Verifiers dependency is pinned to the revision used for validation. Prime Hosted Training 0.6.x currently resolves Hub environments through the classic `load_environment` contract, so MazeBench publishes a `MultiTurnEnv` adapter alongside its native v1 taskset. Both paths share the same JavaScript game engine, commands, reward definitions, metrics, and win condition.
 
-This writes `maze_scorecard.json`, `maze_actions.txt` (one action per line),
-and `maze_replay.mp4` (perspective Three.js H.264 from the native square maze canvas)
-beside `results.jsonl`.
-The default video is 60 FPS; movement actions run at 5x replay speed and
-camera actions run at 2x replay speed.
-Use `--no-video` to write only the JSON/TXT sidecars. The exporter supports both
-v1 `info.maze_actions` traces and older top-level `maze_actions` rows; if neither
-is present, it falls back to recovering actions from saved assistant turns and
-replaying them through the JS bridge to rebuild the scorecard.
-Use `--move-speed`, `--camera-speed`, or `--speed` to tune replay timing.
-Use `--tail-seconds 0` to remove the short final hold after the last action.
-
-Preview the exact default multi-turn prompt/action surface locally:
-
-```bash
-npm run maze:model -- --level level_HxI --view top-diagonal --target-gems 1
-```
-
-Notes:
-- Local runs prefer the live MazeBench repo when you run from its root. Built wheels also include the required JS runtime files so clean installs can load without a background server.
-- Set `MAZEBENCH_REPO_ROOT=/path/to/MazeBench` when you want an installed package to use a specific checkout instead of its bundled runtime.
-- The JS bridge tracks visited rooms and globally unique collected gem IDs. `go to level X Y` is only allowed for rooms already present in `visited_levels`.
-
-### Command Contract
-| Command | Arguments | Description |
-| ---- | --------- | ----------- |
-| `up`, `down`, `left`, `right` | none | Move one screen-relative step. |
-| `rotate camera up`, `rotate camera down`, `rotate camera left`, `rotate camera right` | none | Change camera pitch or yaw. |
-| `undo` | none | Undo the most recent movement action. Gem score remains monotonic. |
-| `reset` | none | Reset the current room to its entry state. Gem score remains monotonic. |
-| `go to level X Y` | world column and row letters | Spawn at a previously visited room, preserving camera and run score. |
-| `quit` | none | End the rollout as `game_lost` and return the final scorecard. |
-
-Accepted text forms include `up`, `rotate camera left`, `undo`, `reset`, `go to level H I`, and `quit`.
-
-### Environment Arguments
-| Arg | Type | Default | Description |
-| --- | ---- | ------- | ----------- |
-| `num_examples` | int | `1` | Number of v1 tasks to build. |
-| `start_level_id` | str | `level_HxI` | Starter level used when `level_ids` is not provided. |
-| `level_ids` | str/list | `None` | Optional comma/space-separated level IDs. Accepts `HxI` or `level_HxI`. |
-| `view` | str | `top-diagonal` | Initial ASCII camera view. |
-| `yaw` | int | `0` | Initial camera yaw. Movement actions are screen-relative. |
-| `game_won_gem_count` | int | package default | Unique gems required for `game_won`. This value is also passed into the JS bridge/scorecard. |
-| `gem_reward_weight` | float | `1.0` | Reward added per unique gem collected. |
-| `room_reward_weight` | float | `0.1` | Reward added per newly visited room after the starting room. |
-| `push_reward_weight` | float | `0.05` | Reward added per novel pushed-block position. |
-| `max_actions` | int | `256` | Maze-action cap enforced by the taskset stop condition. |
-| `observation_mode` | `ascii`/`vision` | `ascii` | Observation surface. `vision` sends a perspective PNG image plus text metadata instead of an ASCII board. |
-| `target_gems` | int | `0` | Optional gem-reward/prompt target for smoke runs. `0` uses the `game_won_gem_count` objective. The semantic `game_won` condition remains `game_won_gem_count`. |
-| `repo_root` | str/null | `None` | MazeBench repo root. Falls back to `MAZEBENCH_REPO_ROOT` or current working directory. |
-| `node_bin` | str | `node` | Node executable used to run the JS benchmark bridge. |
-| `timeout_seconds` | int | `20` | Subprocess timeout for JS observation/scoring calls. |
-| `vision_width` | int | `512` | Width in pixels for vision-mode PNG observations. |
-| `vision_height` | int | `512` | Height in pixels for vision-mode PNG observations. |
-| `system_prompt` | str | built in | Optional instruction override. |
-
-For `mazebench_codex`, `max_actions` controls the maze action budget shown to
-Codex. The framework `max_turns` caps Codex's internal model/tool-call turns, so
-keep it comfortably above the desired action count.
-
-Framework controls such as `max_turns`, token caps, sampling, rollout count, and
-timeouts are v1 eval/harness settings, not MazeBench taskset arguments.
-
-### Metrics
-| Metric | Meaning |
-| ------ | ------- |
-| `gem_score` | Reward: raw unique gems collected, or normalized if `target_gems > 0`. |
-| `room_exploration_score` | Reward: newly visited rooms after the start room, multiplied by `room_reward_weight`. |
-| `block_progress_score` | Reward: novel pushed-block positions, multiplied by `push_reward_weight`. |
-| `collected_gems` | Number of unique gem IDs collected across the run. |
-| `current_level_solved` | Whether the current room's JS solved condition is true. |
-| `visited_level_count` | Number of rooms visited during the rollout. |
-| `block_pushes` | Total successful block displacements, including revisits. |
-| `novel_block_positions` | Unique block positions reached through pushing; this is the anti-farming training signal. |
-
-The local Train page supplies these typed taskset defaults to isolated Hosted
-Training workers through `MAZEBENCH_GEM_REWARD_WEIGHT`,
-`MAZEBENCH_ROOM_REWARD_WEIGHT`, `MAZEBENCH_PUSH_REWARD_WEIGHT`, and
-`MAZEBENCH_MAX_ACTIONS`. This compatibility layer works with the current Hosted
-Training CLI while the upstream CLI migrates its public TOML schema to nested
-v1 taskset/harness blocks.
+Pin a specific MazeBench Hub version in important experiments, record the complete training config, and launch a new run when changing environment versions; publishing an update does not mutate an already-running training job.

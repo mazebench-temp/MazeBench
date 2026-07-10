@@ -778,7 +778,7 @@ function createPageRenderer({
             <div class="animated-segmented train-segmented" id="train-observation-picker" role="radiogroup" aria-label="Observation mode">
               <span class="segmented__glider" aria-hidden="true"></span>
               <button type="button" class="segmented__option" data-observation="ascii" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
-              <button type="button" class="segmented__option" data-observation="vision" aria-pressed="false"><span class="segmented__icon">IMG</span><span>Vision</span></button>
+              <button type="button" class="segmented__option" data-observation="vision" aria-pressed="false" disabled title="Hosted Vision is coming soon"><span class="segmented__icon">IMG</span><span>Vision soon</span></button>
             </div>
           </section>
 
@@ -835,7 +835,7 @@ function createPageRenderer({
           <div id="training-runs" class="training-runs"></div>
         </section>
         <script>window.__TRAIN_DATA__ = ${serializeForScript(trainData)};</script>
-        <script src="/train.js?v=20260710-train-v1-1" defer></script>`
+        <script src="/train.js?v=20260710-train-v1-2" defer></script>`
     });
   }
 
