@@ -174,11 +174,18 @@ Beyond that, spawn, steer, stop, or wait for workers at your
 discretion. Gather their reports before finishing.`
     : "";
   const budgetInstruction = config.unlimited
-    ? `This run has NO OVERALL MOVE LIMIT. This execution segment allows up to
-${config.moves} ${config.resume || config.seed ? "MORE " : ""}primary maze actions. If the game is not terminal, the same
-provider thread and maze automatically continue in another segment. Do not
-treat this segment boundary as the end of the run.`
+    ? `This run has NO MOVE LIMIT. Keep taking primary maze actions until the
+maze is won or the user stops the run. Do not call maze_scorecard merely because
+an action count or provider turn count has been reached.`
     : `Then play up to ${config.moves} ${config.resume || config.seed ? "MORE " : ""}primary maze actions unless the game reaches a terminal state earlier.`;
+  const quitPolicy = config.allowQuit
+    ? ""
+    : config.unlimited
+      ? `QUIT IS DISABLED BY THE USER. The quit action is unavailable and rejected without consuming an action. Continue until the maze is won or the user stops the run.`
+      : `QUIT IS DISABLED BY THE USER. The quit action is unavailable and rejected without consuming an action. Do not end your provider response while playable budget remains; continue until the budget is exhausted, the maze is won, or the user stops the run.`;
+  const validActions = config.allowQuit
+    ? "up, down, left, right, rotate camera left/right/up/down, undo, reset, quit, and go to level H I"
+    : "up, down, left, right, rotate camera left/right/up/down, undo, reset, and go to level H I";
 
   return `You are playing MazeBench, a 3D grid maze. Control maze state only
 through the MazeBench MCP tools: maze_start, maze_observe, maze_action, and
@@ -188,14 +195,14 @@ independent, fully tracked branches. Never edit session JSON directly.
 ${observation}
 ${capability}
 ${swarm}
+${quitPolicy}
 
 ${firstStep}
 
 ${budgetInstruction} Do not
 stop after the first observation while budget remains. Before every primary
 maze_action, write one short sentence explaining the choice. Valid action
-strings include up, down, left, right, rotate camera left/right/up/down, undo,
-reset, quit, and go to level H I.
+strings include ${validActions}.
 
 After every action, inspect the returned ${config.mode === "vision" ? "frame and status" : "board and status"} before choosing the next move. Collect as many
 unique gems as possible. If the player dies, recover with undo, reset, or a room
@@ -228,6 +235,15 @@ You are sandboxed: you may ONLY run the maze helper commands shown below${
 Reading other files, writing files, running other programs, and network access
 are blocked. Do not attempt them — just play the maze.
 `;
+  const quitPolicy = config.allowQuit
+    ? ""
+    : config.unlimited
+      ? `
+QUIT IS DISABLED BY THE USER. A quit attempt is rejected without consuming an action. Continue until the maze is won or the user stops the run.
+`
+      : `
+QUIT IS DISABLED BY THE USER. A quit attempt is rejected without consuming an action. Do not end your provider response while playable budget remains; continue until the budget is exhausted, the maze is won, or the user stops the run.
+`;
 
   return `You are playing MazeBench, a 3D grid maze, through a local CLI helper.
 Drive the game ONLY through the helper commands below. Do NOT read or modify
@@ -235,6 +251,7 @@ source files and do NOT try to parse the board yourself.
 
 ${observation}
 ${toolsNote}
+${quitPolicy}
 Repo root:    ${ROOT_DIR}
 Helper:       ${HELPER}
 Session file: ${config.sessionFile}
@@ -248,7 +265,7 @@ Your FIRST shell command must re-read the current observation:
 
   node "${HELPER}" observe --state "${config.sessionFile}"
 
-Then play up to ${config.moves} MORE maze action(s) from where you left off,`
+Then ${config.unlimited ? "keep taking maze actions from where you left off" : `play up to ${config.moves} MORE maze action(s) from where you left off`},`
     : config.seed
     ? `This maze is ALREADY IN PROGRESS: earlier moves were made and the game state
 is saved in the session file. Do NOT run "start" — that would erase the progress.
@@ -258,16 +275,16 @@ stands right now:
 
   node "${HELPER}" observe --state "${config.sessionFile}"
 
-Then continue playing up to ${config.moves} MORE maze action(s) from that state,`
+Then ${config.unlimited ? "keep taking maze actions from that state" : `continue playing up to ${config.moves} MORE maze action(s) from that state`},`
     : `Your FIRST shell command must start the session (run it exactly once):
 
   node "${HELPER}" start --repo-root "${ROOT_DIR}" --state "${config.sessionFile}" --game "${config.gameId}" --level "${config.levelId}" --view "${config.view}" --yaw "${config.yaw}" --game-won-gem-count "${config.gems}"${visionFlags}
 
-Then play up to ${config.moves} maze action(s),`} unless the game reaches a
-terminal state earlier.${config.unlimited ? ` This run has NO OVERALL MOVE LIMIT;
-${config.moves} actions is only the current execution segment, and the same
-provider thread and maze continue automatically afterward.` : ""} Do not stop right after the first command: choose and run
-at least one action while the budget is positive. After each action, read the
+Then ${config.unlimited ? "keep taking maze actions" : `play up to ${config.moves} maze action(s)`},`} ${
+  config.unlimited
+    ? "This run has NO MOVE LIMIT. Continue until the maze is won or the user stops the run."
+    : "unless the game reaches a terminal state earlier."
+} Do not stop right after the first command: choose and run at least one action. After each action, read the
 observation (${config.mode === "vision" ? "the frame_image PNG plus the JSON status" : "the JSON board"}) and choose the next command.
 
 Before you run each action command, write one short sentence (as normal text,
@@ -306,7 +323,8 @@ function mcpEnvironment(config, workerOnly = false) {
     MAZEBENCH_VIEW: config.view,
     MAZEBENCH_YAW: String(config.yaw),
     MAZEBENCH_GEMS: String(config.gems),
-    MAZEBENCH_MOVE_BUDGET: String(config.moves),
+    MAZEBENCH_MOVE_BUDGET: config.unlimited ? "unlimited" : String(config.moves),
+    MAZEBENCH_ALLOW_QUIT: config.allowQuit ? "1" : "0",
     MAZEBENCH_SWARM: config.swarm ? "1" : "0",
     MAZEBENCH_ALLOW_LEAD_CLONES: config.toolUse === "offline" ? "1" : "0",
     MAZEBENCH_MODE: config.mode,
@@ -655,7 +673,7 @@ function isolatedDockerAgentCommand(config, command) {
 }
 
 function agentCommand(config, prompt) {
-  const maxTurns = String(config.swarm ? config.moves + 30 : config.moves + 10);
+  const maxTurns = config.unlimited ? "" : String(config.swarm ? config.moves + 30 : config.moves + 10);
 
   if (config.model === "codex") {
     const sandboxMode = config.toolUse === "offline" ? "workspace-write" : "read-only";
@@ -769,7 +787,7 @@ function agentCommand(config, prompt) {
       }
       argv.push("--permission-mode", "dontAsk", "--allowedTools", allow.join(","));
     }
-    argv.push("--max-turns", maxTurns);
+    if (maxTurns) argv.push("--max-turns", maxTurns);
     if (config.modelName) {
       argv.push("--model", config.modelName);
     }
@@ -949,6 +967,7 @@ function distillCodexEvents(raw) {
     const item = event.item || event.msg?.item;
     if (!item) continue;
     const kind = item.type || item.item_type;
+    const timestamp = event._mazebench_received_at || event.timestamp || item.timestamp || null;
 
     if (kind === "reasoning" || kind === "agent_message") {
       const text = String(item.text || "").trim();
@@ -967,7 +986,7 @@ function distillCodexEvents(raw) {
         const executed = results.length ? actions.slice(0, results.length) : actions;
         executed.forEach((action, index) => {
           move += 1;
-          entries.push({ move, action, reasoning, ...(results[index] || {}) });
+          entries.push({ move, action, reasoning, timestamp, ...(results[index] || {}) });
         });
         commentary = [];
       }
@@ -981,7 +1000,7 @@ function distillCodexEvents(raw) {
         const results = resultsFromOutput(toolResultText(item.result || item.output || item.content));
         actions.forEach((action, index) => {
           move += 1;
-          entries.push({ move, action, reasoning, ...(results[index] || {}) });
+          entries.push({ move, action, reasoning, timestamp, ...(results[index] || {}) });
         });
         commentary = [];
       }
@@ -1048,7 +1067,11 @@ function distillClaudeEvents(raw) {
         if (actions.length) {
           hasActions = true;
           if (reasoning) transcript.push(`[reasoning] ${reasoning}`);
-          if (block.id) pending.set(block.id, { actions, reasoning });
+          if (block.id) pending.set(block.id, {
+            actions,
+            reasoning,
+            timestamp: event._mazebench_received_at || event.timestamp || null
+          });
         }
       }
       if (hasActions) commentary = "";
@@ -1064,9 +1087,10 @@ function distillClaudeEvents(raw) {
           }
           const results = resultsFromOutput(output);
           const executed = results.length ? batch.actions.slice(0, results.length) : batch.actions;
+          const timestamp = event._mazebench_received_at || event.timestamp || batch.timestamp || null;
           executed.forEach((action, index) => {
             move += 1;
-            entries.push({ move, action, reasoning: batch.reasoning, ...(results[index] || {}) });
+            entries.push({ move, action, reasoning: batch.reasoning, timestamp, ...(results[index] || {}) });
           });
           if (output) transcript.push(output.split("\n").slice(0, 3).join("\n"));
           pending.delete(block.tool_use_id);
@@ -1115,6 +1139,40 @@ function writeReasoningArtifacts(config, raw, distilled, options = {}) {
   }
 }
 
+function providerFailureFromEvents(raw, provider) {
+  const events = String(raw || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch (_error) {
+        return [];
+      }
+    });
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (provider === "claude" && event.type === "result") {
+      if (!event.is_error && !event.api_error_status) return null;
+      return {
+        provider,
+        status: Number(event.api_error_status) || null,
+        message: String(event.result || event.error || "Claude Code request failed.").trim().slice(0, 500)
+      };
+    }
+    if (provider === "codex" && ["error", "turn.failed"].includes(event.type)) {
+      return {
+        provider,
+        status: Number(event.status || event.status_code) || null,
+        message: String(event.message || event.error?.message || event.error || "Codex request failed.").trim().slice(0, 500)
+      };
+    }
+    if (provider === "codex" && ["turn.completed", "thread.started"].includes(event.type)) return null;
+  }
+  return null;
+}
+
 function runAgent(config, prompt) {
   const { bin, argv } = isolatedDockerAgentCommand(config, agentCommand(config, prompt));
   ensureAgentAvailable(bin);
@@ -1141,6 +1199,7 @@ function runAgent(config, prompt) {
   if (!config.resume) {
     fs.writeFileSync(eventsPath, "");
   }
+  fs.rmSync(path.join(config.outDir, "provider-failure.json"), { force: true });
 
   return new Promise((resolve) => {
     const env = { ...process.env };
@@ -1182,7 +1241,7 @@ function runAgent(config, prompt) {
     });
     child.on("error", (error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      resolve();
+      resolve({ code: null, failure: { provider: config.model, status: null, message: error.message } });
     });
     child.on("close", (code) => {
       try {
@@ -1204,7 +1263,7 @@ function runAgent(config, prompt) {
       if (code !== 0) {
         console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
       }
-      resolve();
+      resolve({ code, failure: providerFailureFromEvents(raw, config.model) });
     });
   });
 }
@@ -1216,7 +1275,9 @@ function ensureScorecard(config) {
   // Idempotent: writes scorecard.json even if the agent already did.
   const result = spawnSync(process.execPath, [HELPER, "scorecard", "--state", config.sessionFile], {
     cwd: ROOT_DIR,
-    encoding: "utf8"
+    encoding: "utf8",
+    timeout: 30000,
+    killSignal: "SIGKILL"
   });
   if (result.status !== 0) {
     console.warn(`Could not finalize scorecard: ${(result.stderr || "").trim()}`);
@@ -1314,6 +1375,7 @@ function runInContainer(config, raw) {
   // container. The Agent backend uses it for real docker pause/unpause/stop
   // operations instead of merely freezing the attached docker client.
   fs.mkdirSync(config.outDir, { recursive: true });
+  fs.rmSync(path.join(config.outDir, "cold-pause-capability.json"), { force: true });
   try {
     fs.unlinkSync(cidFile);
   } catch (error) {
@@ -1324,7 +1386,7 @@ function runInContainer(config, raw) {
   // path options (out/session) are intentionally dropped; the inner run writes
   // under the mounted /app/outputs/maze-local.
   const forwardKeys = [
-    "model", "moves", "unlimited", "mode", "tools", "tool_use", "swarm", "game", "level", "view", "yaw", "gems",
+    "model", "moves", "unlimited", "allow_quit", "mode", "tools", "tool_use", "swarm", "game", "level", "view", "yaw", "gems",
     "video", "no_video", "fast", "draft", "width", "height", "fps",
     "vision_width", "vision_height", "vision_view", "model_name", "llm",
     "reasoning", "effort", "codex_fast", "resume", "seed",
@@ -1728,6 +1790,7 @@ async function main() {
       ? "offline"
       : "read-only";
   const swarm = isTruthy(raw.swarm, false);
+  const unlimited = isTruthy(raw.unlimited, false);
   const hostAccess = !wantsContainer && !inContainer;
   const agentHomeStat = inContainer ? fs.statSync("/home/pwuser") : null;
   const workspaceDir = path.join(outDir, "workspace");
@@ -1760,8 +1823,9 @@ async function main() {
     modelName: raw.model_name || raw.llm || "",
     reasoning: String(raw.reasoning || raw.effort || "").toLowerCase(),
     codexFast: isTruthy(raw.codex_fast, false),
-    moves: positiveInt(raw.moves, 20),
-    unlimited: isTruthy(raw.unlimited, false),
+    moves: unlimited ? null : positiveInt(raw.moves, 20),
+    unlimited,
+    allowQuit: isTruthy(raw.allow_quit, true),
     outDir,
     workspaceDir,
     swarmDir,
@@ -1796,6 +1860,7 @@ async function main() {
   }
 
   fs.mkdirSync(outDir, { recursive: true });
+  fs.rmSync(path.join(outDir, "cold-pause-capability.json"), { force: true });
   fs.mkdirSync(config.workspaceDir, { recursive: true });
   fs.mkdirSync(config.swarmDir, { recursive: true });
   fs.mkdirSync(config.swarmWorkspaceDir, { recursive: true });
@@ -1816,7 +1881,21 @@ async function main() {
   }
 
   try {
-    await runAgent(config, prompt);
+    const agentResult = await runAgent(config, prompt);
+    if (agentResult?.failure || agentResult?.code !== 0) {
+      const failure = agentResult.failure || {
+        provider: config.model,
+        status: null,
+        message: `${config.model} exited with status ${agentResult?.code ?? "unknown"}.`
+      };
+      fs.writeFileSync(
+        path.join(config.outDir, "provider-failure.json"),
+        `${JSON.stringify({ ...failure, detected_at: new Date().toISOString() }, null, 2)}\n`
+      );
+      console.warn(`Provider unavailable; preserving the maze and provider thread for retry: ${failure.message}`);
+      process.exitCode = 75;
+      return;
+    }
   } finally {
     privateMcp?.stop();
   }
@@ -1866,6 +1945,7 @@ module.exports = {
   distillClaudeEvents,
   distillCodexEvents,
   loadCodexModels,
+  providerFailureFromEvents,
   resultFromOutput,
   resultsFromOutput
 };

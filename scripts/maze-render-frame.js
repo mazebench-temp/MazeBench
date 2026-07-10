@@ -207,6 +207,42 @@ async function captureFrame(page) {
   });
 }
 
+async function thawRenderPage(session) {
+  await session.page.evaluate(() => {
+    if (window.__MAZEBENCH_NATIVE_RAF__) {
+      window.requestAnimationFrame = window.__MAZEBENCH_NATIVE_RAF__;
+      delete window.__MAZEBENCH_NATIVE_RAF__;
+    }
+  });
+}
+
+async function freezeRenderPage(session) {
+  await session.page.evaluate(() => {
+    const app = window.__PIXEL_GAME_APP__;
+    if (!window.__MAZEBENCH_NATIVE_RAF__) {
+      window.__MAZEBENCH_NATIVE_RAF__ = window.requestAnimationFrame.bind(window);
+    }
+    // Settled agent observations are still images. Cancel tracked presentation
+    // loops and reject any untracked loop's next RAF until the following maze
+    // action explicitly thaws the page. This prevents headless SwiftShader from
+    // consuming every CPU core while the model is reasoning.
+    [
+      "animationFrameId",
+      "cameraFrameId",
+      "floatingFloorFrameId",
+      "gateAnimationFrameId",
+      "levelTransitionFrameId",
+      "noiseFrameId",
+      "orangeWallAnimationFrameId",
+      "playerLiftAnimationFrameId"
+    ].forEach((key) => {
+      if (app?.[key] != null) window.cancelAnimationFrame(app[key]);
+      if (app) app[key] = null;
+    });
+    window.requestAnimationFrame = () => 0;
+  });
+}
+
 // The view window: 1..26 rings of neighbor rooms around the player (1 = the
 // classic 3x3 neighborhood) or "world" for the whole map, mirroring the
 // ?view= query parameter that public/play.js understands.
@@ -355,6 +391,22 @@ async function createRenderSession(payload) {
         app.noiseFrameId = null;
       }
 
+      if (draft) {
+        // Floating-floor hover is a presentation-only ticker. In a persistent
+        // agent renderer it otherwise redraws WebGL continuously between maze
+        // actions and can pin every SwiftShader core while the model thinks.
+        if (app.floatingFloorFrameId !== null) {
+          window.cancelAnimationFrame(app.floatingFloorFrameId);
+          app.floatingFloorFrameId = null;
+        }
+        app.syncFloatingFloorTicker = () => {
+          if (app.floatingFloorFrameId !== null) {
+            window.cancelAnimationFrame(app.floatingFloorFrameId);
+            app.floatingFloorFrameId = null;
+          }
+        };
+      }
+
       app.syncFuzzyToggle?.();
       app.syncEdgeToggle?.();
 
@@ -416,6 +468,8 @@ async function applySessionAction(session, commandText) {
     return false;
   }
 
+  await thawRenderPage(session);
+
   if (parsed.command === "move") {
     const key = {
       down: "ArrowDown",
@@ -476,6 +530,7 @@ async function applyRenderStateSnapshot(session, snapshot) {
     return false;
   }
 
+  await thawRenderPage(session);
   await session.page.evaluate(async (renderState) => {
     const app = window.__PIXEL_GAME_APP__;
     const response = await fetch(
@@ -533,8 +588,11 @@ async function applyRenderStateSnapshot(session, snapshot) {
 }
 
 async function captureSessionFrame(session) {
+  await thawRenderPage(session);
   await setCameraView(session);
-  return captureFrame(session.page);
+  const frame = await captureFrame(session.page);
+  await freezeRenderPage(session);
+  return frame;
 }
 
 async function closeRenderSession(session) {
@@ -551,8 +609,12 @@ async function renderFrame(payload) {
   const session = await createRenderSession(payload);
 
   try {
-    for (const commandText of session.options.actions) {
-      await applySessionAction(session, commandText);
+    if (payload.snapshot?.level_id && Array.isArray(payload.snapshot.actors)) {
+      await applyRenderStateSnapshot(session, payload.snapshot);
+    } else {
+      for (const commandText of session.options.actions) {
+        await applySessionAction(session, commandText);
+      }
     }
 
     return await captureSessionFrame(session);
@@ -590,8 +652,12 @@ function renderOptionsMatch(current, next) {
 async function initSession(payload) {
   const session = await createRenderSession(payload);
 
-  for (const commandText of session.options.actions) {
-    await applySessionAction(session, commandText);
+  if (payload.snapshot?.level_id && Array.isArray(payload.snapshot.actors)) {
+    await applyRenderStateSnapshot(session, payload.snapshot);
+  } else {
+    for (const commandText of session.options.actions) {
+      await applySessionAction(session, commandText);
+    }
   }
 
   return session;

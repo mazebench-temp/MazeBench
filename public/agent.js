@@ -38,6 +38,7 @@
     waiting: "Waiting",
     running: "Running",
     paused: "Paused",
+    pausing: "Pausing",
     stopping: "Stopping",
     stopped: "Stopped",
     finished: "Completed",
@@ -71,6 +72,7 @@
     toolUse: null,
     orchestration: null,
     unlimited: false,
+    allowQuit: null,
     catalogs: {},
     catalogRequests: {},
     openFolders: new Set(),
@@ -319,7 +321,7 @@
   }
 
   function runReady() {
-    return runOptionsReady() && moveBudget() > 0;
+    return runOptionsReady() && state.allowQuit !== null && moveBudget() > 0;
   }
 
   function syncComposerSteps(animate = true) {
@@ -1016,6 +1018,7 @@
       if (input) input.value = "0";
     });
     setUnlimited(false, false);
+    setAllowQuit(null, false);
     setMode(null, false);
     setIsolation(null, false);
     setToolUse(null, false);
@@ -1031,6 +1034,20 @@
       button.setAttribute("aria-pressed", String(state.unlimited));
     }
     if (input) input.disabled = state.unlimited;
+    if (syncSteps) syncComposerSteps();
+  }
+
+  function setAllowQuit(value, syncSteps = true) {
+    state.allowQuit = typeof value === "boolean" ? value : null;
+    document.querySelectorAll("[data-allow-quit]").forEach((option) => {
+      const selected = state.allowQuit !== null && option.dataset.allowQuit === String(state.allowQuit);
+      option.classList.toggle("is-selected", selected);
+      option.setAttribute("aria-pressed", String(selected));
+    });
+    document.querySelectorAll(".quit-policy-picker").forEach((picker) => {
+      picker.classList.toggle("has-selection", state.allowQuit !== null);
+      picker.classList.toggle("is-second", state.allowQuit === false);
+    });
     if (syncSteps) syncComposerSteps();
   }
 
@@ -1165,6 +1182,7 @@
             max_turns: moveBudget(),
             vision: state.mode === "vision",
             reasoning: state.reasoning,
+            allow_quit: state.allowQuit,
             video: false
           }
         : {
@@ -1174,6 +1192,7 @@
             level_id: effectiveLevelId(),
             moves: moveBudget(),
             unlimited: state.unlimited,
+            allow_quit: state.allowQuit,
             mode: state.mode,
             vision_view: "",
             model_name: resolvedModelName(),
@@ -1217,6 +1236,7 @@
     const eta = Number(run.progress?.eta_ms);
     if (run.status === "finished") return "Complete";
     if (run.status === "paused") return "Paused";
+    if (run.status === "pausing") return "Pausing…";
     if (run.status === "stopping") return "Stopping…";
     if (run.status === "stopped") return "Stopped";
     if (run.status === "failed") return "Failed";
@@ -1227,7 +1247,7 @@
   }
 
   function runStatusClass(status) {
-    if (status === "running" || status === "stopping") return "agent-chip--running";
+    if (status === "running" || status === "pausing" || status === "stopping") return "agent-chip--running";
     if (status === "waiting" || status === "paused") return "agent-chip--paused";
     if (status === "finished") return "agent-chip--done";
     return "agent-chip--failed";
@@ -1235,7 +1255,9 @@
 
   function runCard(run) {
     const statusLabel =
-      run.status === "paused"
+      run.status === "pausing"
+        ? "pausing after next action"
+        : run.status === "paused"
         ? run.pause_reason === "quota"
           ? "paused · out of funds"
           : "paused"
@@ -1266,8 +1288,8 @@
       run.pausable ? '<button class="button" type="button" data-action="pause">Pause</button>' : "",
       run.resumable ? '<button class="button--primary" type="button" data-action="resume">Resume</button>' : "",
       run.continuable ? '<button class="button" type="button" data-action="continue">Continue</button>' : "",
-      run.status === "running" || run.status === "stopping" || (run.status === "paused" && run.pause_reason === "manual")
-        ? `<button class="button--coral" type="button" data-action="stop">${run.provider === "prime" ? "Cancel" : "Stop"}</button>`
+      run.provider === "prime" && (run.status === "running" || run.status === "stopping")
+        ? '<button class="button--coral" type="button" data-action="stop">Cancel</button>'
         : "",
       `<button class="button--ghost run-trash" type="button" data-action="delete" title="Delete run" aria-label="Delete run">${TRASH_ICON}</button>`
     ]
@@ -1434,7 +1456,7 @@
       document.getElementById("runs-prev").disabled = (payload.page || 1) <= 1;
       document.getElementById("runs-next").disabled = (payload.page || 1) >= pages;
 
-      const active = payload.active || runs.some((run) => ["waiting", "running", "stopping"].includes(run.status));
+      const active = payload.active || runs.some((run) => ["waiting", "running", "pausing", "stopping"].includes(run.status));
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(refreshRuns, active ? 3000 : 15000);
     } catch (error) {
@@ -1501,6 +1523,9 @@
     });
     document.getElementById("run-unlimited")?.addEventListener("click", () => {
       setUnlimited(!state.unlimited);
+    });
+    document.querySelectorAll("[data-allow-quit]").forEach((option) => {
+      option.addEventListener("click", () => setAllowQuit(option.dataset.allowQuit === "true"));
     });
   }
 

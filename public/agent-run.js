@@ -31,14 +31,14 @@
   const finishedGrid = document.getElementById("run-finished-grid");
   const finishedCount = document.getElementById("run-finished-count");
 
-  if (isPrime) stopButton.textContent = "Cancel Run";
+  if (isPrime && stopButton) stopButton.textContent = "Cancel Run";
 
   const state = {
     afterTurn: 0,
     logOffset: 0,
     run: initial,
     timer: null,
-    moves: new Map(), // move# -> { action, room, gems, flags }
+    moves: new Map(), // move# -> { action, room, gems, flags, timestamp }
     reasoning: new Map(), // move# -> reasoning text
     agentCounts: new Map(), // move# -> agents active when the move was made
     tokenCounts: new Map(), // move# -> lead + worker tokens attributed to the move
@@ -470,6 +470,8 @@
         ? "Complete"
         : run.status === "paused"
           ? "Paused"
+          : run.status === "pausing"
+            ? "Pausing…"
           : run.status === "stopping"
             ? "Stopping…"
             : run.status === "stopped"
@@ -487,7 +489,13 @@
     if (run.unlimited) {
       document.getElementById("run-progress-count").textContent = `${current} moves · unlimited`;
       document.getElementById("run-progress-eta").textContent =
-        run.status === "paused" ? "Paused" : run.status === "stopped" ? "Stopped" : "No move limit";
+        run.status === "paused"
+          ? "Paused"
+          : run.status === "pausing"
+            ? "Pausing…"
+            : run.status === "stopped"
+              ? "Stopped"
+              : "No move limit";
       track.hidden = true;
       return;
     }
@@ -504,11 +512,7 @@
   }
 
   function renderControls(run) {
-    stopButton.hidden = !(
-      run.status === "running" ||
-      run.status === "stopping" ||
-      (run.status === "paused" && run.pause_reason === "manual")
-    );
+    if (stopButton) stopButton.hidden = !(isPrime && ["running", "stopping"].includes(run.status));
     pauseButton.hidden = !run.pausable;
     resumeButton.hidden = !run.resumable;
     continueButton.hidden = !run.continuable;
@@ -699,6 +703,7 @@
         action: action.command_text,
         room: levelLabel(action.current_room),
         gems: action.gem_count ?? 0,
+        timestamp: action.timestamp || null,
         flags
       };
       const previousMove = state.moves.get(action.turn);
@@ -707,6 +712,7 @@
         previousMove.action !== nextMove.action ||
         previousMove.room !== nextMove.room ||
         previousMove.gems !== nextMove.gems ||
+        previousMove.timestamp !== nextMove.timestamp ||
         previousMove.flags.join("|") !== nextMove.flags.join("|")
       ) {
         state.moves.set(action.turn, nextMove);
@@ -728,12 +734,20 @@
           state.reasoning.set(entry.move, entry.reasoning);
           state.feedVersion += 1;
         }
+        if (entry.timestamp) {
+          const move = state.moves.get(entry.move);
+          if (move && move.timestamp !== entry.timestamp) {
+            state.moves.set(entry.move, { ...move, timestamp: entry.timestamp });
+            state.feedVersion += 1;
+          }
+        }
         // Reasoning distill also carries the action + result; fill gaps from it.
         if (!state.moves.has(entry.move)) {
           state.moves.set(entry.move, {
             action: entry.action,
             room: levelLabel(entry.room),
             gems: entry.gems ?? 0,
+            timestamp: entry.timestamp || null,
             flags: [entry.moved === false ? "blocked" : null, entry.player_dead ? "died" : null].filter(Boolean)
           });
           state.feedVersion += 1;
@@ -774,6 +788,10 @@
         const reasoning = state.reasoning.get(num);
         const activeAgents = state.agentCounts.get(num) || (state.run.swarm ? 0 : 1);
         const moveTokens = state.tokenCounts.get(num);
+        const parsedTimestamp = move.timestamp ? new Date(move.timestamp) : null;
+        const timestamp = parsedTimestamp && Number.isFinite(parsedTimestamp.getTime())
+          ? parsedTimestamp.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" })
+          : "";
         const meta = [`${escapeText(move.room)}`, `${escapeText(move.gems)} gems`, ...move.flags.map(escapeText)]
           .filter(Boolean)
           .join(" · ");
@@ -796,6 +814,7 @@
             ${tokenBadge}
             ${agentBadge}
             <span class="agent-feed__meta">${meta}</span>
+            ${timestamp ? `<time class="agent-feed__time" datetime="${escapeText(move.timestamp)}">${escapeText(timestamp)}</time>` : ""}
           </div>
           ${reasoning ? `<p class="agent-feed__reasoning">${escapeText(reasoning)}</p>` : ""}
         </div>`;
@@ -1003,13 +1022,15 @@
       }
       state.logOffset = progress.log_offset;
 
-      const running = progress.run.status === "running" || progress.run.status === "stopping";
+      const running = ["running", "pausing", "stopping"].includes(progress.run.status);
       // Prime renders its replay inside the same process, so the run stays
       // "running" while the video builds; don't treat a terminal-without-video
       // Prime run as still-rendering (the video step is best-effort there).
       const waitingForVideo = !running && progress.run.video_status === "rendering";
       if (running) {
-        if (progress.run.status === "stopping") {
+        if (progress.run.status === "pausing") {
+          setStatus(`Pausing after move ${progress.run.pause_after_turn || "the next completed action"}…`);
+        } else if (progress.run.status === "stopping") {
           setStatus("Stopping…");
         } else if (isPrime) {
           const rp = progress.replay_progress;
@@ -1029,13 +1050,18 @@
         setStatus("Waiting for the active Claude Code run to finish.");
         state.timer = setTimeout(poll, 3000);
       } else if (progress.run.status === "paused") {
+        const retryMs = Date.parse(progress.run.retry_at || "") - Date.now();
         setStatus(
           progress.run.pause_reason === "quota"
             ? `Paused — out of funds/credits/usage${
                 progress.run.pause_message ? `: ${progress.run.pause_message}` : ""
               }. Resume once you have credits.`
+            : progress.run.pause_reason === "provider_backoff"
+              ? `Provider temporarily unavailable — retrying the same saved thread ${
+                  Number.isFinite(retryMs) && retryMs > 0 ? `in ${formatDuration(retryMs)}` : "now"
+                }${progress.run.pause_message ? `: ${progress.run.pause_message}` : ""}`
             : "Paused. Resume to pick up where it left off.",
-          progress.run.pause_reason === "quota"
+          ["quota", "provider_backoff"].includes(progress.run.pause_reason)
         );
         // Keep polling slowly so the page reflects a resume from elsewhere.
         state.timer = setTimeout(poll, 4000);
@@ -1086,7 +1112,7 @@
   pauseButton?.addEventListener("click", async () => {
     try {
       const payload = await runAction("pause");
-      setStatus("Paused. Resume to pick up where it left off.");
+      setStatus(`Pausing after move ${payload.run?.pause_after_turn || "the next completed action"}…`);
       renderControls(payload.run || {});
     } catch (error) {
       setStatus(error.message, true);

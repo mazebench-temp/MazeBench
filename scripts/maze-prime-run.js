@@ -23,7 +23,7 @@ const EXPORT_REPLAY = path.join(ROOT_DIR, "scripts", "maze-export-replay.js");
 const LIVE_EVAL = path.join(ROOT_DIR, "scripts", "maze-prime-live-eval.py");
 
 function parseArgs(argv) {
-  const opts = { envDir: "", outDir: "", model: "", maxTurns: 20, vision: false, reasoning: "", video: true };
+  const opts = { envDir: "", outDir: "", model: "", maxTurns: 20, vision: false, reasoning: "", allowQuit: true, video: true };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -35,6 +35,7 @@ function parseArgs(argv) {
     else if (arg === "--max-turns") opts.maxTurns = Math.max(1, Math.min(500, Number(next()) || 20));
     else if (arg === "--vision") opts.vision = true;
     else if (arg === "--reasoning") opts.reasoning = String(next() || "").trim();
+    else if (arg === "--no-quit") opts.allowQuit = false;
     else if (arg === "--no-video") opts.video = false;
   }
 
@@ -81,6 +82,10 @@ function runEval(opts) {
 
   if (opts.vision) {
     argv.push("--taskset.observation-mode", "vision");
+  }
+
+  if (!opts.allowQuit) {
+    argv.push("--taskset.allow-quit", "False");
   }
 
   // Ask the model for reasoning tokens. OpenAI reasoning models and Claude
@@ -229,11 +234,13 @@ function writeMoveArtifacts(resultsPath, outDir) {
 
     const commandText = String(action.command || action.raw_response || detail.action || "").trim();
 
-    actionLines.push(JSON.stringify({ turn: action.turn, command_text: commandText, status }));
+    const timestamp = action.timestamp || action.created_at || detail.timestamp || null;
+    actionLines.push(JSON.stringify({ turn: action.turn, timestamp, command_text: commandText, status }));
 
     if (detail.reasoning) {
       reasoning.push({
         move: action.turn,
+        timestamp,
         reasoning: detail.reasoning,
         action: commandText,
         room: status.current_room || "",

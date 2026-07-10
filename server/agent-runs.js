@@ -56,9 +56,13 @@ function enrichedPathEnv() {
 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
 const MAX_LOCAL_MOVE_BUDGET = 100_000;
-const UNLIMITED_SEGMENT_MOVE_BUDGET = 500;
 const RUNNER_STARTUP_GRACE_MS = 15_000;
 const RUNNER_ACTIVITY_GRACE_MS = 120_000;
+const PROVIDER_RETRY_SCAN_MS = 10_000;
+const PROVIDER_RETRY_MAX_MS = 15 * 60_000;
+const PAUSE_REQUEST_FILE = "pause-request.json";
+const PAUSE_BOUNDARY_FILE = "pause-boundary.json";
+const PAUSE_CAPABILITY_FILE = "cold-pause-capability.json";
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{4,80}$/i;
 const SERVABLE_RUN_FILES = new Set([
   "run.json",
@@ -191,6 +195,16 @@ function createAgentRunService({
 
   function runMetaPath(runId) {
     return path.join(runDirFor(runId), "run.json");
+  }
+
+  function clearColdPauseMarkers(runId) {
+    const runDir = runDirFor(runId);
+    fs.rmSync(path.join(runDir, PAUSE_REQUEST_FILE), { force: true });
+    fs.rmSync(path.join(runDir, PAUSE_BOUNDARY_FILE), { force: true });
+  }
+
+  function clearColdPauseCapability(runId) {
+    fs.rmSync(path.join(runDirFor(runId), PAUSE_CAPABILITY_FILE), { force: true });
   }
 
   function runContainerId(runId) {
@@ -409,7 +423,7 @@ function createAgentRunService({
     if (tracked) {
       let elapsed = Number.isFinite(stored) ? Math.max(0, stored) : 0;
       const startedAt = Date.parse(meta.active_started_at || "");
-      if (Number.isFinite(startedAt) && ["running", "stopping"].includes(meta.status)) {
+      if (Number.isFinite(startedAt) && ["running", "pausing", "stopping"].includes(meta.status)) {
         elapsed += Math.max(0, now - startedAt);
       }
       return Math.round(elapsed);
@@ -419,7 +433,7 @@ function createAgentRunService({
     // so their progress UI still has a reasonable historical duration.
     const createdAt = Date.parse(meta?.created_at || "");
     const endedAt = Date.parse(
-      meta?.finished_at || meta?.paused_at || (["running", "stopping"].includes(meta?.status) ? new Date(now).toISOString() : "")
+      meta?.finished_at || meta?.paused_at || (["running", "pausing", "stopping"].includes(meta?.status) ? new Date(now).toISOString() : "")
     );
     return Number.isFinite(createdAt) && Number.isFinite(endedAt) ? Math.max(0, endedAt - createdAt) : 0;
   }
@@ -432,6 +446,21 @@ function createAgentRunService({
       status,
       finished_at: finishedAt,
       active_elapsed_ms: activeElapsedMs(meta, Date.parse(finishedAt)),
+      active_started_at: null
+    };
+  }
+
+  function coldPausedRunMeta(meta, extras = {}) {
+    const pausedAt = extras.paused_at || new Date().toISOString();
+    return {
+      ...meta,
+      ...extras,
+      status: "paused",
+      pid: null,
+      pause_reason: "manual",
+      pause_mode: "cold",
+      paused_at: pausedAt,
+      active_elapsed_ms: activeElapsedMs(meta, Date.parse(pausedAt)),
       active_started_at: null
     };
   }
@@ -472,16 +501,20 @@ function createAgentRunService({
 
   function autoContinueBudgetTarget(runId, meta) {
     const unlimited = Boolean(meta?.unlimited);
-    const target = Math.min(MAX_LOCAL_MOVE_BUDGET, Math.floor(Number(meta?.auto_continue_target) || 0));
+    const quitBlocked = meta?.allow_quit === false;
+    const configuredTarget = Number(meta?.auto_continue_target) || (quitBlocked ? Number(meta?.moves) : 0);
+    const target = Math.min(MAX_LOCAL_MOVE_BUDGET, Math.floor(configuredTarget || 0));
     if ((!unlimited && !target) || meta?.kind === "prime") return null;
 
     const turns = readActions(runId).length;
     const segmentStart = Math.max(0, Math.floor(Number(meta.segment_start_turns) || 0));
-    const segmentBudget = Math.max(1, Math.floor(Number(meta.segment_move_budget) || Number(meta.moves) || 1));
-    const exhaustedSegment = turns - segmentStart >= segmentBudget;
-    if (!unlimited && (!exhaustedSegment || turns >= target)) return null;
+    const segmentBudget = unlimited
+      ? null
+      : Math.max(1, Math.floor(Number(meta.segment_move_budget) || Number(meta.moves) || 1));
+    const exhaustedSegment = segmentBudget != null && turns - segmentStart >= segmentBudget;
+    if (!unlimited && ((!quitBlocked && !exhaustedSegment) || turns >= target)) return null;
 
-    if (unlimited) {
+    if (unlimited || quitBlocked) {
       const session = loadJson(path.join(runDirFor(runId), "session.json"), null);
       const status = session?.lastStatus || session?.actions?.at?.(-1)?.status || null;
       if (status?.game_won || status?.game_lost || status?.quit) return null;
@@ -500,7 +533,7 @@ function createAgentRunService({
       continueLocalInPlace(
         runId,
         { ...meta, moves: turns },
-        unlimited ? UNLIMITED_SEGMENT_MOVE_BUDGET : target - turns,
+        unlimited ? null : target - turns,
         conversationId
       );
       return readRunMeta(runId);
@@ -528,6 +561,20 @@ function createAgentRunService({
       };
       writeRunMeta(runId, revived);
       return revived;
+    }
+
+    if (
+      meta.status === "pausing" &&
+      !pidAlive(meta.pid) &&
+      !liveChildren.has(runId) &&
+      !(meta.container && dockerRunAlive(runId))
+    ) {
+      stopLegacyClaudeSnapshots(runId);
+      stopLiveRenderer(runId, { force: true });
+      stopDetachedRunRenderers(runId, { force: true });
+      const updated = coldPausedRunMeta(meta);
+      writeRunMeta(runId, updated);
+      return updated;
     }
 
     if (meta.status === "stopping" && !pidAlive(meta.pid) && !liveChildren.has(runId)) {
@@ -560,10 +607,17 @@ function createAgentRunService({
     }
 
     // The process is gone but no exit handler fired (server restarted).
+    const providerFailure = readProviderFailure(runId);
+    if (providerFailure) {
+      const updated = providerBackoffMeta(runId, meta, providerFailure, meta.exit_code ?? null);
+      writeRunMeta(runId, updated);
+      return updated;
+    }
+
     const succeeded =
       fs.existsSync(path.join(runDirFor(runId), "maze_scorecard.json")) ||
       fs.existsSync(path.join(runDirFor(runId), "scorecard.json"));
-    if (succeeded) {
+    if (succeeded || meta.allow_quit === false) {
       const continued = autoContinueBudgetTarget(runId, meta);
       if (continued) return continued;
     }
@@ -606,7 +660,10 @@ function createAgentRunService({
     return runMetaEntries().some((entry) => {
       if (entry.id === excludeRunId || entry.meta.model !== "claude") return false;
       const meta = entry.meta.status === "running" ? finalizeStatus(entry.id, entry.meta) : entry.meta;
-      return ["running", "paused", "stopping"].includes(meta.status);
+      return (
+        ["running", "pausing", "stopping"].includes(meta.status) ||
+        (meta.status === "paused" && meta.pause_mode !== "cold")
+      );
     });
   }
 
@@ -716,6 +773,7 @@ function createAgentRunService({
       .filter((record) => record && Number(record.turn) > afterTurn)
       .map((record) => ({
         turn: record.turn,
+        timestamp: record.timestamp || record.recorded_at || record.created_at || null,
         command_text: record.command_text,
         moved: record.status?.moved,
         gem_count: record.status?.gem_count,
@@ -827,6 +885,84 @@ function createAgentRunService({
       .reverse()
       .find((entry) => pattern.test(entry));
     return { reason: "quota", message: (line || "Out of funds/credits/usage.").trim().slice(0, 300) };
+  }
+
+  function readProviderFailure(runId) {
+    const failure = loadJson(path.join(runDirFor(runId), "provider-failure.json"), null);
+    if (!failure || !failure.message) return null;
+    return {
+      provider: String(failure.provider || "provider"),
+      status: Number(failure.status) || null,
+      message: String(failure.message).trim().slice(0, 500),
+      detected_at: String(failure.detected_at || "")
+    };
+  }
+
+  function providerRetryDelayMs(failure, attempt) {
+    const status = Number(failure?.status) || 0;
+    // Authentication/socket failures and explicit rate limits often need a
+    // usage-window reset. Gateway errors usually recover much sooner.
+    const base = [401, 403, 429].includes(status) ? 5 * 60_000 : 60_000;
+    return Math.min(PROVIDER_RETRY_MAX_MS, base * (2 ** Math.max(0, attempt - 1)));
+  }
+
+  function providerBackoffMeta(runId, meta, failure, exitCode = null) {
+    const turns = readActions(runId).length;
+    const madeProgress = turns > Math.max(0, Number(meta.provider_failure_turns) || 0);
+    const attempt = madeProgress ? 1 : Math.max(1, Number(meta.provider_retry_attempt) + 1 || 1);
+    const delayMs = providerRetryDelayMs(failure, attempt);
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    return {
+      ...meta,
+      status: "paused",
+      pause_reason: "provider_backoff",
+      pause_message: failure.message,
+      provider_failure_status: failure.status,
+      provider_failure_turns: turns,
+      provider_retry_attempt: attempt,
+      retry_at: new Date(nowMs + delayMs).toISOString(),
+      exit_code: exitCode,
+      paused_at: now,
+      active_elapsed_ms: activeElapsedMs(meta, nowMs),
+      active_started_at: null
+    };
+  }
+
+  function retryProviderBackoff(runId, meta) {
+    if (meta?.status !== "paused" || meta.pause_reason !== "provider_backoff") return null;
+    if (Date.parse(meta.retry_at || "") > Date.now()) return null;
+
+    const conversationId = readConversationId(runId);
+    if (!conversationId) {
+      writeRunMeta(runId, {
+        ...meta,
+        pause_message: `${meta.pause_message || "Provider unavailable."} Automatic retry is waiting for a saved provider thread.`,
+        retry_at: new Date(Date.now() + PROVIDER_RETRY_MAX_MS).toISOString()
+      });
+      return null;
+    }
+
+    const turns = readActions(runId).length;
+    const add = meta.unlimited ? null : Math.max(1, (Number(meta.moves) || turns + 1) - turns);
+    try {
+      return continueLocalInPlace(runId, meta, add, conversationId);
+    } catch (error) {
+      writeRunMeta(runId, {
+        ...meta,
+        pause_message: error instanceof Error ? error.message : String(error),
+        retry_at: new Date(Date.now() + PROVIDER_RETRY_MAX_MS).toISOString()
+      });
+      return null;
+    }
+  }
+
+  function retryDueProviderBackoffs() {
+    runMetaEntries().forEach(({ id, meta }) => {
+      if (meta.status === "paused" && meta.pause_reason === "provider_backoff") {
+        retryProviderBackoff(id, meta);
+      }
+    });
   }
 
   function resolveClaudeCatalogModelId(modelName) {
@@ -1051,7 +1187,7 @@ function createAgentRunService({
       providers,
       models,
       statuses,
-      active: all.some((run) => ["waiting", "running", "stopping"].includes(run.status))
+      active: all.some((run) => ["waiting", "running", "pausing", "stopping"].includes(run.status))
     };
   }
 
@@ -1098,9 +1234,17 @@ function createAgentRunService({
       const liveReasoning = distilled.entries || [];
       const liveWithText = liveReasoning.filter((entry) => entry.reasoning).length;
       const finalWithText = finalReasoning.filter((entry) => entry.reasoning).length;
-      return alignToMoves(liveReasoning.length > finalReasoning.length || liveWithText > finalWithText
+      const selected = liveReasoning.length > finalReasoning.length || liveWithText > finalWithText
         ? liveReasoning
-        : finalReasoning);
+        : finalReasoning;
+      // Older reasoning.json files predate action timestamps. Merge the live
+      // provider event timestamp by move so historical runs gain timestamps
+      // without rewriting their preserved artifacts.
+      const liveByMove = new Map(liveReasoning.map((entry) => [Number(entry.move), entry]));
+      return alignToMoves(selected.map((entry) => ({
+        ...entry,
+        timestamp: entry.timestamp || liveByMove.get(Number(entry.move))?.timestamp || null
+      })));
     } catch (error) {
       return alignToMoves(finalReasoning);
     }
@@ -2427,9 +2571,7 @@ function createAgentRunService({
     }
 
     const unlimited = params.unlimited === true || params.unlimited === "true";
-    const moves = unlimited
-      ? UNLIMITED_SEGMENT_MOVE_BUDGET
-      : Math.max(1, Math.min(MAX_LOCAL_MOVE_BUDGET, Number(params.moves) || 20));
+    const moves = unlimited ? null : Math.max(1, Math.min(MAX_LOCAL_MOVE_BUDGET, Number(params.moves) || 20));
     const gems =
       game.id === "maze"
         ? Math.max(1, Math.min(1000, Number(params.gems) || 100))
@@ -2444,6 +2586,7 @@ function createAgentRunService({
         ? "offline"
         : "read-only";
     const swarm = params.swarm === true || params.swarm === "true";
+    const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
 
     // Safety net for the UI toggle: container mode needs Docker installed AND
     // its daemon running.
@@ -2458,8 +2601,9 @@ function createAgentRunService({
       `model=${model}`,
       `game=${game.id}`,
       `level=${levelId}`,
-      `moves=${moves}`,
+      `moves=${unlimited ? "unlimited" : moves}`,
       `unlimited=${unlimited ? "true" : "false"}`,
+      `allow_quit=${allowQuit ? "true" : "false"}`,
       `gems=${gems}`,
       `view=${view}`,
       `mode=${String(params.mode) === "vision" ? "vision" : "text"}`,
@@ -2549,7 +2693,7 @@ function createAgentRunService({
       args.push(`resume=${String(params.resume_id)}`);
     }
 
-    return { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited };
+    return { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited, allowQuit };
   }
 
   // Prime runs go through scripts/maze-prime-run.js, which runs the v1 taskset
@@ -2562,6 +2706,7 @@ function createAgentRunService({
     const maxTurns = Math.max(1, Math.min(500, Number(params.max_turns) || 20));
     const vision = params.vision === true || params.vision === "true";
     const wantVideo = !(params.video === false || params.video === "false");
+    const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     // Reasoning effort → --sampling.reasoning-effort. OpenAI reasoning models and
     // Claude (extended thinking) honor it; others ignore it. "" = don't send one.
     const reasoning = ["low", "medium", "high"].includes(String(params.reasoning))
@@ -2583,6 +2728,10 @@ function createAgentRunService({
       argv.push("--reasoning", reasoning);
     }
 
+    if (!allowQuit) {
+      argv.push("--no-quit");
+    }
+
     if (!wantVideo) {
       argv.push("--no-video");
     }
@@ -2592,9 +2741,10 @@ function createAgentRunService({
       .concat(model ? ["--model", model] : [])
       .concat(vision ? ["--vision"] : [])
       .concat(reasoning ? ["--reasoning", reasoning] : [])
+      .concat(!allowQuit ? ["--no-quit"] : [])
       .join(" ");
 
-    return { bin: process.execPath, argv, display, model, maxTurns, vision, reasoning, video: wantVideo };
+    return { bin: process.execPath, argv, display, model, maxTurns, vision, reasoning, allowQuit, video: wantVideo };
   }
 
   function launchRun(params = {}) {
@@ -2638,6 +2788,7 @@ function createAgentRunService({
           mode: command.vision ? "vision" : "text",
           vision: command.vision,
           reasoning: command.reasoning,
+          allow_quit: command.allowQuit,
           video: command.video,
           launch_params: launchParamsOf(params),
           continue_of: params.continue_of || null,
@@ -2645,7 +2796,7 @@ function createAgentRunService({
         };
       } else {
         const game = normalizedGameForRun(params.game_id);
-        const { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited } = buildLocalRunArgs(runId, params, game);
+        const { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited, allowQuit } = buildLocalRunArgs(runId, params, game);
         const requestedModelName = String(params.model_name || "");
         const exactModelName = model === "claude"
           ? resolveClaudeCatalogModelId(requestedModelName)
@@ -2680,6 +2831,7 @@ function createAgentRunService({
           room_total: roomTotal,
           moves,
           unlimited,
+          allow_quit: allowQuit,
           segment_start_turns: readActions(runId).length,
           segment_move_budget: moves,
           gems,
@@ -2740,11 +2892,24 @@ function createAgentRunService({
       }
 
       let updated;
-      if (current.status === "stopping") {
+      if (current.status === "pausing") {
+        // The provider saw the saved action result and ended its turn itself.
+        // Its run-scoped transcript and maze files remain mounted in the run
+        // directory; only the disposable process/container is released.
+        stopLegacyClaudeSnapshots(runId);
+        stopLiveRenderer(runId, { force: true });
+        stopDetachedRunRenderers(runId, { force: true });
+        updated = coldPausedRunMeta(current, { exit_code: code });
+      } else if (current.status === "stopping") {
         // A user stop is terminal even when Docker/provider shutdown is clean
         // and therefore exits 0. Never relabel an explicitly stopped run as
         // naturally finished (or auto-continue it).
         updated = terminalRunMeta(current, "stopped", { exit_code: code });
+      } else if (readProviderFailure(runId)) {
+        // Claude Code can emit a structured API error while still exiting 0.
+        // Treat the event artifact as authoritative, release the provider slot,
+        // and retry this same saved thread after a resource-free backoff.
+        updated = providerBackoffMeta(runId, current, readProviderFailure(runId), code);
       } else if (code === 0) {
         const continued = autoContinueBudgetTarget(runId, current);
         if (continued) return;
@@ -2774,6 +2939,13 @@ function createAgentRunService({
       liveChildren.delete(runId);
       const current = readRunMeta(runId);
       if (!current || current.status === "paused") return;
+      if (current.status === "pausing") {
+        writeRunMeta(
+          runId,
+          coldPausedRunMeta(current, { pause_message: error instanceof Error ? error.message : String(error) })
+        );
+        return;
+      }
       writeRunMeta(
         runId,
         terminalRunMeta(current, "failed", { launch_error: error instanceof Error ? error.message : String(error) })
@@ -2808,39 +2980,53 @@ function createAgentRunService({
       throw new Error(`Unknown run "${runId}".`);
     }
 
-    if (meta.status !== "running") {
+    if (["paused", "pausing"].includes(meta.status)) {
       return summarizeRun(runId);
     }
+
+    if (meta.status !== "running") return summarizeRun(runId);
 
     if (meta.kind === "prime") {
       throw new Error("Prime Intellect runs cannot be paused. Cancel the run instead.");
     }
 
-    // The web viewer is owned by the site server, not the run's process tree.
-    // Stop it first so a paused run consumes no rendering CPU.
-    stopLiveRenderer(runId, { force: true });
-
-    if (meta.container) {
-      // The docker client belongs to the host process group, but the agent does
-      // not: it runs under the Docker daemon. Pause the container itself.
+    const coldPauseReady =
+      meta.container === false ||
+      fs.existsSync(path.join(runDirFor(runId), PAUSE_CAPABILITY_FILE));
+    if (!coldPauseReady) {
+      // A container launched from an older image cannot see the boundary marker.
+      // Preserve it with the legacy hot pause rather than pretending a cold
+      // pause is safe; its next relaunch will use the current cold-pause image.
+      stopLiveRenderer(runId, { force: true });
       dockerRunControl(runId, ["pause"], "pause");
       snapshotLegacyClaudeConversation(runId, meta, { force: true });
-    } else {
-      // Host agents and their CLI children share the detached runner's group.
-      signalRunProcess(meta, "SIGSTOP");
-      // Vision daemons deliberately detach so short-lived maze helpers can
-      // share a browser; terminate them while paused and lazily recreate later.
-      stopDetachedRunRenderers(runId, { force: true });
+      const pausedAt = new Date().toISOString();
+      writeRunMeta(runId, {
+        ...meta,
+        status: "paused",
+        pause_reason: "manual",
+        pause_mode: "hot-legacy",
+        paused_at: pausedAt,
+        active_elapsed_ms: activeElapsedMs(meta, Date.parse(pausedAt)),
+        active_started_at: null
+      });
+      return summarizeRun(runId);
     }
 
-    const pausedAt = new Date().toISOString();
+    const turns = readActions(runId).length;
+    const requestedAt = new Date().toISOString();
+    clearColdPauseMarkers(runId);
+    fs.writeFileSync(
+      path.join(runDirFor(runId), PAUSE_REQUEST_FILE),
+      `${JSON.stringify({ requested_at: requestedAt, requested_after_turn: turns }, null, 2)}\n`
+    );
     writeRunMeta(runId, {
       ...meta,
-      status: "paused",
+      status: "pausing",
       pause_reason: "manual",
-      paused_at: pausedAt,
-      active_elapsed_ms: activeElapsedMs(meta, Date.parse(pausedAt)),
-      active_started_at: null
+      pause_mode: "cold",
+      pause_requested_at: requestedAt,
+      pause_after_turn: turns + 1
     });
     return summarizeRun(runId);
   }
@@ -2856,9 +3042,14 @@ function createAgentRunService({
       return summarizeRun(runId);
     }
 
-    if (meta.pause_reason !== "quota" && meta.container) {
+    const needsRelaunch =
+      ["quota", "provider_backoff"].includes(meta.pause_reason) ||
+      meta.pause_mode === "cold" ||
+      (!pidAlive(meta.pid) && !(meta.container && dockerRunAlive(runId)));
+
+    if (!needsRelaunch && meta.container) {
       dockerRunControl(runId, ["unpause"], "resume");
-      const { pause_reason, pause_message, paused_at, ...rest } = meta;
+      const { pause_reason, pause_message, pause_mode, pause_requested_at, pause_after_turn, paused_at, ...rest } = meta;
       writeRunMeta(runId, {
         ...rest,
         status: "running",
@@ -2870,11 +3061,11 @@ function createAgentRunService({
     }
 
     // A manually-paused run still has a live (stopped) process — just continue it.
-    if (meta.pause_reason !== "quota" && pidAlive(meta.pid)) {
+    if (!needsRelaunch && pidAlive(meta.pid)) {
       signalRunProcess(meta, "SIGCONT");
 
       if (pidAlive(meta.pid)) {
-        const { pause_reason, pause_message, paused_at, ...rest } = meta;
+        const { pause_reason, pause_message, pause_mode, pause_requested_at, pause_after_turn, paused_at, ...rest } = meta;
         writeRunMeta(runId, {
           ...rest,
           status: "running",
@@ -2886,7 +3077,7 @@ function createAgentRunService({
       }
     }
 
-    // A quota pause (or a process that died while paused) has no process to
+    // A quota/provider backoff pause (or a process that died while paused) has no process to
     // resume, so relaunch a continuation from where it left off with whatever
     // move budget remains.
     const summary = summarizeRun(runId);
@@ -2904,6 +3095,7 @@ function createAgentRunService({
         model_name: model,
         vision: meta.mode === "vision",
         reasoning: meta.reasoning || "",
+        allow_quit: meta.allow_quit !== false,
         video: meta.video !== false
       };
     }
@@ -2917,6 +3109,7 @@ function createAgentRunService({
       mode: meta.mode,
       reasoning: meta.reasoning || "",
       unlimited: Boolean(meta.unlimited),
+      allow_quit: meta.allow_quit !== false,
       container: meta.container !== false,
       video: meta.video !== false,
       tools: Boolean(meta.tools),
@@ -2976,16 +3169,18 @@ function createAgentRunService({
   // its state (both live here). The run itself is extended in place.
   function continueLocalInPlace(runId, meta, add, conversationId) {
     const runDir = runDirFor(runId);
+    clearColdPauseMarkers(runId);
+    clearColdPauseCapability(runId);
     const segmentStartTurns = readActions(runId).length;
     const params = meta.launch_params || reconstructParams(meta);
     const game = normalizedGameForRun(params.game_id);
     const { args } = buildLocalRunArgs(runId, { ...params, moves: add, resume_id: conversationId }, game);
     const nextMeta = {
       ...meta,
-      moves: (Number(meta.moves) || 0) + add,
+      moves: meta.unlimited ? null : (Number(meta.moves) || 0) + Number(add || 0),
       continued: (meta.continued || 0) + 1,
       segment_start_turns: segmentStartTurns,
-      segment_move_budget: add,
+      segment_move_budget: meta.unlimited ? null : add,
       command: ["node", "scripts/maze-agent-local.js", ...args].join(" ")
     };
 
@@ -3017,7 +3212,11 @@ function createAgentRunService({
       finished_at: undefined,
       pause_reason: undefined,
       pause_message: undefined,
+      pause_mode: undefined,
+      pause_requested_at: undefined,
+      pause_after_turn: undefined,
       paused_at: undefined,
+      retry_at: undefined,
       active_started_at: new Date().toISOString(),
       active_elapsed_ms: activeElapsedMs(meta)
     });
@@ -3229,6 +3428,13 @@ function createAgentRunService({
       throw new Error(`Unknown run "${runId}".`);
     }
 
+    // Local providers have one resumable lifecycle control. "Stop" is kept as
+    // an API compatibility alias, but it now requests the same action-boundary
+    // cold pause. Prime rollouts remain cancellable because they cannot resume.
+    if (meta.kind !== "prime" && ["running", "pausing", "paused"].includes(meta.status)) {
+      return pauseRun(runId);
+    }
+
     const terminalButAlive = !["running", "stopping", "paused"].includes(meta.status) &&
       (pidAlive(meta.pid) || (meta.container && dockerRunAlive(runId)));
     if (
@@ -3315,7 +3521,12 @@ function createAgentRunService({
     return fs.existsSync(filePath) && fs.statSync(filePath).isFile() ? filePath : null;
   }
 
-  setImmediate(() => startNextWaitingClaudeRun());
+  setImmediate(() => {
+    startNextWaitingClaudeRun();
+    retryDueProviderBackoffs();
+  });
+  const providerRetryTimer = setInterval(retryDueProviderBackoffs, PROVIDER_RETRY_SCAN_MS);
+  providerRetryTimer.unref?.();
 
   return {
     continueRun,

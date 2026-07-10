@@ -49,6 +49,7 @@ try {
   const primary = JSON.parse(fs.readFileSync(path.join(runDir, "session.json"), "utf8"));
   const worker = JSON.parse(fs.readFileSync(path.join(runDir, "swarm", "scout", "session.json"), "utf8"));
   assert.equal(primary.actions.length, 1, "the lead gets exactly its configured action budget");
+  assert.equal(Number.isFinite(Date.parse(primary.actions[0].timestamp)), true, "maze actions retain their exact timestamp");
   assert.equal(worker.actions.length, 1, "worker clone should keep its own action history");
   const workerMetadata = JSON.parse(fs.readFileSync(path.join(runDir, "swarm", "scout", "worker.json"), "utf8"));
   assert.equal(workerMetadata.fork_action_count, 0);
@@ -83,6 +84,130 @@ try {
     .map((line) => JSON.parse(line));
   assert(instanceEvents.some((entry) => entry.type === "instance.created" && entry.instance_id === "scout-branch"));
   assert(instanceEvents.some((entry) => entry.type === "instance.action" && entry.instance_id === "scout-branch" && entry.applied));
+
+  const noQuitDir = path.join(runDir, "no-quit");
+  fs.mkdirSync(noQuitDir, { recursive: true });
+  const noQuitRequests = [
+    { jsonrpc: "2.0", id: 20, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 21, method: "tools/list", params: {} },
+    { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "maze_start", arguments: {} } },
+    { jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "maze_action", arguments: { action: "quit" } } },
+    { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "maze_observe", arguments: {} } }
+  ];
+  const noQuitResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
+    cwd: rootDir,
+    encoding: "utf8",
+    input: `${noQuitRequests.map((request) => JSON.stringify(request)).join("\n")}\n`,
+    env: {
+      ...process.env,
+      MAZEBENCH_REPO_ROOT: rootDir,
+      MAZEBENCH_RUN_DIR: noQuitDir,
+      MAZEBENCH_SESSION_FILE: path.join(noQuitDir, "session.json"),
+      MAZEBENCH_SWARM_DIR: path.join(noQuitDir, "swarm"),
+      MAZEBENCH_ALLOW_QUIT: "0",
+      MAZEBENCH_MOVE_BUDGET: "5"
+    }
+  });
+  assert.equal(noQuitResult.status, 0, noQuitResult.stderr);
+  const noQuitResponses = noQuitResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  const noQuitActionTool = noQuitResponses
+    .find((response) => response.id === 21)?.result?.tools
+    ?.find((tool) => tool.name === "maze_action");
+  assert.doesNotMatch(noQuitActionTool?.inputSchema?.properties?.action?.description || "", /quit/i);
+  assert.equal(noQuitResponses.find((response) => response.id === 23)?.result?.isError, true);
+  assert.doesNotMatch(
+    JSON.stringify(noQuitResponses.find((response) => response.id === 22)?.result?.structuredContent?.allowed_commands || []),
+    /quit/i
+  );
+  assert.doesNotMatch(
+    JSON.stringify(noQuitResponses.find((response) => response.id === 24)?.result?.structuredContent?.allowed_commands || []),
+    /quit/i
+  );
+  const noQuitSession = JSON.parse(fs.readFileSync(path.join(noQuitDir, "session.json"), "utf8"));
+  assert.equal(noQuitSession.allowQuit, false, "the policy must persist inside the maze session");
+  assert.equal(noQuitSession.actions.length, 0, "a blocked quit must not consume an action");
+  assert.equal(Boolean(noQuitSession.lastStatus?.quit), false, "a blocked quit must not mark the maze terminal");
+  const directQuit = spawnSync(
+    process.execPath,
+    [path.join(rootDir, "scripts", "codex-play.js"), "action", "--state", path.join(noQuitDir, "session.json"), "quit"],
+    { cwd: rootDir, encoding: "utf8" }
+  );
+  assert.notEqual(directQuit.status, 0, "the lower-level helper must not bypass the no-quit policy");
+  assert.match(directQuit.stderr, /Quit is disabled by the user/);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(noQuitDir, "session.json"), "utf8")).actions.length,
+    0,
+    "a direct blocked quit must also consume no action"
+  );
+
+  const unlimitedDir = path.join(runDir, "unlimited");
+  fs.mkdirSync(unlimitedDir, { recursive: true });
+  const unlimitedRequests = [
+    { jsonrpc: "2.0", id: 31, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "maze_start", arguments: {} } },
+    ...Array.from({ length: 3 }, (_, index) => ({
+      jsonrpc: "2.0",
+      id: 33 + index,
+      method: "tools/call",
+      params: { name: "maze_action", arguments: { action: index % 2 ? "left" : "right" } }
+    }))
+  ];
+  const unlimitedResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
+    cwd: rootDir,
+    encoding: "utf8",
+    input: `${unlimitedRequests.map((request) => JSON.stringify(request)).join("\n")}\n`,
+    env: {
+      ...process.env,
+      MAZEBENCH_REPO_ROOT: rootDir,
+      MAZEBENCH_RUN_DIR: unlimitedDir,
+      MAZEBENCH_SESSION_FILE: path.join(unlimitedDir, "session.json"),
+      MAZEBENCH_MOVE_BUDGET: "unlimited",
+      MAZEBENCH_ALLOW_QUIT: "0"
+    }
+  });
+  assert.equal(unlimitedResult.status, 0, unlimitedResult.stderr);
+  const unlimitedResponses = unlimitedResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert(unlimitedResponses.filter((response) => response.id >= 33).every((response) => !response.result?.isError));
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(unlimitedDir, "session.json"), "utf8")).actions.length,
+    3,
+    "unlimited mode must not enforce a hidden segment budget"
+  );
+
+  const coldPauseDir = path.join(runDir, "cold-pause");
+  fs.mkdirSync(coldPauseDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(coldPauseDir, "pause-request.json"),
+    JSON.stringify({ requested_at: "2026-07-10T00:00:00.000Z", requested_after_turn: 0 })
+  );
+  const coldPauseRequests = [
+    { jsonrpc: "2.0", id: 41, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "maze_start", arguments: {} } },
+    { jsonrpc: "2.0", id: 43, method: "tools/call", params: { name: "maze_action", arguments: { action: "right" } } },
+    { jsonrpc: "2.0", id: 44, method: "tools/call", params: { name: "maze_action", arguments: { action: "left" } } }
+  ];
+  const coldPauseResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
+    cwd: rootDir,
+    encoding: "utf8",
+    input: `${coldPauseRequests.map((request) => JSON.stringify(request)).join("\n")}\n`,
+    env: {
+      ...process.env,
+      MAZEBENCH_REPO_ROOT: rootDir,
+      MAZEBENCH_RUN_DIR: coldPauseDir,
+      MAZEBENCH_SESSION_FILE: path.join(coldPauseDir, "session.json"),
+      MAZEBENCH_MOVE_BUDGET: "unlimited",
+      MAZEBENCH_ALLOW_QUIT: "0"
+    }
+  });
+  assert.equal(coldPauseResult.status, 0, coldPauseResult.stderr);
+  const coldPauseResponses = coldPauseResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(coldPauseResponses.find((response) => response.id === 43)?.result?.structuredContent?.user_pause_requested, true);
+  assert.equal(coldPauseResponses.find((response) => response.id === 44)?.result?.isError, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(coldPauseDir, "session.json"), "utf8")).actions.length, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(coldPauseDir, "pause-boundary.json"), "utf8")).completed_turn, 1);
 
   const framePath = seededFramePath;
   const imageProbe = spawnSync(

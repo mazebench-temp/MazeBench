@@ -62,7 +62,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-replay-speed-65">
+    <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">
     ${extraHeadHtml}`
     })}
   </head>
@@ -266,7 +266,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-replay-speed-65">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">`;
   }
 
   function renderPlayPage(game, level) {
@@ -378,7 +378,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-replay-speed-65">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -869,9 +869,19 @@ function createPageRenderer({
               </article>
               <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <div class="budget-limit-control">
-                  <label class="field setting-card__field setting-card__field--budget"><span>Move limit</span><input id="run-moves" type="number" min="0" max="500" value="0" inputmode="numeric"></label>
-                  <button id="run-unlimited" class="budget-unlimited" type="button" aria-pressed="false"><span aria-hidden="true">∞</span> Unlimited</button>
+                <div class="budget-policy-layout">
+                  <div class="budget-limit-control">
+                    <label class="field setting-card__field setting-card__field--budget"><span>Move limit</span><input id="run-moves" type="number" min="0" max="500" value="0" inputmode="numeric"></label>
+                    <button id="run-unlimited" class="budget-unlimited" type="button" aria-pressed="false"><span aria-hidden="true">∞</span> Unlimited</button>
+                  </div>
+                  <div class="quit-policy-control">
+                    <span class="quit-policy-control__label">Allow quit</span>
+                    <div class="animated-segmented quit-policy-picker" role="radiogroup" aria-label="Allow the model to quit">
+                      <span class="segmented__glider" aria-hidden="true"></span>
+                      <button type="button" class="segmented__option" data-allow-quit="true" aria-pressed="false"><span>Yes</span></button>
+                      <button type="button" class="segmented__option" data-allow-quit="false" aria-pressed="false"><span>No</span></button>
+                    </div>
+                  </div>
                 </div>
               </article>
               </div>
@@ -887,7 +897,17 @@ function createPageRenderer({
               </article>
               <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <label class="field"><span>Max turns</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
+                <div class="budget-policy-layout budget-policy-layout--prime">
+                  <label class="field"><span>Max turns</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
+                  <div class="quit-policy-control">
+                    <span class="quit-policy-control__label">Allow quit</span>
+                    <div class="animated-segmented quit-policy-picker" role="radiogroup" aria-label="Allow the model to quit">
+                      <span class="segmented__glider" aria-hidden="true"></span>
+                      <button type="button" class="segmented__option" data-allow-quit="true" aria-pressed="false"><span>Yes</span></button>
+                      <button type="button" class="segmented__option" data-allow-quit="false" aria-pressed="false"><span>No</span></button>
+                    </div>
+                  </div>
+                </div>
               </article>
               </div>
             </div>
@@ -940,7 +960,7 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260710-trash-icon-59" defer></script>`
+        <script src="/agent.js?v=20260710-quit-policy-66" defer></script>`
     });
   }
 
@@ -1041,7 +1061,7 @@ function createPageRenderer({
             <button id="resume-run" class="button--primary" type="button" hidden>Resume</button>
             <button id="continue-run" class="button" type="button" hidden>Continue</button>
             <button id="generate-video" class="button" type="button" hidden>Generate video</button>
-            <button id="stop-run" class="button--coral" type="button" hidden>Stop Run</button>
+            ${isPrime ? '<button id="stop-run" class="button--coral" type="button" hidden>Cancel Run</button>' : ""}
             <button id="delete-run" class="button--ghost delete-button" type="button" title="Delete run">${TRASH_ICON}<span>Delete</span></button>
           </div>
           <h2 id="run-title" class="run-title"></h2>
@@ -1066,7 +1086,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
-        <script src="/agent-run.js?v=20260710-replay-speed-65" defer></script>`
+        <script src="/agent-run.js?v=20260710-quit-policy-66" defer></script>`
     });
   }
 

@@ -11,10 +11,20 @@ const {
   actionsFromShellCommand,
   actionsFromToolCall,
   distillClaudeEvents,
+  providerFailureFromEvents,
   resultsFromOutput
 } = require("../scripts/maze-agent-local");
 
 const lines = (...events) => events.map((event) => JSON.stringify(event)).join("\n");
+
+assert.deepEqual(
+  providerFailureFromEvents(lines({ type: "result", is_error: true, api_error_status: 502, result: "Bad Gateway" }), "claude"),
+  { provider: "claude", status: 502, message: "Bad Gateway" }
+);
+assert.equal(
+  providerFailureFromEvents(lines({ type: "result", is_error: false, result: "done" }), "claude"),
+  null
+);
 const codexCall = (verb) => ({
   type: "response_item",
   payload: { type: "custom_tool_call", input: `node scripts/codex-play.js ${verb} --state run/session.json up` }
@@ -116,12 +126,13 @@ const codexCall = (verb) => ({
     lines(
       { type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "Follow the corridor." } } },
       { type: "assistant", message: { content: [{ type: "tool_use", id: "batch-1", name: "Bash", input: { command } }] } },
-      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "batch-1", content: output }] } }
+      { type: "user", _mazebench_received_at: "2026-07-10T13:05:11.000Z", message: { content: [{ type: "tool_result", tool_use_id: "batch-1", content: output }] } }
     )
   );
   assert.deepEqual(distilled.entries.map((entry) => entry.action), ["up", "rotate camera left"]);
   assert.deepEqual(distilled.entries.map((entry) => entry.move), [1, 2]);
   assert(distilled.entries.every((entry) => entry.reasoning === "Follow the corridor."));
+  assert(distilled.entries.every((entry) => entry.timestamp === "2026-07-10T13:05:11.000Z"));
 
   const mcpDistilled = distillClaudeEvents(
     lines(

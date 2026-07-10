@@ -279,6 +279,18 @@ def allowed_commands_for_status(status: dict[str, Any]) -> tuple[str, ...]:
     return DEAD_ALLOWED_COMMANDS if status_player_dead(status) else ALIVE_ALLOWED_COMMANDS
 
 
+def apply_quit_policy(status: dict[str, Any], allow_quit: bool) -> dict[str, Any]:
+    if allow_quit:
+        return status
+    filtered = dict(status)
+    filtered["allowed_commands"] = [
+        command
+        for command in allowed_commands_for_status(status)
+        if str(command).strip().lower() != "quit"
+    ]
+    return filtered
+
+
 def allowed_commands_text(status: dict[str, Any]) -> str:
     return "\n".join(f"- {command}" for command in allowed_commands_for_status(status))
 
@@ -288,15 +300,20 @@ def death_text(status: dict[str, Any]) -> str:
 
 
 def terminal_note_text(status: dict[str, Any]) -> str:
-    return "" if status_player_dead(status) else "Typing quit ends the run as a loss."
+    if status_player_dead(status):
+        return ""
+    if "quit" not in allowed_commands_for_status(status):
+        return "Quit is disabled by the user. Continue until the budget is exhausted or the user stops the run."
+    return "Typing quit ends the run as a loss."
 
 
 def response_instruction(status: dict[str, Any]) -> str:
     if status_player_dead(status):
         return "Respond with exactly one command line: `undo`, `reset`, or `go to level H I`."
+    suffix = ", or `quit`" if "quit" in allowed_commands_for_status(status) else ""
     return (
         "Respond with exactly one command line, such as `up`, `down`, "
-        "`rotate camera left`, `go to level H I`, or `quit`."
+        f"`rotate camera left`, or `go to level H I`{suffix}."
     )
 
 
@@ -984,6 +1001,7 @@ def set_maze_scorecard(state: vf.State, scorecard: dict[str, Any] | None) -> Non
 
 class MazeBenchTask(vf.Task):
     example_id: int
+    allow_quit: bool = True
     game_id: str = DEFAULT_GAME_ID
     game_won_gem_count: int = GAME_WON_GEM_COUNT
     level_id: str = DEFAULT_START_LEVEL_ID
@@ -1008,6 +1026,7 @@ _EnvId = getattr(vf, "EnvId", None) or getattr(vf, "ID", str)
 class MazeBenchConfig(vf.TasksetConfig):
     id: _EnvId = "mazebench"
     num_examples: int = 1
+    allow_quit: bool = True
     level_ids: str | list[str] | None = None
     start_level_id: str = DEFAULT_START_LEVEL_ID
     view: str = DEFAULT_VIEW
@@ -1169,15 +1188,27 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
             return [{"role": "user", "content": "Maze session is not available."}]
 
         if not self.state.maze_status:
-            status = await run_blocking(session.request, "observe")
+            status = apply_quit_policy(
+                await run_blocking(session.request, "observe"),
+                task.allow_quit,
+            )
             self.initialize_state(status)
             return await self.build_user_message(status, "Start of run.")
 
         raw_response = str(message or "")
         result_text = ""
+        blocked_quit_attempt = False
         try:
             command, action_args = parse_text_action(raw_response)
-            status = await run_blocking(session.request, command, **action_args)
+            if command == "quit" and not task.allow_quit:
+                blocked_quit_attempt = True
+                raise ValueError(
+                    "Quit is disabled by the user. Continue until the budget is exhausted or the user stops the run."
+                )
+            status = apply_quit_policy(
+                await run_blocking(session.request, command, **action_args),
+                task.allow_quit,
+            )
             self.state.maze_status = status
             record_maze_action(
                 self.state,
@@ -1190,21 +1221,28 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         except Exception as error:
             self.state.maze_status_error = str(error)
             try:
-                status = await run_blocking(session.request, "observe")
+                status = apply_quit_policy(
+                    await run_blocking(session.request, "observe"),
+                    task.allow_quit,
+                )
                 self.state.maze_status = status
             except Exception:
                 status = self.state.maze_status or {}
-            record_maze_action(
-                self.state,
-                error=str(error),
-                raw_response=raw_response,
-                status=status,
-            )
+            if not blocked_quit_attempt:
+                record_maze_action(
+                    self.state,
+                    error=str(error),
+                    raw_response=raw_response,
+                    status=status,
+                )
             result_text = action_result_text(error=str(error))
 
         self.update_terminal_flags(status)
         if (self.state.game_lost or self.state.game_won) and not status.get("scorecard"):
-            status = await run_blocking(session.request, "scorecard")
+            status = apply_quit_policy(
+                await run_blocking(session.request, "scorecard"),
+                task.allow_quit,
+            )
             self.state.maze_status = status
         self.record_scorecard(status)
 
@@ -1247,6 +1285,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState
                 prompt=None,
                 system_prompt=self.config.system_prompt,
                 example_id=int(row["example_id"]),
+                allow_quit=bool(self.config.allow_quit),
                 game_id=str(row["game_id"]),
                 game_won_gem_count=int(row["game_won_gem_count"]),
                 level_id=str(row["level_id"]),

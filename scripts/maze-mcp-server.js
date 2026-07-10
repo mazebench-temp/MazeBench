@@ -32,7 +32,14 @@ const ACTIVITY_LOG = path.resolve(
 const INSTANCE_EVENTS_LOG = path.resolve(
   process.env.MAZEBENCH_INSTANCE_EVENTS_FILE || path.join(RUN_DIR, "maze-instance-events.jsonl")
 );
-const PRIMARY_MOVE_BUDGET = positiveInt(process.env.MAZEBENCH_MOVE_BUDGET, 20);
+const PAUSE_REQUEST_FILE = path.join(RUN_DIR, "pause-request.json");
+const PAUSE_BOUNDARY_FILE = path.join(RUN_DIR, "pause-boundary.json");
+const PAUSE_CAPABILITY_FILE = path.join(RUN_DIR, "cold-pause-capability.json");
+const RAW_PRIMARY_MOVE_BUDGET = String(process.env.MAZEBENCH_MOVE_BUDGET || "20").trim().toLowerCase();
+const PRIMARY_MOVE_BUDGET = ["unlimited", "infinite", "infinity", "none"].includes(RAW_PRIMARY_MOVE_BUDGET)
+  ? null
+  : positiveInt(RAW_PRIMARY_MOVE_BUDGET, 20);
+const ALLOW_QUIT = process.env.MAZEBENCH_ALLOW_QUIT !== "0";
 const WORKER_ONLY = process.env.MAZEBENCH_WORKER_ONLY === "1";
 const SWARM_REQUIRED = process.env.MAZEBENCH_SWARM === "1";
 const LEAD_CLONES_ALLOWED = process.env.MAZEBENCH_ALLOW_LEAD_CLONES === "1";
@@ -45,6 +52,22 @@ function sessionActionCount(file) {
   } catch (_error) {
     return 0;
   }
+}
+
+function readJson(file, fallback = null) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function primaryPauseRequest() {
+  return readJson(PAUSE_REQUEST_FILE, null);
+}
+
+function primaryPauseBoundary() {
+  return readJson(PAUSE_BOUNDARY_FILE, null);
 }
 
 // On Continue, the session already contains prior actions. The budget applies
@@ -95,10 +118,21 @@ function runHelper(args) {
   }
   const text = String(result.stdout || "").trim();
   try {
-    return JSON.parse(text);
+    return applyQuitPolicy(JSON.parse(text));
   } catch (_error) {
     return { output: text };
   }
+}
+
+function applyQuitPolicy(value) {
+  if (ALLOW_QUIT || !value || typeof value !== "object") return value;
+  const status = value.status && typeof value.status === "object" ? value.status : value;
+  if (Array.isArray(status.allowed_commands)) {
+    status.allowed_commands = status.allowed_commands.filter(
+      (command) => String(command).trim().toLowerCase() !== "quit"
+    );
+  }
+  return value;
 }
 
 function startMaze() {
@@ -121,6 +155,7 @@ function startMaze() {
     const visionView = String(process.env.MAZEBENCH_VISION_VIEW || "").trim();
     if (visionView) args.push("--vision-view", visionView);
   }
+  if (!ALLOW_QUIT) args.push("--no-quit");
   return runHelper(args);
 }
 
@@ -139,6 +174,13 @@ function writeJson(filePath, value) {
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
   fs.renameSync(temporary, filePath);
 }
+
+writeJson(PAUSE_CAPABILITY_FILE, {
+  version: 1,
+  pid: process.pid,
+  started_at: new Date().toISOString(),
+  boundary: "next-completed-primary-action"
+});
 
 function compactStatus(value) {
   const status = value?.status || value || {};
@@ -343,7 +385,9 @@ const TOOLS = [
       properties: {
         action: {
           type: "string",
-          description: "up, down, left, right, rotate camera up/down/left/right, undo, reset, quit, or go to level X Y"
+          description: ALLOW_QUIT
+            ? "up, down, left, right, rotate camera up/down/left/right, undo, reset, quit, or go to level X Y"
+            : "up, down, left, right, rotate camera up/down/left/right, undo, reset, or go to level X Y"
         },
         clone_id: { type: "string", description: "Worker clone id. Omit only for the lead's primary maze." }
       },
@@ -392,6 +436,16 @@ function callTool(name, input = {}, { workerOnly = WORKER_ONLY } = {}) {
   }
   if (name === "maze_action") {
     if (!String(input.action || "").trim()) throw new Error("action is required.");
+    if (!input.clone_id && primaryPauseBoundary()) {
+      throw new Error("The user paused this run after the previous completed action. End your response now; the same thread will resume later.");
+    }
+    if (!ALLOW_QUIT && String(input.action).trim().toLowerCase() === "quit") {
+      throw new Error(
+        PRIMARY_MOVE_BUDGET == null
+          ? "Quit is disabled by the user for this unlimited run. Continue playing until the maze is won or the user stops the run."
+          : "Quit is disabled by the user for this run. Continue playing until the budget is exhausted or the user stops the run."
+      );
+    }
     if (workerOnly && !input.clone_id) throw new Error("Workers must supply their clone_id and cannot act on the primary maze.");
     if (
       !input.clone_id &&
@@ -400,10 +454,36 @@ function callTool(name, input = {}, { workerOnly = WORKER_ONLY } = {}) {
     ) {
       throw new Error("Spawn a provider subagent first. Only a worker can call maze_clone and unlock primary moves.");
     }
-    if (!input.clone_id && sessionActionCount(PRIMARY_SESSION) - PRIMARY_INITIAL_ACTION_COUNT >= PRIMARY_MOVE_BUDGET) {
+    if (
+      PRIMARY_MOVE_BUDGET != null &&
+      !input.clone_id &&
+      sessionActionCount(PRIMARY_SESSION) - PRIMARY_INITIAL_ACTION_COUNT >= PRIMARY_MOVE_BUDGET
+    ) {
       throw new Error(`The primary move budget of ${PRIMARY_MOVE_BUDGET} action(s) is exhausted. Call maze_scorecard and finish.`);
     }
-    return runHelper(["action", "--state", sessionFor(input.clone_id), String(input.action)]);
+    const result = runHelper(["action", "--state", sessionFor(input.clone_id), String(input.action)]);
+    if (!input.clone_id) {
+      const pauseRequest = primaryPauseRequest();
+      const actionCount = sessionActionCount(PRIMARY_SESSION);
+      const requestedAfter = Math.max(0, Number(pauseRequest?.requested_after_turn) || 0);
+      if (pauseRequest && actionCount > requestedAfter) {
+        const at = new Date().toISOString();
+        writeJson(PAUSE_BOUNDARY_FILE, {
+          requested_at: pauseRequest.requested_at || null,
+          completed_at: at,
+          completed_turn: actionCount,
+          provider_thread_can_exit: true
+        });
+        const status = result?.status && typeof result.status === "object" ? result.status : result;
+        if (status && typeof status === "object") {
+          status.user_pause_requested = true;
+          status.pause_message =
+            "The user requested a pause. This action is fully saved. Do not take another maze action; end your response now so this exact thread can resume later.";
+          status.allowed_commands = [];
+        }
+      }
+    }
+    return result;
   }
   if (name === "maze_scorecard") {
     if (workerOnly && !input.clone_id) throw new Error("Workers must supply their clone_id.");

@@ -9,7 +9,17 @@ const scriptsDir = path.join(rootDir, "scripts");
 fs.mkdirSync(scriptsDir, { recursive: true });
 fs.writeFileSync(
   path.join(scriptsDir, "maze-agent-local.js"),
-  'setInterval(() => {}, 1000);\nprocess.on("SIGTERM", () => process.exit(0));\n',
+  `const fs = require("node:fs");
+const path = require("node:path");
+const args = Object.fromEntries(process.argv.slice(2).map((part) => {
+  const at = part.indexOf("=");
+  return at < 0 ? [part, ""] : [part.slice(0, at), part.slice(at + 1)];
+}));
+setInterval(() => {
+  if (args.out && fs.existsSync(path.join(args.out, "pause-request.json"))) process.exit(0);
+}, 10);
+process.on("SIGTERM", () => process.exit(0));
+`,
   "utf8"
 );
 
@@ -41,6 +51,7 @@ const service = createAgentRunService({
 
 const launchedIds = [];
 
+(async () => {
 try {
   const [hostReadOnlySwarm] = service.launchRuns({
     kind: "local",
@@ -49,6 +60,7 @@ try {
     game_id: "maze",
     level_id: "level_HxI",
     moves: 1,
+    allow_quit: false,
     mode: "text",
     container: false,
     tools: false,
@@ -64,7 +76,10 @@ try {
   assert.equal(hostSwarmMeta.tools, false);
   assert.equal(hostSwarmMeta.swarm, true);
   assert.equal(hostSwarmMeta.container, false);
+  assert.equal(hostSwarmMeta.allow_quit, false);
+  assert.equal(hostSwarmMeta.launch_params.allow_quit, false);
   assert.match(hostSwarmMeta.command, /tool_use=read-only/);
+  assert.match(hostSwarmMeta.command, /allow_quit=false/);
   assert.match(hostSwarmMeta.command, /swarm=true/);
   const retargeted = service.setRunMoveTarget(hostReadOnlySwarm.id, 100_000);
   assert.equal(retargeted.moves, 100_000);
@@ -192,19 +207,28 @@ try {
     1
   );
 
-  const pausedHostRun = service.pauseRun(hostReadOnlySwarm.id);
+  fs.appendFileSync(
+    path.join(rootDir, "outputs", "maze-local", "site", hostReadOnlySwarm.id, "agent-events.jsonl"),
+    `${JSON.stringify({ type: "thread.started", thread_id: "cold-pause-thread" })}\n`
+  );
+  const pauseRequested = service.pauseRun(hostReadOnlySwarm.id);
+  assert.equal(pauseRequested.status, "pausing");
+  assert.equal(pauseRequested.pause_after_turn, 1);
+  const pauseDeadline = Date.now() + 3000;
+  let pausedHostRun = service.summarizeRun(hostReadOnlySwarm.id);
+  while (pausedHostRun.status !== "paused" && Date.now() < pauseDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    pausedHostRun = service.summarizeRun(hostReadOnlySwarm.id);
+  }
   assert.equal(pausedHostRun.status, "paused");
   assert.equal(pausedHostRun.pause_reason, "manual");
+  assert.equal(pausedHostRun.pause_mode, "cold");
+  assert.equal(pausedHostRun.pid, null);
   const resumedHostRun = service.resumeRun(hostReadOnlySwarm.id);
   assert.equal(resumedHostRun.status, "running");
-  service.stopRun(hostReadOnlySwarm.id);
-  const stopDeadline = Date.now() + 3000;
-  let stoppedHostRun = service.summarizeRun(hostReadOnlySwarm.id);
-  while (stoppedHostRun.status === "stopping" && Date.now() < stopDeadline) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-    stoppedHostRun = service.summarizeRun(hostReadOnlySwarm.id);
-  }
-  assert.equal(stoppedHostRun.status, "stopped");
+  assert.match(resumedHostRun.command, /resume=cold-pause-thread/);
+  const stopAlias = service.stopRun(hostReadOnlySwarm.id);
+  assert.equal(stopAlias.status, "pausing", "local Stop aliases the same resumable cold pause");
   service.deleteRun(hostReadOnlySwarm.id);
 
   const [unlimitedRun] = service.launchRuns({
@@ -227,8 +251,8 @@ try {
     path.join(rootDir, "outputs", "maze-local", "site", unlimitedRun.id, "run.json")
   );
   assert.equal(unlimitedMeta.unlimited, true);
-  assert.equal(unlimitedMeta.moves, 500);
-  assert.equal(unlimitedMeta.segment_move_budget, 500);
+  assert.equal(unlimitedMeta.moves, null);
+  assert.equal(unlimitedMeta.segment_move_budget, null);
   assert.equal(unlimitedMeta.launch_params.unlimited, true);
   assert.match(unlimitedMeta.command, /unlimited=true/);
   const unlimitedSummary = service.summarizeRun(unlimitedRun.id);
@@ -339,6 +363,100 @@ try {
   service.deleteRun(runs[1].id);
   assert.equal(service.summarizeRun(runs[2].id).status, "running");
 
+  service.stopRun(runs[2].id);
+  service.deleteRun(runs[2].id);
+
+  fs.writeFileSync(
+    path.join(scriptsDir, "maze-agent-local.js"),
+    `const fs = require("node:fs");
+const path = require("node:path");
+const args = Object.fromEntries(process.argv.slice(2).map((part) => {
+  const at = part.indexOf("=");
+  return at < 0 ? [part, ""] : [part.slice(0, at), part.slice(at + 1)];
+}));
+fs.mkdirSync(args.out, { recursive: true });
+if (!args.resume) {
+  fs.writeFileSync(path.join(args.out, "agent-events.jsonl"), JSON.stringify({ type: "thread.started", thread_id: "no-quit-thread" }) + "\\n");
+  process.exit(0);
+}
+setInterval(() => {}, 1000);
+process.on("SIGTERM", () => process.exit(0));
+`,
+    "utf8"
+  );
+  const [noQuitRun] = service.launchRuns({
+    kind: "local",
+    model: "codex",
+    model_name: "gpt-test",
+    game_id: "maze",
+    level_id: "level_HxI",
+    moves: 5,
+    allow_quit: false,
+    mode: "text",
+    container: false,
+    tools: false,
+    tool_use: "read-only",
+    swarm: false,
+    video: false
+  });
+  launchedIds.push(noQuitRun.id);
+  const noQuitDeadline = Date.now() + 3000;
+  let noQuitSummary = service.summarizeRun(noQuitRun.id);
+  while ((noQuitSummary.continued || 0) < 1 && Date.now() < noQuitDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    noQuitSummary = service.summarizeRun(noQuitRun.id);
+  }
+  assert.equal(noQuitSummary.status, "running");
+  assert.equal(noQuitSummary.allow_quit, false);
+  assert.equal(noQuitSummary.continued, 1, "a clean early exit must resume the same provider thread");
+  assert.equal(noQuitSummary.moves, 5, "automatic persistence must retain the user's action target");
+  assert.match(noQuitSummary.command, /resume=no-quit-thread/);
+  service.stopRun(noQuitRun.id);
+  service.deleteRun(noQuitRun.id);
+
+  fs.writeFileSync(
+    path.join(scriptsDir, "maze-agent-local.js"),
+    `const fs = require("node:fs");
+const path = require("node:path");
+const args = Object.fromEntries(process.argv.slice(2).map((part) => {
+  const at = part.indexOf("=");
+  return at < 0 ? [part, ""] : [part.slice(0, at), part.slice(at + 1)];
+}));
+fs.mkdirSync(args.out, { recursive: true });
+fs.writeFileSync(path.join(args.out, "agent-events.jsonl"), JSON.stringify({ type: "thread.started", thread_id: "retry-thread" }) + "\\n");
+fs.writeFileSync(path.join(args.out, "provider-failure.json"), JSON.stringify({ provider: "codex", status: 502, message: "Bad Gateway", detected_at: new Date().toISOString() }));
+process.exit(75);
+`,
+    "utf8"
+  );
+  const [providerFailureRun] = service.launchRuns({
+    kind: "local",
+    model: "codex",
+    model_name: "gpt-test",
+    game_id: "maze",
+    level_id: "level_HxI",
+    moves: 5,
+    mode: "text",
+    container: false,
+    tools: false,
+    tool_use: "read-only",
+    swarm: false,
+    video: false
+  });
+  launchedIds.push(providerFailureRun.id);
+  const providerFailureDeadline = Date.now() + 3000;
+  let providerFailureSummary = service.summarizeRun(providerFailureRun.id);
+  while (providerFailureSummary.status === "running" && Date.now() < providerFailureDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    providerFailureSummary = service.summarizeRun(providerFailureRun.id);
+  }
+  assert.equal(providerFailureSummary.status, "paused");
+  assert.equal(providerFailureSummary.pause_reason, "provider_backoff");
+  assert.equal(providerFailureSummary.provider_failure_status, 502);
+  assert.equal(providerFailureSummary.provider_retry_attempt, 1);
+  assert(Date.parse(providerFailureSummary.retry_at) > Date.now());
+  service.deleteRun(providerFailureRun.id);
+
   const originalHome = process.env.HOME;
   const codexHome = path.join(rootDir, "codex-home");
   const codexCachePath = path.join(codexHome, ".codex", "models_cache.json");
@@ -413,3 +531,7 @@ try {
   });
   fs.rmSync(rootDir, { recursive: true, force: true });
 }
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

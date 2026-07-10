@@ -78,9 +78,21 @@ function parseArgs(argv) {
     else if (arg === "--vision-width") options.visionWidth = next();
     else if (arg === "--vision-height") options.visionHeight = next();
     else if (arg === "--vision-view") options.visionView = next();
+    else if (arg === "--no-quit") options.allowQuit = false;
     else options.positional.push(arg);
   }
   return options;
+}
+
+function applyQuitPolicy(response, session) {
+  if (session?.allowQuit !== false) return response;
+  const status = response?.status || response;
+  if (status && Array.isArray(status.allowed_commands)) {
+    status.allowed_commands = status.allowed_commands.filter(
+      (command) => String(command).trim().toLowerCase() !== "quit"
+    );
+  }
+  return response;
 }
 
 function usage() {
@@ -179,9 +191,18 @@ function rendererScript(session) {
   return path.join(session.repoRoot, "scripts", "maze-render-frame.js");
 }
 
-function visionRenderPayload(session) {
+function visionRenderPayload(session, stateFile) {
+  const actionCount = Array.isArray(session.actions) ? session.actions.length : 0;
+  const checkpoint = readJson(path.join(path.dirname(stateFile), "current-render-state.json"), null);
+  const hasCurrentCheckpoint =
+    Number(checkpoint?.turn) === actionCount &&
+    checkpoint?.snapshot?.level_id &&
+    Array.isArray(checkpoint.snapshot.actors);
   return {
-    actions: (session.actions || [])
+    // A current checkpoint is authoritative and constant-size. Sending the
+    // whole action history after a pause/restart made Chromium replay hundreds
+    // (eventually thousands) of moves just to show the current observation.
+    actions: hasCurrentCheckpoint ? [] : (session.actions || [])
       .map((action) => canonicalActionText(action.message))
       .filter(Boolean),
     draft: true,
@@ -191,7 +212,8 @@ function visionRenderPayload(session) {
     levelId: normalizeLevelId(session.levelId),
     view: normalizeVisionView(session.visionView),
     width: positiveInt(session.visionWidth, 512),
-    yaw: normalizeYaw(session.yaw)
+    yaw: normalizeYaw(session.yaw),
+    snapshot: hasCurrentCheckpoint ? checkpoint.snapshot : null
   };
 }
 
@@ -223,7 +245,9 @@ function daemonRequest(socket, message, timeoutMs) {
     let buffer = "";
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error("render daemon timed out"));
+      const error = new Error("render daemon timed out");
+      error.renderTimeout = true;
+      reject(error);
     }, timeoutMs);
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => {
@@ -303,9 +327,9 @@ async function openDaemonSocket(session, stateFile) {
 
 async function renderVisionFrameViaDaemon(session, payload, stateFile) {
   const socket = await openDaemonSocket(session, stateFile);
-  // Generous timeout: the first render boots a headless browser and replays
-  // any seeded history; later turns apply one action and are fast.
-  const response = await daemonRequest(socket, { command: "render", ...payload }, 180000);
+  // A bad WebGL/Chromium process must not pin several CPU cores indefinitely.
+  // Ninety seconds still leaves ample room for the first browser boot.
+  const response = await daemonRequest(socket, { command: "render", ...payload }, 90000);
   if (!response || response.ok !== true || !response.frame) {
     throw new Error((response && response.error) || "render daemon returned no frame");
   }
@@ -314,14 +338,27 @@ async function renderVisionFrameViaDaemon(session, payload, stateFile) {
 
 // Best-effort: tell the run's render daemon to shut down (used once the game
 // is over, so the headless browser doesn't linger until its idle timeout).
-async function stopRenderDaemon(stateFile) {
+async function stopRenderDaemon(stateFile, { force = false } = {}) {
   const info = readJson(daemonPortFile(stateFile), null);
-  if (!info || !info.port) return;
-  try {
-    const socket = await connectDaemon(info.port);
-    await daemonRequest(socket, { command: "close" }, 10000);
-  } catch {
-    /* already gone */
+  if (!info) return;
+  if (!force && info.port) {
+    try {
+      const socket = await connectDaemon(info.port);
+      await daemonRequest(socket, { command: "close" }, 10000);
+    } catch {
+      force = true;
+    }
+  }
+  if (force && Number(info.pid) > 0) {
+    try {
+      process.kill(-Number(info.pid), "SIGKILL");
+    } catch (_error) {
+      try {
+        process.kill(Number(info.pid), "SIGKILL");
+      } catch (_innerError) {
+        /* already gone */
+      }
+    }
   }
   fs.rmSync(daemonPortFile(stateFile), { force: true });
 }
@@ -333,7 +370,9 @@ function renderVisionFrameOneShot(session, payload) {
     cwd: session.repoRoot,
     encoding: "utf8",
     input: JSON.stringify(payload),
-    maxBuffer: 128 * 1024 * 1024
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: 90000,
+    killSignal: "SIGKILL"
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -346,7 +385,7 @@ function renderVisionFrameOneShot(session, payload) {
 // renderer humans see in the browser). Returns the absolute path to the
 // written frame.
 async function renderVisionFrame(session, turnIndex, stateFile) {
-  const payload = visionRenderPayload(session);
+  const payload = visionRenderPayload(session, stateFile);
   let dataUrl;
   try {
     dataUrl = await renderVisionFrameViaDaemon(session, payload, stateFile);
@@ -357,6 +396,9 @@ async function renderVisionFrame(session, turnIndex, stateFile) {
     if (error && error.renderBindBlocked) {
       throw error;
     }
+    // Reap the broken browser before trying one clean one-shot render. Without
+    // this, a timed-out GPU process and its fallback can run side-by-side.
+    await stopRenderDaemon(stateFile, { force: true });
     dataUrl = renderVisionFrameOneShot(session, payload);
   }
   const prefix = "data:image/png;base64,";
@@ -407,6 +449,7 @@ async function main() {
   if (command === "start") {
     const session = {
       actions: [],
+      allowQuit: options.allowQuit !== false,
       createdAt: new Date().toISOString(),
       gameId: String(options.game || "maze").trim() || "maze",
       gameWonGemCount: positiveInt(options.gameWonGemCount, 100),
@@ -420,10 +463,10 @@ async function main() {
       visionWidth: positiveInt(options.visionWidth, 512),
       yaw: normalizeYaw(Number(options.yaw))
     };
-    const response = consumeRenderState(
+    const response = applyQuitPolicy(consumeRenderState(
       runBridge(session, { command: "observe" }),
       options.state
-    );
+    ), session);
     session.initial = response.status || response;
     session.lastStatus = session.initial;
     writeJson(options.state, session);
@@ -436,24 +479,27 @@ async function main() {
   if (!session) throw new Error(`No session found at ${options.state}`);
 
   if (command === "observe") {
-    const response = consumeRenderState(
+    const response = applyQuitPolicy(consumeRenderState(
       runBridge(session, { command: "observe" }),
       options.state
-    );
+    ), session);
     if (!(await emitStatus(session, response, session.actions.length, options.state))) process.exitCode = 1;
     return;
   }
 
   if (command === "scorecard") {
-    const response = consumeRenderState(
+    const response = applyQuitPolicy(consumeRenderState(
       runBridge(session, { command: "scorecard" }),
       options.state
-    );
+    ), session);
     session.scorecard = (response.status || response).scorecard || response.scorecard || response.status || response;
     session.lastStatus = response.status || response;
     writeJson(options.state, session);
     writeJson(path.join(path.dirname(options.state), "scorecard.json"), session.scorecard);
-    if (!(await emitStatus(session, response, session.actions.length, options.state))) process.exitCode = 1;
+    // A scorecard is structured text, not a new observation. Rendering another
+    // vision frame here wastes a browser boot and used to strand Chromium after
+    // provider failures. Print it directly and release any existing daemon.
+    console.log(JSON.stringify(response.status || response, null, 2));
     // The scorecard marks the end of the run — release the render daemon's
     // headless browser instead of waiting out its idle timer.
     if (session.vision) await stopRenderDaemon(options.state);
@@ -462,10 +508,17 @@ async function main() {
 
   if (command === "action") {
     const message = normalizeAction(options.positional);
-    const response = consumeRenderState(runBridge(session, message), options.state);
+    if (message.command === "quit" && session.allowQuit === false) {
+      throw new Error("Quit is disabled by the user for this run. Continue playing until the budget is exhausted or the user stops the run.");
+    }
+    const response = applyQuitPolicy(
+      consumeRenderState(runBridge(session, message), options.state),
+      session
+    );
     const status = response.status || response;
     const record = {
       turn: session.actions.length + 1,
+      timestamp: new Date().toISOString(),
       command_text: options.positional.join(" ").trim(),
       message,
       status
