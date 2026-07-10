@@ -47,7 +47,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-35">
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-43">
     ${extraHeadHtml}`
     })}
   </head>
@@ -252,7 +252,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-35">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-43">`;
   }
 
   function renderPlayPage(game, level) {
@@ -364,7 +364,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-35">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-redesign-43">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -880,8 +880,9 @@ function createPageRenderer({
           <div class="runs-toolbar">
             <label class="runs-search"><span aria-hidden="true">⌕</span><input id="runs-search" type="search" placeholder="Search runs…" autocomplete="off" spellcheck="false"></label>
             <div class="runs-filters">
-              <label class="runs-filter"><span>Agent</span><select id="runs-provider" aria-label="Filter by provider"><option value="">All</option></select></label>
+              <label class="runs-filter"><span>Company</span><select id="runs-provider" aria-label="Filter by company"><option value="">All</option></select></label>
               <label class="runs-filter"><span>Model</span><select id="runs-model" aria-label="Filter by model"><option value="">All</option></select></label>
+              <label class="runs-filter"><span>Status</span><select id="runs-status" aria-label="Filter by status"><option value="">All</option></select></label>
               <label class="runs-filter"><span>Sort</span><select id="runs-sort" aria-label="Sort">
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
@@ -904,12 +905,26 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260709-agent-redesign-35" defer></script>`
+        <script src="/agent.js?v=20260709-agent-redesign-43" defer></script>`
     });
   }
 
   function renderAgentRunPage(run) {
     const isPrime = run.kind === "prime" || run.model === "prime";
+    const tokenSection = `<section class="panel run-tokens" id="run-token-section">
+          <div class="run-tokens__head">
+            <h2>Tokens</h2>
+            <span id="run-token-badge" class="run-tokens__badge" hidden></span>
+          </div>
+          <div class="run-token-stats">
+            <div class="run-token-stat"><span>Total</span><strong id="run-token-total">—</strong></div>
+            <div class="run-token-stat"><span>Per action</span><strong id="run-token-average">—</strong></div>
+            <div class="run-token-stat"><span>Context</span><strong id="run-token-context">—</strong><small id="run-token-context-detail"></small></div>
+          </div>
+          <div id="run-token-chart" class="run-token-chart" hidden></div>
+          <p id="run-token-empty" class="muted">Waiting for usage…</p>
+          <p id="run-token-note" class="run-token-note" hidden></p>
+        </section>`;
     // Shared building blocks for both layouts (Prime vs local runner).
     const boardWrap = `<div id="run-board-wrap" class="run-live__board" hidden>
             <div class="run-live__board-label">ASCII board (what the agent reads)</div>
@@ -931,10 +946,12 @@ function createPageRenderer({
       ? `<section class="panel" id="run-see-section">
           <h2>What the agent sees</h2>
           ${boardWrap}
-          <p id="run-see-empty" class="muted">Prime plays the maze headlessly; the exact board the model reads appears here once the eval finishes.</p>
+          <p id="run-see-empty" class="muted">Actions stream live. The final board and replay appear after completion.</p>
         </section>
 
         ${replaySection}
+
+        ${tokenSection}
 
         <section class="panel">
           <h2>Moves &amp; reasoning</h2>
@@ -958,6 +975,8 @@ function createPageRenderer({
 
         ${replaySection}
 
+        ${tokenSection}
+
         <section class="panel">
           <h2>Moves &amp; reasoning</h2>
           <div id="run-feed" class="agent-feed"></div>
@@ -971,11 +990,21 @@ function createPageRenderer({
             <button id="pause-run" class="button" type="button" hidden>Pause</button>
             <button id="resume-run" class="button--primary" type="button" hidden>Resume</button>
             <button id="continue-run" class="button" type="button" hidden>Continue</button>
+            <button id="generate-video" class="button" type="button" hidden>Generate video</button>
             <button id="stop-run" class="button--coral" type="button" hidden>Stop Run</button>
             <button id="delete-run" class="button--ghost" type="button" title="Delete run">🗑 Delete</button>
           </div>
           <h2 id="run-title" class="run-title"></h2>
           <p id="run-meta" class="muted"></p>
+          <div id="run-progress" class="run-progress">
+            <div class="run-progress__copy">
+              <span id="run-progress-count">0 / 0 moves</span>
+              <strong id="run-progress-eta">Estimating…</strong>
+            </div>
+            <div id="run-progress-track" class="run-progress__track" role="progressbar" aria-label="Run progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="run-progress-bar" class="run-progress__fill"></div>
+            </div>
+          </div>
           <div id="run-stats" class="agent-stats"></div>
           <p id="run-status" class="author-status" role="status" aria-live="polite"></p>
         </div>
@@ -987,7 +1016,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
-        <script src="/agent-run.js" defer></script>`
+        <script src="/agent-run.js?v=20260709-agent-redesign-44" defer></script>`
     });
   }
 

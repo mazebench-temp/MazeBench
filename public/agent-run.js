@@ -2,8 +2,8 @@
   const initial = window.__AGENT_RUN__ || {};
   const runId = initial.id;
   const isVision = initial.mode === "vision";
-  // Prime Verifiers runs have no local maze board / frames / per-move reasoning;
-  // the page shows a log-centric view, so skip all maze-specific rendering.
+  // Prime streams actions and usage live, but has no local rendered frame while
+  // the rollout is active, so skip the local-only frame renderer.
   const isPrime = initial.kind === "prime" || initial.model === "prime";
   const statusEl = document.getElementById("run-status");
   const boardEl = document.getElementById("run-board");
@@ -14,9 +14,16 @@
   const pauseButton = document.getElementById("pause-run");
   const resumeButton = document.getElementById("resume-run");
   const continueButton = document.getElementById("continue-run");
+  const generateVideoButton = document.getElementById("generate-video");
   const deleteButton = document.getElementById("delete-run");
   const liveImage = document.getElementById("run-live-image");
   const livePlaceholder = document.getElementById("run-live-placeholder");
+  const tokenChart = document.getElementById("run-token-chart");
+  const tokenEmpty = document.getElementById("run-token-empty");
+  const tokenBadge = document.getElementById("run-token-badge");
+  const tokenNote = document.getElementById("run-token-note");
+
+  if (isPrime) stopButton.textContent = "Cancel Run";
 
   const state = {
     afterTurn: 0,
@@ -29,7 +36,11 @@
     lastImageUrl: null,
     frameRendering: false,
     frameFailures: 0,
-    videoShown: false
+    videoShown: false,
+    tokenSignature: "",
+    contextPoints: [],
+    feedVersion: 0,
+    renderedFeedVersion: -1
   };
 
   function setStatus(message, isError = false) {
@@ -83,15 +94,215 @@
           `<span class="agent-stat"><span class="agent-stat__label">${escapeText(label)}</span> ${escapeText(value)}</span>`
       )
       .join("");
+    renderRunProgress(run);
     renderControls(run);
   }
 
+  function formatDuration(value) {
+    const seconds = Math.max(0, Math.round(Number(value || 0) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m${seconds % 60 ? ` ${seconds % 60}s` : ""}`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  }
+
+  function renderRunProgress(run) {
+    const progress = run.progress || {};
+    const current = Number.isFinite(Number(progress.current)) ? Number(progress.current) : Number(run.turns) || 0;
+    const total = Math.max(1, Number(progress.total) || Number(run.moves) || 1);
+    const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    const eta = Number(progress.eta_ms);
+    const etaLabel =
+      run.status === "finished"
+        ? "Complete"
+        : run.status === "paused"
+          ? "Paused"
+          : run.status === "stopping"
+            ? "Stopping…"
+            : run.status === "stopped"
+              ? "Stopped"
+              : run.status === "failed"
+                ? "Failed"
+                : Number.isFinite(eta) && current > 0
+                  ? eta <= 0
+                    ? "Finishing…"
+                    : `~${formatDuration(eta)} left`
+                  : "Estimating…";
+    const track = document.getElementById("run-progress-track");
+    const bar = document.getElementById("run-progress-bar");
+
+    document.getElementById("run-progress-count").textContent = `${current} / ${total} moves`;
+    document.getElementById("run-progress-eta").textContent = etaLabel;
+    track.setAttribute("aria-valuenow", String(Math.round(percent)));
+    track.setAttribute("aria-valuetext", `${current} of ${total} moves, ${etaLabel}`);
+    bar.style.width = `${percent}%`;
+    bar.classList.toggle("is-paused", run.status === "paused");
+    bar.classList.toggle("is-terminal", ["finished", "stopped", "failed"].includes(run.status));
+  }
+
   function renderControls(run) {
-    stopButton.hidden = !(run.status === "running" || run.status === "stopping");
+    stopButton.hidden = !(
+      run.status === "running" ||
+      run.status === "stopping" ||
+      (run.status === "paused" && run.pause_reason === "manual")
+    );
     pauseButton.hidden = !run.pausable;
     resumeButton.hidden = !run.resumable;
     continueButton.hidden = !run.continuable;
+    generateVideoButton.disabled = run.video_status === "rendering";
+    generateVideoButton.hidden = !(
+      run.status === "finished" && !run.has_video && run.video_status !== "rendering"
+    );
   }
+
+  function formatTokens(value) {
+    const tokens = Number(value);
+    if (!Number.isFinite(tokens)) return "—";
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 1 : 2)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 100_000 ? 0 : 1)}K`;
+    return Math.round(tokens).toLocaleString();
+  }
+
+  function drawContextChart() {
+    const canvas = tokenChart.querySelector(".run-context-chart__canvas");
+    const points = state.contextPoints;
+    if (!canvas || !points.length) return;
+
+    const width = Math.max(280, Math.floor(canvas.clientWidth));
+    const height = Math.max(150, Math.floor(canvas.clientHeight));
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+    const context = canvas.getContext("2d");
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    const padding = { top: 14, right: 14, bottom: 27, left: 48 };
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const ceiling = Math.max(1, ...points.map((point) => point.context)) * 1.08;
+    const x = (index) => padding.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+    const y = (value) => padding.top + plotHeight - (value / ceiling) * plotHeight;
+
+    context.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
+    context.textBaseline = "middle";
+    for (let index = 0; index <= 4; index += 1) {
+      const lineY = padding.top + (plotHeight / 4) * index;
+      context.strokeStyle = "rgba(124, 143, 255, 0.11)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(padding.left, lineY);
+      context.lineTo(width - padding.right, lineY);
+      context.stroke();
+      context.fillStyle = "rgba(154, 163, 199, 0.76)";
+      context.textAlign = "right";
+      context.fillText(formatTokens(ceiling * (1 - index / 4)), padding.left - 8, lineY);
+    }
+
+    const fill = context.createLinearGradient(0, padding.top, 0, padding.top + plotHeight);
+    fill.addColorStop(0, "rgba(169, 153, 255, 0.2)");
+    fill.addColorStop(1, "rgba(169, 153, 255, 0)");
+    context.beginPath();
+    points.forEach((point, index) => {
+      if (index === 0) context.moveTo(x(index), y(point.context));
+      else context.lineTo(x(index), y(point.context));
+    });
+    context.lineTo(x(points.length - 1), padding.top + plotHeight);
+    context.lineTo(x(0), padding.top + plotHeight);
+    context.closePath();
+    context.fillStyle = fill;
+    context.fill();
+
+    context.beginPath();
+    points.forEach((point, index) => {
+      if (index === 0) context.moveTo(x(index), y(point.context));
+      else context.lineTo(x(index), y(point.context));
+    });
+    context.strokeStyle = "#a999ff";
+    context.lineWidth = 2.25;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.shadowColor = "rgba(139, 123, 255, 0.38)";
+    context.shadowBlur = 9;
+    context.stroke();
+    context.shadowBlur = 0;
+
+    points.forEach((point, index) => {
+      if (!point.compacted && index !== points.length - 1) return;
+      context.beginPath();
+      context.arc(x(index), y(point.context), point.compacted ? 4 : 3.5, 0, Math.PI * 2);
+      context.fillStyle = point.compacted ? "#ff9d82" : "#65f3d4";
+      context.fill();
+      context.strokeStyle = "#070811";
+      context.lineWidth = 1.5;
+      context.stroke();
+    });
+
+    const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+    context.fillStyle = "rgba(154, 163, 199, 0.76)";
+    context.textBaseline = "alphabetic";
+    labelIndexes.forEach((index, labelIndex) => {
+      context.textAlign = labelIndex === 0 ? "left" : labelIndex === labelIndexes.length - 1 ? "right" : "center";
+      context.fillText(String(points[index].action), x(index), height - 7);
+    });
+  }
+
+  function renderTokenUsage(usage) {
+    const signature = JSON.stringify(usage || {});
+    if (signature === state.tokenSignature) return;
+    state.tokenSignature = signature;
+
+    const available = Boolean(usage?.available);
+    document.getElementById("run-token-total").textContent = available ? formatTokens(usage.total_tokens) : "—";
+    document.getElementById("run-token-average").textContent = available
+      ? formatTokens(usage.average_tokens_per_action)
+      : "—";
+    document.getElementById("run-token-context").textContent = usage?.current_context_tokens
+      ? formatTokens(usage.current_context_tokens)
+      : "—";
+
+    const contextDetail = document.getElementById("run-token-context-detail");
+    if (usage?.current_context_tokens && usage?.context_window) {
+      const percent = Math.round((usage.current_context_tokens / usage.context_window) * 100);
+      contextDetail.textContent = `${percent}% of ${formatTokens(usage.context_window)}`;
+    } else {
+      contextDetail.textContent = "";
+    }
+
+    tokenEmpty.hidden = available;
+    tokenBadge.hidden = !available;
+    tokenBadge.classList.toggle("is-estimated", available && !usage.exact);
+    tokenBadge.classList.toggle("is-compacted", Boolean(usage?.compactions));
+    tokenBadge.textContent = usage?.compactions
+      ? `${usage.compactions} compaction${usage.compactions === 1 ? "" : "s"}`
+      : usage?.exact
+        ? "Exact"
+        : "Estimated";
+    tokenNote.hidden = !usage?.note;
+    tokenNote.textContent = usage?.note || "";
+
+    const points = (Array.isArray(usage?.actions) ? usage.actions : [])
+      .map((point, index) => ({
+        action: point.action || index + 1,
+        context: Number(point.context_tokens) || 0,
+        compacted: Boolean(point.compacted)
+      }))
+      .filter((point) => point.context > 0);
+    state.contextPoints = points;
+    if (!points.length) {
+      tokenChart.hidden = true;
+      tokenChart.innerHTML = "";
+      return;
+    }
+
+    const latest = points[points.length - 1];
+    tokenChart.innerHTML = `<canvas class="run-context-chart__canvas" role="img" aria-label="Context size by action; latest ${latest.context.toLocaleString()} tokens"></canvas>`;
+    tokenChart.hidden = false;
+    requestAnimationFrame(drawContextChart);
+  }
+
+  window.addEventListener("resize", () => requestAnimationFrame(drawContextChart), { passive: true });
 
   // ---- combined moves + reasoning feed --------------------------------------
 
@@ -102,12 +313,23 @@
         action.player_dead ? "died" : null,
         action.solved ? "SOLVED" : null
       ].filter(Boolean);
-      state.moves.set(action.turn, {
+      const nextMove = {
         action: action.command_text,
         room: levelLabel(action.current_room),
         gems: action.gem_count ?? 0,
         flags
-      });
+      };
+      const previousMove = state.moves.get(action.turn);
+      if (
+        !previousMove ||
+        previousMove.action !== nextMove.action ||
+        previousMove.room !== nextMove.room ||
+        previousMove.gems !== nextMove.gems ||
+        previousMove.flags.join("|") !== nextMove.flags.join("|")
+      ) {
+        state.moves.set(action.turn, nextMove);
+        state.feedVersion += 1;
+      }
       if (action.level && !isVision) {
         boardEl.textContent = action.level;
         boardWrap.hidden = false;
@@ -120,7 +342,10 @@
     if (!Array.isArray(reasoning)) return;
     for (const entry of reasoning) {
       if (entry && entry.move != null) {
-        if (entry.reasoning) state.reasoning.set(entry.move, entry.reasoning);
+        if (entry.reasoning && state.reasoning.get(entry.move) !== entry.reasoning) {
+          state.reasoning.set(entry.move, entry.reasoning);
+          state.feedVersion += 1;
+        }
         // Reasoning distill also carries the action + result; fill gaps from it.
         if (!state.moves.has(entry.move)) {
           state.moves.set(entry.move, {
@@ -129,17 +354,38 @@
             gems: entry.gems ?? 0,
             flags: [entry.moved === false ? "blocked" : null, entry.player_dead ? "died" : null].filter(Boolean)
           });
+          state.feedVersion += 1;
         }
       }
     }
   }
 
   function renderFeed() {
+    if (state.renderedFeedVersion === state.feedVersion) return;
     const moveNums = [...state.moves.keys()].sort((a, b) => a - b);
     if (!moveNums.length) {
       feedEl.innerHTML = '<p class="muted">Waiting for the agent\'s first move…</p>';
+      state.renderedFeedVersion = state.feedVersion;
       return;
     }
+
+    const previousTop = feedEl.scrollTop;
+    const distanceFromBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight;
+    const followLatest = distanceFromBottom <= 40;
+    const feedTop = feedEl.getBoundingClientRect().top;
+    let anchorMove = "";
+    let anchorOffset = 0;
+
+    if (!followLatest) {
+      const anchor = [...feedEl.querySelectorAll(".agent-feed__row")].find(
+        (row) => row.getBoundingClientRect().bottom > feedTop
+      );
+      if (anchor) {
+        anchorMove = anchor.dataset.move || "";
+        anchorOffset = anchor.getBoundingClientRect().top - feedTop;
+      }
+    }
+
     feedEl.innerHTML = moveNums
       .map((num) => {
         const move = state.moves.get(num);
@@ -147,7 +393,7 @@
         const meta = [`${escapeText(move.room)}`, `${escapeText(move.gems)} gems`, ...move.flags.map(escapeText)]
           .filter(Boolean)
           .join(" · ");
-        return `<div class="agent-feed__row">
+        return `<div class="agent-feed__row" data-move="${escapeText(num)}">
           <div class="agent-feed__head">
             <span class="agent-feed__num">${escapeText(num)}</span>
             <span class="agent-feed__action">${escapeText(move.action)}</span>
@@ -157,7 +403,22 @@
         </div>`;
       })
       .join("");
-    feedEl.scrollTop = feedEl.scrollHeight;
+    state.renderedFeedVersion = state.feedVersion;
+
+    if (followLatest) {
+      feedEl.scrollTop = feedEl.scrollHeight;
+    } else if (anchorMove) {
+      const nextAnchor = [...feedEl.querySelectorAll(".agent-feed__row")].find(
+        (row) => row.dataset.move === anchorMove
+      );
+      if (nextAnchor) {
+        feedEl.scrollTop += nextAnchor.getBoundingClientRect().top - feedTop - anchorOffset;
+      } else {
+        feedEl.scrollTop = previousTop;
+      }
+    } else {
+      feedEl.scrollTop = previousTop;
+    }
   }
 
   // ---- live image -----------------------------------------------------------
@@ -229,8 +490,16 @@
       return;
     }
 
+    if (run.video_status === "failed") {
+      section.hidden = false;
+      progressBox.hidden = false;
+      bar.style.width = "0%";
+      label.textContent = run.video_error || "Video generation failed. You can try again.";
+      return;
+    }
+
     // Rendering in progress (run finished but the mp4 isn't ready yet).
-    const rendering = run.status !== "running" && run.video && !run.has_video;
+    const rendering = run.video_status === "rendering";
     if (rendering || (progress && progress.percent != null && progress.phase !== "done")) {
       section.hidden = false;
       progressBox.hidden = false;
@@ -259,11 +528,11 @@
 
       describeRun(progress.run);
       renderStats(progress.run);
+      renderTokenUsage(progress.token_usage);
 
       if (isPrime) {
-        // Prime isn't live; the board, per-move reasoning, and replay video are
-        // all built from the eval results once it finishes, so ingest whatever
-        // has landed. In text mode ingestActions fills the ASCII board.
+        // Prime actions and token usage stream as each turn lands. The board,
+        // detailed reasoning, and replay are enriched from the final eval row.
         ingestActions(progress.actions || []);
         ingestReasoning(progress.reasoning || []);
         renderFeed();
@@ -296,7 +565,7 @@
       // Prime renders its replay inside the same process, so the run stays
       // "running" while the video builds; don't treat a terminal-without-video
       // Prime run as still-rendering (the video step is best-effort there).
-      const waitingForVideo = !isPrime && !running && progress.run.video && !progress.run.has_video;
+      const waitingForVideo = !running && progress.run.video_status === "rendering";
       if (running) {
         if (progress.run.status === "stopping") {
           setStatus("Stopping…");
@@ -413,6 +682,22 @@
       if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}).`);
       window.location.href = payload.run.url;
     } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
+
+  generateVideoButton?.addEventListener("click", async () => {
+    generateVideoButton.disabled = true;
+    try {
+      const payload = await runAction("video");
+      state.run = payload.run || state.run;
+      renderControls(state.run);
+      updateReplay(state.run, { phase: "starting", percent: 0 });
+      setStatus("Generating replay video…");
+      clearTimeout(state.timer);
+      poll();
+    } catch (error) {
+      generateVideoButton.disabled = false;
       setStatus(error.message, true);
     }
   });

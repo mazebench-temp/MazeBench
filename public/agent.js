@@ -29,6 +29,19 @@
       logo: '<img src="/logos/prime.png" alt="" loading="lazy">'
     }
   ];
+  const RUN_COMPANY_NAMES = {
+    codex: "OpenAI",
+    claude: "Anthropic",
+    prime: "Prime Intellect"
+  };
+  const RUN_STATUS_LABELS = {
+    running: "Running",
+    paused: "Paused",
+    stopping: "Stopping",
+    stopped: "Stopped",
+    finished: "Completed",
+    failed: "Failed"
+  };
 
   const MODELS_LOADING_MARKUP =
     '<div class="models-loading" role="status" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span><span class="models-loading__label">Loading models</span></div>';
@@ -632,8 +645,9 @@
     if (reveal) requestAnimationFrame(() => revealModelChoices(host));
   }
 
-  // Both Codex and Claude Code expose a reasoning-effort setting. Codex reads it
-  // per model (from its cache); Claude Code's `--effort` accepts a fixed set.
+  // Both Codex and Claude Code expose reasoning effort per model. The installed
+  // Claude CLI accepts five possible values, but not every Claude model supports
+  // all (or any) of them, so its catalog supplies the valid subset.
   function reasoningOptions() {
     const catalog = state.catalogs[state.provider] || {};
 
@@ -645,9 +659,8 @@
     }
 
     if (state.provider === "claude") {
-      return Array.isArray(catalog.reasoning_levels) && catalog.reasoning_levels.length
-        ? catalog.reasoning_levels
-        : ["low", "medium", "high", "xhigh", "max"];
+      const model = selectedModel();
+      return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
     }
 
     const model = selectedModel();
@@ -668,7 +681,7 @@
 
     const model = selectedModel();
     const levels = reasoningOptions();
-    const choices = state.provider === "prime"
+    const choices = state.provider === "prime" || (state.provider === "claude" && levels.length === 0)
       ? [{ id: "", label: "off" }, ...levels.map((level) => ({ id: level, label: level }))]
       : levels.map((level) => ({ id: level, label: level }));
     if (state.reasoning !== null && !choices.some((choice) => choice.id === state.reasoning)) {
@@ -1116,7 +1129,30 @@
 
   // ---- runs list (unchanged behavior) ---------------------------------------
 
-  const runsView = { page: 1, pageSize: 5, provider: "", model: "", query: "", sort: "newest" };
+  const runsView = { page: 1, pageSize: 5, provider: "", model: "", status: "", query: "", sort: "newest" };
+  const runProgressCache = new Map();
+
+  function formatRunDuration(value) {
+    const seconds = Math.max(0, Math.round(Number(value || 0) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m${seconds % 60 ? ` ${seconds % 60}s` : ""}`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  }
+
+  function runProgressLabel(run) {
+    const eta = Number(run.progress?.eta_ms);
+    if (run.status === "finished") return "Complete";
+    if (run.status === "paused") return "Paused";
+    if (run.status === "stopping") return "Stopping…";
+    if (run.status === "stopped") return "Stopped";
+    if (run.status === "failed") return "Failed";
+    if (Number.isFinite(eta) && Number(run.progress?.current) > 0) {
+      return eta <= 0 ? "Finishing…" : `~${formatRunDuration(eta)} left`;
+    }
+    return "Estimating…";
+  }
 
   function runStatusClass(status) {
     if (status === "running" || status === "stopping") return "agent-chip--running";
@@ -1138,19 +1174,28 @@
       claude: "Claude Code",
       prime: "Prime Intellect"
     }[run.provider || run.model] || run.model;
+    const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
+    const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");
     const continuation = run.continued
       ? ` · continued ×${run.continued}`
       : run.continue_of
         ? " · continued"
         : "";
+    const progress = run.progress || {};
+    const progressCurrent = Number(progress.current) || 0;
+    const progressTotal = Math.max(1, Number(progress.total) || Number(run.moves) || 1);
+    const progressTarget = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    const progressFrom = runProgressCache.get(run.id) ?? 0;
+    const showProgress = progressTarget < 100;
+    if (!showProgress) runProgressCache.delete(run.id);
 
     const actions = [
       run.pausable ? '<button class="button" type="button" data-action="pause">Pause</button>' : "",
       run.resumable ? '<button class="button--primary" type="button" data-action="resume">Resume</button>' : "",
       run.continuable ? '<button class="button" type="button" data-action="continue">Continue</button>' : "",
-      run.status === "running" || run.status === "stopping"
-        ? '<button class="button--coral" type="button" data-action="stop">Stop</button>'
+      run.status === "running" || run.status === "stopping" || (run.status === "paused" && run.pause_reason === "manual")
+        ? `<button class="button--coral" type="button" data-action="stop">${run.provider === "prime" ? "Cancel" : "Stop"}</button>`
         : "",
       '<button class="button--ghost run-trash" type="button" data-action="delete" title="Delete run" aria-label="Delete run">Delete</button>'
     ]
@@ -1167,7 +1212,11 @@
         <div class="run-card__identity">
           <span class="run-card__provider">${escapeText(providerName)}</span>
           <h3 title="${escapeText(modelName)}">${escapeText(modelName)}</h3>
-          <p><span>${escapeText(run.game_title || run.game_id)}</span><i aria-hidden="true">·</i><span>${escapeText(levelLabel(run.level_id))}</span></p>
+          <div class="run-card__details">
+            <span class="run-card__world">${escapeText(run.game_title || run.game_id)}</span>
+            ${showStartRoom ? `<span class="run-card__badge">Start ${escapeText(levelLabel(run.level_id))}</span>` : ""}
+            <span class="run-card__badge run-card__badge--reasoning">${escapeText(reasoningEffort)} reasoning</span>
+          </div>
         </div>
         <div class="run-card__metrics" aria-label="Run results">
           <div class="run-metric run-metric--moves">
@@ -1185,6 +1234,12 @@
         </div>
         <div class="run-card__actions">${actions}</div>
       </div>
+      ${showProgress ? `<div class="run-card__progress">
+        <div class="run-card__progress-copy"><span>${escapeText(progressCurrent)} / ${escapeText(progressTotal)} moves</span><strong>${escapeText(runProgressLabel(run))}</strong></div>
+        <div class="run-card__progress-track" role="progressbar" aria-label="Run progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progressTarget)}">
+          <span class="run-card__progress-fill${run.status === "paused" ? " is-paused" : ""}" data-progress-target="${progressTarget}" style="width:${progressFrom}%"></span>
+        </div>
+      </div>` : ""}
     </article>`;
   }
 
@@ -1196,6 +1251,7 @@
     });
     if (runsView.provider) params.set("provider", runsView.provider);
     if (runsView.model) params.set("model", runsView.model);
+    if (runsView.status) params.set("status", runsView.status);
     if (runsView.query) params.set("q", runsView.query);
     return params.toString();
   }
@@ -1268,9 +1324,16 @@
         payload.providers || [],
         runsView.provider,
         "All",
-        (value) => PROVIDERS.find((provider) => provider.id === value)?.name || value
+        (value) => RUN_COMPANY_NAMES[value] || value
       );
       syncFilterSelect("runs-model", payload.models || [], runsView.model, "All");
+      syncFilterSelect(
+        "runs-status",
+        payload.statuses || [],
+        runsView.status,
+        "All",
+        (value) => RUN_STATUS_LABELS[value] || value
+      );
 
       tweenResize(runsEl, () => {
         runsEl.innerHTML = runs.length
@@ -1279,6 +1342,14 @@
             ? '<div class="empty-state"><span class="glyph">▤</span><p>No matching runs.</p></div>'
             : '<div class="empty-state"><span class="glyph">▶</span><p>No runs yet.</p></div>';
         wireRunActions();
+      });
+      requestAnimationFrame(() => {
+        runsEl.querySelectorAll(".run-card__progress-fill").forEach((bar) => {
+          const card = bar.closest("[data-run-id]");
+          const target = Number(bar.dataset.progressTarget) || 0;
+          bar.style.width = `${target}%`;
+          if (card) runProgressCache.set(card.dataset.runId, target);
+        });
       });
 
       const pages = payload.pages || 1;
@@ -1316,6 +1387,7 @@
       });
     onFilter("runs-provider", "provider");
     onFilter("runs-model", "model");
+    onFilter("runs-status", "status");
     onFilter("runs-sort", "sort");
     onFilter("runs-page-size", "pageSize", (value) => Number(value) || 5);
 

@@ -1546,6 +1546,162 @@ body.play-body {
   margin: 0;
 }
 
+/* ---- Agent run: completion + ETA ---- */
+
+.run-progress {
+  background: rgba(3, 6, 16, 0.66);
+  border: 1px solid rgba(52, 231, 240, 0.18);
+  border-radius: 11px;
+  margin: 14px 0 12px;
+  padding: 11px 13px 12px;
+}
+
+.run-progress__copy,
+.run-card__progress-copy {
+  align-items: center;
+  color: var(--muted, #9aa3c7);
+  display: flex;
+  font-size: 10px;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.run-progress__copy strong,
+.run-card__progress-copy strong {
+  color: var(--cyan, #34e7f0);
+  font-weight: 700;
+}
+
+.run-progress__track,
+.run-card__progress-track {
+  background: rgba(124, 143, 255, 0.13);
+  border: 1px solid rgba(124, 143, 255, 0.18);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.run-progress__track {
+  height: 11px;
+}
+
+.run-progress__fill,
+.run-card__progress-fill {
+  background: linear-gradient(90deg, #159da9 0%, #34e7f0 68%, #65f3d4 100%);
+  border-radius: inherit;
+  box-shadow: 0 0 16px rgba(52, 231, 240, 0.34);
+  display: block;
+  height: 100%;
+  min-width: 0;
+  position: relative;
+  transition: width 720ms cubic-bezier(0.22, 1, 0.36, 1), filter 240ms ease;
+}
+
+.run-progress__fill.is-paused,
+.run-card__progress-fill.is-paused {
+  filter: saturate(0.35) brightness(0.86);
+}
+
+/* ---- Agent run: token telemetry ---- */
+
+.run-tokens__head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.run-tokens__head h2 {
+  margin: 0;
+}
+
+.run-tokens__badge {
+  background: rgba(52, 231, 240, 0.08);
+  border: 1px solid rgba(52, 231, 240, 0.24);
+  border-radius: 999px;
+  color: var(--cyan, #34e7f0);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding: 4px 8px;
+  text-transform: uppercase;
+}
+
+.run-tokens__badge.is-estimated {
+  border-color: rgba(255, 209, 92, 0.28);
+  color: var(--yellow, #ffd15c);
+}
+
+.run-tokens__badge.is-compacted {
+  border-color: rgba(255, 142, 113, 0.34);
+  color: #ff9d82;
+}
+
+.run-token-stats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.run-token-stat {
+  background: rgba(4, 7, 18, 0.74);
+  border: 1px solid rgba(124, 143, 255, 0.2);
+  border-radius: 10px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 11px 13px;
+}
+
+.run-token-stat > span {
+  color: var(--muted, #9aa3c7);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.run-token-stat strong {
+  color: #f4f6ff;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: clamp(18px, 2.4vw, 26px);
+  line-height: 1;
+}
+
+.run-token-stat small {
+  color: var(--muted, #9aa3c7);
+  font-size: 9px;
+  min-height: 11px;
+}
+
+.run-token-chart {
+  margin-top: 14px;
+}
+
+.run-context-chart__canvas {
+  background: rgba(3, 6, 16, 0.6);
+  border: 1px solid rgba(124, 143, 255, 0.18);
+  border-radius: 10px;
+  display: block;
+  height: 190px;
+  width: 100%;
+}
+
+.run-token-note {
+  color: var(--muted, #9aa3c7);
+  font-size: 10px;
+  margin: 8px 0 0;
+}
+
+@media (max-width: 520px) {
+  .run-token-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .run-context-chart__canvas {
+    height: 160px;
+  }
+}
+
 /* ---- combined moves + reasoning feed ---- */
 
 .agent-feed {
@@ -1554,6 +1710,7 @@ body.play-body {
   gap: 8px;
   max-height: 440px;
   overflow: auto;
+  overflow-anchor: none;
 }
 
 .agent-feed__row {
@@ -2455,9 +2612,9 @@ body.play-body {
   border-radius: 12px;
   cursor: pointer;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   overflow: hidden;
-  padding: 14px 16px 16px;
+  padding: 13px 15px 14px;
   position: relative;
   transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
@@ -2468,6 +2625,19 @@ body.play-body {
     rgba(12, 17, 34, 0.8);
   border-color: rgba(124, 143, 255, 0.42);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+.run-card__progress {
+  min-width: 0;
+}
+
+.run-card__progress-copy {
+  font-size: 9px;
+  margin-bottom: 5px;
+}
+
+.run-card__progress-track {
+  height: 7px;
 }
 
 .run-card__open {
@@ -2494,7 +2664,7 @@ body.play-body {
 .run-card__main {
   align-items: center;
   display: grid;
-  gap: 20px;
+  gap: 16px;
   grid-template-columns: minmax(250px, 1fr) minmax(360px, 0.9fr) auto;
 }
 
@@ -2516,29 +2686,48 @@ body.play-body {
   font-size: 14px;
   font-weight: 650;
   letter-spacing: -0.015em;
-  margin: 4px 0 5px;
+  margin: 3px 0 7px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.run-card__identity p {
+.run-card__details {
   align-items: center;
-  color: var(--muted, #9aa3c7);
   display: flex;
+  flex-wrap: wrap;
   font-size: 11px;
-  gap: 7px;
-  margin: 0;
+  gap: 6px;
+  min-height: 20px;
 }
 
-.run-card__identity p i {
-  color: rgba(124, 143, 255, 0.58);
-  font-style: normal;
+.run-card__world {
+  color: var(--muted, #9aa3c7);
+  margin-right: 2px;
+}
+
+.run-card__badge {
+  background: rgba(124, 143, 255, 0.08);
+  border: 1px solid rgba(124, 143, 255, 0.2);
+  border-radius: 999px;
+  color: #bdc5e9;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.run-card__badge--reasoning {
+  background: rgba(151, 132, 255, 0.09);
+  border-color: rgba(151, 132, 255, 0.24);
+  color: #b8abff;
 }
 
 .run-card__metrics {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   grid-template-columns: repeat(3, minmax(104px, 1fr));
 }
 
@@ -2550,8 +2739,8 @@ body.play-body {
   display: grid;
   gap: 9px;
   grid-template-columns: 28px minmax(0, 1fr);
-  min-height: 52px;
-  padding: 7px 10px;
+  min-height: 48px;
+  padding: 6px 9px;
 }
 
 .run-metric__icon {
@@ -2665,6 +2854,14 @@ body.play-body {
     grid-column: 2;
     grid-row: 1 / 3;
   }
+
+  .runs-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .runs-filter {
+    flex: 1 1 0;
+  }
 }
 
 @media (max-width: 680px) {
@@ -2771,6 +2968,10 @@ body.play-body {
   .runs-filter:nth-child(n + 3) {
     border-top: 1px solid rgba(124, 143, 255, 0.18);
   }
+
+  .runs-filter:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 480px) {
@@ -2795,7 +2996,9 @@ body.play-body {
   .model-folder__glyph,
   .setting-card,
   .animated-segmented .segmented__option,
-  #model-picker .chip {
+  #model-picker .chip,
+  .run-progress__fill,
+  .run-card__progress-fill {
     transition: none;
   }
 }

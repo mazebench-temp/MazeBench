@@ -8,6 +8,16 @@ const {
   distillCodexEvents,
   loadCodexModels
 } = require("../scripts/maze-agent-local");
+const {
+  findClaudeSessionFile,
+  findCodexSessionFile,
+  findPrimeResultsFile,
+  parseClaudeEvents,
+  parseCodexEvents,
+  parseCodexSession,
+  parsePrimeLiveUsage,
+  parsePrimeResults
+} = require("./token-usage");
 
 // GUI-launched servers (editors, preview harnesses) often get a minimal PATH
 // that misses the dirs where codex/claude/docker/prime live. Enrich the PATH
@@ -71,9 +81,16 @@ function createAgentRunService({
   const runnerScript = path.join(rootDir, "scripts", "maze-agent-local.js");
   const primeRunnerScript = path.join(rootDir, "scripts", "maze-prime-run.js");
   const renderFrameScript = path.join(rootDir, "scripts", "maze-render-frame.js");
+  const replayScript = path.join(rootDir, "scripts", "maze-export-replay.js");
   const liveChildren = new Map();
+  const videoChildren = new Map();
   const liveFrameLocks = new Map();
   const resolvedRunModels = new Map();
+  const legacyClaudeSnapshotTimers = new Map();
+  const legacyClaudeSnapshotStamps = new Map();
+  const codexSessionPaths = new Map();
+  const primeResultsPaths = new Map();
+  const tokenUsageCache = new Map();
 
   // Container mode needs Docker installed AND its daemon running. Prefer the
   // shared (cached) environment probe; fall back to a direct check otherwise.
@@ -165,6 +182,114 @@ function createAgentRunService({
     return path.join(runDirFor(runId), "run.json");
   }
 
+  function runContainerId(runId) {
+    try {
+      const id = fs.readFileSync(path.join(runDirFor(runId), "container.cid"), "utf8").trim();
+      return /^[a-f0-9]{12,64}$/i.test(id) ? id : "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function dockerRunControl(runId, args, action, { required = true } = {}) {
+    const containerId = runContainerId(runId);
+
+    if (!containerId) {
+      if (required) throw new Error(`The Docker container is still starting; try ${action} again in a moment.`);
+      return false;
+    }
+
+    const result = spawnSync("docker", [...args, containerId], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 15000,
+      maxBuffer: 1024 * 1024
+    });
+
+    if (result.status !== 0) {
+      const detail = String(result.stderr || result.stdout || "").trim().split(/\r?\n/).pop();
+      throw new Error(`Could not ${action} the Docker run${detail ? `: ${detail}` : "."}`);
+    }
+
+    return true;
+  }
+
+  // Runs created before per-run Claude mounts were introduced still keep their
+  // native transcript inside the live container. Mirror it after each completed
+  // maze action so those already-running sessions can also Continue losslessly.
+  function snapshotLegacyClaudeConversation(runId, meta, { force = false } = {}) {
+    if (!meta?.container || meta.model !== "claude" || meta.conversation_persistence === "run-dir") return false;
+    const conversationId = readConversationId(runId);
+    const containerId = runContainerId(runId);
+    if (!conversationId || !containerId) return false;
+
+    const runDir = runDirFor(runId);
+    const actionsStamp = fileStamp(path.join(runDir, "actions.jsonl"));
+    if (!force && legacyClaudeSnapshotStamps.get(runId) === actionsStamp) return true;
+
+    const targetDir = path.join(runDir, "agent-state", "claude", "projects", "-app");
+    const target = path.join(targetDir, `${conversationId}.jsonl`);
+    const temporary = `${target}.snapshot-${process.pid}`;
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.rmSync(temporary, { force: true });
+
+    const result = spawnSync(
+      "docker",
+      ["cp", `${containerId}:/home/pwuser/.claude/projects/-app/${conversationId}.jsonl`, temporary],
+      { encoding: "utf8", env: enrichedPathEnv(), timeout: 15000, maxBuffer: 1024 * 1024 }
+    );
+
+    if (result.status !== 0 || !fs.existsSync(temporary)) {
+      fs.rmSync(temporary, { force: true });
+      return false;
+    }
+
+    fs.renameSync(temporary, target);
+    legacyClaudeSnapshotStamps.set(runId, actionsStamp);
+    return true;
+  }
+
+  function stopLegacyClaudeSnapshots(runId) {
+    const timer = legacyClaudeSnapshotTimers.get(runId);
+    if (timer) clearInterval(timer);
+    legacyClaudeSnapshotTimers.delete(runId);
+    legacyClaudeSnapshotStamps.delete(runId);
+  }
+
+  function startLegacyClaudeSnapshots(runId) {
+    if (legacyClaudeSnapshotTimers.has(runId)) return;
+    const meta = readRunMeta(runId);
+    if (!meta?.container || meta.model !== "claude" || meta.conversation_persistence === "run-dir") return;
+
+    snapshotLegacyClaudeConversation(runId, meta, { force: true });
+    const timer = setInterval(() => {
+      const current = readRunMeta(runId);
+      if (!current || !["running", "stopping"].includes(current.status)) {
+        stopLegacyClaudeSnapshots(runId);
+        return;
+      }
+      snapshotLegacyClaudeConversation(runId, current);
+    }, 1500);
+    timer.unref?.();
+    legacyClaudeSnapshotTimers.set(runId, timer);
+  }
+
+  function signalRunProcess(meta, signal) {
+    if (!meta?.pid) return false;
+
+    try {
+      process.kill(-meta.pid, signal);
+      return true;
+    } catch (_error) {
+      try {
+        process.kill(meta.pid, signal);
+        return true;
+      } catch (_innerError) {
+        return false;
+      }
+    }
+  }
+
   function readRunMeta(runId) {
     return loadJson(runMetaPath(runId), null);
   }
@@ -186,6 +311,62 @@ function createAgentRunService({
     }
   }
 
+  function activeElapsedMs(meta, now = Date.now()) {
+    const stored = Number(meta?.active_elapsed_ms);
+    const tracked = Number.isFinite(stored) || Boolean(meta?.active_started_at);
+
+    if (tracked) {
+      let elapsed = Number.isFinite(stored) ? Math.max(0, stored) : 0;
+      const startedAt = Date.parse(meta.active_started_at || "");
+      if (Number.isFinite(startedAt) && ["running", "stopping"].includes(meta.status)) {
+        elapsed += Math.max(0, now - startedAt);
+      }
+      return Math.round(elapsed);
+    }
+
+    // Existing runs predate active-time tracking. Use their terminal/pause time
+    // so their progress UI still has a reasonable historical duration.
+    const createdAt = Date.parse(meta?.created_at || "");
+    const endedAt = Date.parse(
+      meta?.finished_at || meta?.paused_at || (["running", "stopping"].includes(meta?.status) ? new Date(now).toISOString() : "")
+    );
+    return Number.isFinite(createdAt) && Number.isFinite(endedAt) ? Math.max(0, endedAt - createdAt) : 0;
+  }
+
+  function terminalRunMeta(meta, status, extras = {}) {
+    const finishedAt = extras.finished_at || new Date().toISOString();
+    return {
+      ...meta,
+      ...extras,
+      status,
+      finished_at: finishedAt,
+      active_elapsed_ms: activeElapsedMs(meta, Date.parse(finishedAt)),
+      active_started_at: null
+    };
+  }
+
+  function progressForRun(meta, turns) {
+    const total = Math.max(1, Math.floor(Number(meta.moves) || 1));
+    const current = Math.max(0, Math.floor(Number(turns) || 0));
+    const terminalComplete = meta.status === "finished";
+    const rawPercent = (Math.min(current, total) / total) * 100;
+    const percent = terminalComplete ? 100 : Math.max(0, Math.min(100, rawPercent));
+    const elapsedMs = activeElapsedMs(meta);
+    const averageTurnMs = current > 0 ? elapsedMs / current : null;
+    const etaMs = meta.status === "running" && averageTurnMs != null
+      ? Math.max(0, Math.round(averageTurnMs * Math.max(0, total - current)))
+      : null;
+
+    return {
+      current,
+      total,
+      percent: Math.round(percent * 10) / 10,
+      elapsed_ms: elapsedMs,
+      average_turn_ms: averageTurnMs == null ? null : Math.round(averageTurnMs),
+      eta_ms: etaMs
+    };
+  }
+
   function finalizeStatus(runId, meta) {
     if (!meta || meta.status !== "running" || pidAlive(meta.pid) || liveChildren.has(runId)) {
       return meta;
@@ -196,19 +377,18 @@ function createAgentRunService({
       fs.existsSync(path.join(runDirFor(runId), "maze_scorecard.json")) ||
       fs.existsSync(path.join(runDirFor(runId), "scorecard.json"));
     const quota = succeeded ? null : detectQuotaPause(runId);
+    const now = new Date().toISOString();
     const updated = quota
       ? {
           ...meta,
           status: "paused",
           pause_reason: "quota",
           pause_message: quota.message,
-          paused_at: meta.paused_at || new Date().toISOString()
+          paused_at: meta.paused_at || now,
+          active_elapsed_ms: activeElapsedMs(meta, Date.parse(meta.paused_at || now)),
+          active_started_at: null
         }
-      : {
-          ...meta,
-          status: succeeded ? "finished" : "failed",
-          finished_at: meta.finished_at || new Date().toISOString()
-        };
+      : terminalRunMeta(meta, succeeded ? "finished" : "failed", { finished_at: meta.finished_at || now });
     writeRunMeta(runId, updated);
     return updated;
   }
@@ -243,6 +423,23 @@ function createAgentRunService({
         solved: Boolean(record.status?.solved),
         level: record.status?.level || null
       }));
+  }
+
+  function readPrimeLiveTurns(runDir) {
+    const usagePath = path.join(runDir, "prime-usage.jsonl");
+    if (!fs.existsSync(usagePath)) return 0;
+
+    return fs
+      .readFileSync(usagePath, "utf8")
+      .split(/\r?\n/)
+      .reduce((highest, line) => {
+        if (!line.trim()) return highest;
+        try {
+          return Math.max(highest, Number(JSON.parse(line).turn) || 0);
+        } catch (_error) {
+          return highest;
+        }
+      }, 0);
   }
 
   function readLogChunk(runId, offset = 0) {
@@ -410,6 +607,8 @@ function createAgentRunService({
       return null;
     }
 
+    if (meta.status === "running") startLegacyClaudeSnapshots(runId);
+
     const actions = readActions(runId);
     const last = actions[actions.length - 1] || null;
     const runDir = runDirFor(runId);
@@ -421,22 +620,42 @@ function createAgentRunService({
     const scorecardRooms = Number(scorecard?.rooms?.visited);
     const scorecardRoomTotal = Number(scorecard?.rooms?.total);
     const scorecardGemTotal = Number(scorecard?.gems?.total);
+    const turns = meta.kind === "prime" ? Math.max(actions.length, readPrimeLiveTurns(runDir)) : actions.length;
+    const game = getGame(meta.game_id);
+    const defaultLevelId = game ? worldMaps.defaultLevelIdForGame(game) : "";
+
+    const hasVideo = fs.existsSync(path.join(runDir, "maze_replay.mp4"));
+    const storedVideoStatus =
+      meta.video_status === "rendering" && !videoChildren.has(runId) && !pidAlive(meta.video_pid)
+        ? "failed"
+        : meta.video_status;
+    const videoStatus = hasVideo
+      ? "ready"
+      : videoChildren.has(runId) || (meta.video_status === "rendering" && pidAlive(meta.video_pid))
+        ? "rendering"
+        : storedVideoStatus || (meta.video && ["finished", "stopped", "failed"].includes(meta.status) ? "failed" : "idle");
 
     return {
       ...meta,
       model_name: modelName,
-      turns: actions.length,
+      turns,
       gem_count: last ? last.gem_count : 0,
       gem_total: Number.isFinite(scorecardGemTotal) ? scorecardGemTotal : meta.gem_total ?? null,
       room_count: Number.isFinite(scorecardRooms) ? scorecardRooms : observedRooms.size,
       room_total: Number.isFinite(scorecardRoomTotal) ? scorecardRoomTotal : meta.room_total ?? null,
+      progress: progressForRun(meta, turns),
+      start_room_is_default: Boolean(defaultLevelId && meta.level_id === defaultLevelId),
       current_room: last ? last.current_room : meta.level_id,
       solved: Boolean(last && last.solved),
-      has_video: fs.existsSync(path.join(runDir, "maze_replay.mp4")),
+      has_video: hasVideo,
+      video_status: videoStatus,
       has_reasoning: fs.existsSync(path.join(runDir, "reasoning.json")),
       // Grouping key for the runs-list provider filter (codex | claude | prime).
       provider: meta.kind === "prime" ? "prime" : meta.model,
-      pausable: meta.status === "running",
+      pausable:
+        meta.status === "running" &&
+        meta.kind !== "prime" &&
+        (meta.container === false || Boolean(runContainerId(runId))),
       resumable: meta.status === "paused",
       continuable: meta.status === "finished" || meta.status === "stopped",
       url: `/agent/runs/${encodeURIComponent(runId)}`
@@ -464,11 +683,17 @@ function createAgentRunService({
     const all = allRunSummaries();
     const provider = String(options.provider || "").trim();
     const model = String(options.model || "").trim();
+    const status = String(options.status || "").trim();
     const query = String(options.query || "").trim().toLowerCase();
     const sort = String(options.sort || "newest");
 
     const providers = [...new Set(all.map((run) => run.provider).filter(Boolean))].sort();
     const models = [...new Set(all.map((run) => run.model_name).filter(Boolean))].sort();
+    const standardStatuses = ["running", "paused", "stopping", "stopped", "finished", "failed"];
+    const extraStatuses = [...new Set(all.map((run) => run.status).filter(Boolean))]
+      .filter((value) => !standardStatuses.includes(value))
+      .sort();
+    const statuses = [...standardStatuses, ...extraStatuses];
 
     let filtered = all;
 
@@ -478,6 +703,10 @@ function createAgentRunService({
 
     if (model) {
       filtered = filtered.filter((run) => (run.model_name || "") === model);
+    }
+
+    if (status) {
+      filtered = filtered.filter((run) => run.status === status);
     }
 
     if (query) {
@@ -510,6 +739,7 @@ function createAgentRunService({
       page_size: pageSize,
       providers,
       models,
+      statuses,
       active: all.some((run) => run.status === "running" || run.status === "stopping")
     };
   }
@@ -520,24 +750,126 @@ function createAgentRunService({
   function readReasoning(runId, model) {
     const runDir = runDirFor(runId);
     const finalPath = path.join(runDir, "reasoning.json");
+    const finalReasoning = fs.existsSync(finalPath) ? loadJson(finalPath, []) : [];
+    const executedMoves = model === "prime"
+      ? Math.max(readActions(runId).length, readPrimeLiveTurns(runDir))
+      : readActions(runId).length;
+    const alignToMoves = (entries) => entries.filter(
+      (entry) => !Number(entry?.move) || Number(entry.move) <= executedMoves
+    );
 
-    if (fs.existsSync(finalPath)) {
-      return loadJson(finalPath, []);
+    if (model === "prime") {
+      if (finalReasoning.length) return alignToMoves(finalReasoning);
+      const livePath = path.join(runDir, "prime-reasoning.jsonl");
+      if (!fs.existsSync(livePath)) return [];
+      return alignToMoves(fs
+        .readFileSync(livePath, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line)];
+          } catch (_error) {
+            return [];
+          }
+        }));
     }
 
     const eventsPath = path.join(runDir, "agent-events.jsonl");
 
     if (!fs.existsSync(eventsPath)) {
-      return [];
+      return alignToMoves(finalReasoning);
     }
 
     try {
       const raw = fs.readFileSync(eventsPath, "utf8");
       const distilled = model === "claude" ? distillClaudeEvents(raw) : distillCodexEvents(raw);
-      return distilled.entries || [];
+      const liveReasoning = distilled.entries || [];
+      const liveWithText = liveReasoning.filter((entry) => entry.reasoning).length;
+      const finalWithText = finalReasoning.filter((entry) => entry.reasoning).length;
+      return alignToMoves(liveReasoning.length > finalReasoning.length || liveWithText > finalWithText
+        ? liveReasoning
+        : finalReasoning);
     } catch (error) {
-      return [];
+      return alignToMoves(finalReasoning);
     }
+  }
+
+  function fileStamp(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) return "-";
+
+    try {
+      const stat = fs.statSync(filePath);
+      return `${filePath}:${stat.size}:${stat.mtimeMs}`;
+    } catch (_error) {
+      return "-";
+    }
+  }
+
+  function readTokenUsage(runId, summary) {
+    const runDir = runDirFor(runId);
+    const eventsPath = path.join(runDir, "agent-events.jsonl");
+    const primeLiveUsagePath = path.join(runDir, "prime-usage.jsonl");
+    let codexSessionPath = "";
+    let primeResultsPath = "";
+
+    if (summary.provider === "codex") {
+      const conversationId = readConversationId(runId);
+      codexSessionPath = codexSessionPaths.get(conversationId) || "";
+
+      if (conversationId && !codexSessionPath) {
+        const runCodexHome = path.join(runDir, "agent-state", "codex");
+        const hostCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+        codexSessionPath =
+          findCodexSessionFile(runCodexHome, conversationId) ||
+          findCodexSessionFile(hostCodexHome, conversationId);
+        if (codexSessionPath) codexSessionPaths.set(conversationId, codexSessionPath);
+      }
+    } else if (summary.provider === "prime") {
+      primeResultsPath = primeResultsPaths.get(runId) || "";
+      if (!primeResultsPath) {
+        primeResultsPath = findPrimeResultsFile(runDir);
+        if (primeResultsPath) primeResultsPaths.set(runId, primeResultsPath);
+      }
+    }
+
+    const signature = [
+      fileStamp(eventsPath),
+      fileStamp(codexSessionPath),
+      fileStamp(primeLiveUsagePath),
+      fileStamp(primeResultsPath)
+    ].join("|");
+    const cached = tokenUsageCache.get(runId);
+    if (cached?.signature === signature) return cached.value;
+
+    let value;
+    try {
+      if (summary.provider === "codex") {
+        value = codexSessionPath
+          ? parseCodexSession(fs.readFileSync(codexSessionPath, "utf8"))
+          : parseCodexEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
+      } else if (summary.provider === "claude") {
+        value = parseClaudeEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
+      } else {
+        const hasFinalResults = primeResultsPath && fs.statSync(primeResultsPath).size > 0;
+        value = hasFinalResults
+          ? parsePrimeResults(fs.readFileSync(primeResultsPath, "utf8"))
+          : parsePrimeLiveUsage(
+              fs.existsSync(primeLiveUsagePath) ? fs.readFileSync(primeLiveUsagePath, "utf8") : ""
+            );
+      }
+    } catch (_error) {
+      value = {
+        provider: summary.provider,
+        available: false,
+        exact: false,
+        note: "Token telemetry is not available for this run.",
+        actions: []
+      };
+    }
+
+    tokenUsageCache.set(runId, { signature, value });
+    return value;
   }
 
   // The rendered image the human watches: in vision mode the agent's own frames
@@ -783,6 +1115,8 @@ function createAgentRunService({
       return null;
     }
 
+    if (summary.status === "running") startLegacyClaudeSnapshots(runId);
+
     const log = readLogChunk(runId, logOffset);
 
     return {
@@ -790,6 +1124,7 @@ function createAgentRunService({
       actions: readActions(runId, Number(afterTurn) || 0),
       log_chunk: log.chunk,
       log_offset: log.offset,
+      token_usage: readTokenUsage(runId, summary),
       reasoning: readReasoning(runId, summary.model),
       vision_frame_url: summary.mode === "vision" ? latestVisionFrame(runId) : null,
       replay_progress: summary.has_video ? { phase: "done", percent: 100 } : readReplayProgress(runId)
@@ -841,6 +1176,23 @@ function createAgentRunService({
         ? "This is the model list available to the installed Codex app. Refresh after Codex receives a catalog update."
         : "No Codex model cache found (~/.codex/models_cache.json) — run the Codex app once, or type a model id."
     };
+  }
+
+  function claudeReasoningLevels(modelId) {
+    const id = String(modelId || "").toLowerCase().replace(/\./g, "-");
+    const supportsXhigh = /(?:^|-)claude-(?:fable-5|mythos-5|opus-4-(?:7|8)|sonnet-5)(?:-|$)/.test(`-${id}`);
+    const supportsMax = supportsXhigh ||
+      /(?:^|-)claude-(?:mythos-preview|opus-4-6|sonnet-4-6)(?:-|$)/.test(`-${id}`);
+    const supportsEffort = supportsMax || /(?:^|-)claude-opus-4-5(?:-|$)/.test(`-${id}`);
+
+    if (!supportsEffort) return [];
+    return [
+      "low",
+      "medium",
+      "high",
+      ...(supportsXhigh ? ["xhigh"] : []),
+      ...(supportsMax ? ["max"] : [])
+    ];
   }
 
   function claudeModelCatalog() {
@@ -945,13 +1297,14 @@ function createAgentRunService({
         id: alias,
         label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
         description: descriptions[alias] || `Latest model behind the ${alias} alias`,
-        resolved_model_id: pickerModelIds.get(alias) || ""
+        resolved_model_id: pickerModelIds.get(alias) || "",
+        reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
       })),
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
       default_model_id: aliases[0] || "",
-      // Claude Code's `claude --effort <level>` accepts these (verified from the
-      // CLI); it's provider-wide, not per model.
+      // The CLI accepts this complete syntax set, but each model above carries
+      // its own supported subset. For example, Haiku 4.5 has no effort control.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
       note: pickerLabels.size
@@ -1199,7 +1552,22 @@ function createAgentRunService({
     }
 
     if (params.reasoning) {
-      args.push(`reasoning=${String(params.reasoning)}`);
+      const reasoning = String(params.reasoning).toLowerCase();
+
+      if (model === "claude") {
+        const exactModelId = resolveClaudeCatalogModelId(params.model_name);
+        const supported = claudeReasoningLevels(exactModelId);
+
+        if (exactModelId.startsWith("claude-") && !supported.includes(reasoning)) {
+          throw new Error(
+            supported.length
+              ? `${exactModelId} supports Claude effort: ${supported.join(", ")}.`
+              : `${exactModelId} does not support Claude effort. Choose off.`
+          );
+        }
+      }
+
+      args.push(`reasoning=${reasoning}`);
     }
 
     if (params.codex_fast === true || params.codex_fast === "true") {
@@ -1375,7 +1743,10 @@ function createAgentRunService({
           video: !(params.video === false || params.video === "false"),
           launch_params: launchParamsOf(params),
           continue_of: params.continue_of || null,
-          seeded: Boolean(params.seed_run)
+          seeded: Boolean(params.seed_run),
+          conversation_persistence: !(params.container === false || params.container === "false")
+            ? "run-dir"
+            : "cli"
         };
       }
     } catch (error) {
@@ -1385,6 +1756,8 @@ function createAgentRunService({
     }
 
     fs.closeSync(logFd);
+    meta.active_started_at = meta.created_at;
+    meta.active_elapsed_ms = 0;
     attachRunChild(runId, child);
     writeRunMeta(runId, meta);
     return summarizeRun(runId);
@@ -1410,23 +1783,33 @@ function createAgentRunService({
       }
 
       if (code === 0) {
-        writeRunMeta(runId, { ...current, status: "finished", exit_code: code, finished_at: new Date().toISOString() });
+        writeRunMeta(runId, terminalRunMeta(current, "finished", { exit_code: code }));
         return;
       }
 
       if (current.status === "stopping") {
-        writeRunMeta(runId, { ...current, status: "stopped", exit_code: code, finished_at: new Date().toISOString() });
+        writeRunMeta(runId, terminalRunMeta(current, "stopped", { exit_code: code }));
         return;
       }
 
       // Non-zero exit that isn't a user stop: if it's an out-of-funds/credits/
       // usage error, auto-pause (resumable) rather than fail it outright.
       const quota = detectQuotaPause(runId);
+      const now = new Date().toISOString();
       writeRunMeta(
         runId,
         quota
-          ? { ...current, status: "paused", pause_reason: "quota", pause_message: quota.message, exit_code: code, paused_at: new Date().toISOString() }
-          : { ...current, status: "failed", exit_code: code, finished_at: new Date().toISOString() }
+          ? {
+              ...current,
+              status: "paused",
+              pause_reason: "quota",
+              pause_message: quota.message,
+              exit_code: code,
+              paused_at: now,
+              active_elapsed_ms: activeElapsedMs(current, Date.parse(now)),
+              active_started_at: null
+            }
+          : terminalRunMeta(current, "failed", { exit_code: code, finished_at: now })
       );
     });
     child.on("error", () => {
@@ -1470,19 +1853,29 @@ function createAgentRunService({
       return summarizeRun(runId);
     }
 
-    // SIGSTOP the whole process group so the agent (and any docker/node children)
-    // freeze in place; SIGCONT on resume picks up exactly where it left off.
-    try {
-      process.kill(-meta.pid, "SIGSTOP");
-    } catch (error) {
-      try {
-        process.kill(meta.pid, "SIGSTOP");
-      } catch (innerError) {
-        /* already gone — fall through and mark it paused anyway */
-      }
+    if (meta.kind === "prime") {
+      throw new Error("Prime Intellect runs cannot be paused. Cancel the run instead.");
     }
 
-    writeRunMeta(runId, { ...meta, status: "paused", pause_reason: "manual", paused_at: new Date().toISOString() });
+    if (meta.container) {
+      // The docker client belongs to the host process group, but the agent does
+      // not: it runs under the Docker daemon. Pause the container itself.
+      dockerRunControl(runId, ["pause"], "pause");
+      snapshotLegacyClaudeConversation(runId, meta, { force: true });
+    } else {
+      // Host agents and their CLI children share the detached runner's group.
+      signalRunProcess(meta, "SIGSTOP");
+    }
+
+    const pausedAt = new Date().toISOString();
+    writeRunMeta(runId, {
+      ...meta,
+      status: "paused",
+      pause_reason: "manual",
+      paused_at: pausedAt,
+      active_elapsed_ms: activeElapsedMs(meta, Date.parse(pausedAt)),
+      active_started_at: null
+    });
     return summarizeRun(runId);
   }
 
@@ -1497,21 +1890,32 @@ function createAgentRunService({
       return summarizeRun(runId);
     }
 
+    if (meta.pause_reason !== "quota" && meta.container) {
+      dockerRunControl(runId, ["unpause"], "resume");
+      const { pause_reason, pause_message, paused_at, ...rest } = meta;
+      writeRunMeta(runId, {
+        ...rest,
+        status: "running",
+        active_started_at: new Date().toISOString(),
+        active_elapsed_ms: activeElapsedMs(meta)
+      });
+      startLegacyClaudeSnapshots(runId);
+      return summarizeRun(runId);
+    }
+
     // A manually-paused run still has a live (stopped) process — just continue it.
     if (meta.pause_reason !== "quota" && pidAlive(meta.pid)) {
-      try {
-        process.kill(-meta.pid, "SIGCONT");
-      } catch (error) {
-        try {
-          process.kill(meta.pid, "SIGCONT");
-        } catch (innerError) {
-          /* the process died while paused — fall through to a continuation */
-        }
-      }
+      signalRunProcess(meta, "SIGCONT");
 
       if (pidAlive(meta.pid)) {
         const { pause_reason, pause_message, paused_at, ...rest } = meta;
-        writeRunMeta(runId, { ...rest, status: "running" });
+        writeRunMeta(runId, {
+          ...rest,
+          status: "running",
+          active_started_at: new Date().toISOString(),
+          active_elapsed_ms: activeElapsedMs(meta)
+        });
+        startLegacyClaudeSnapshots(runId);
         return summarizeRun(runId);
       }
     }
@@ -1579,6 +1983,21 @@ function createAgentRunService({
     return "";
   }
 
+  function hasPersistedContainerConversation(runId, meta, conversationId) {
+    if (!meta.container || !conversationId) return false;
+    const stateRoot = path.join(runDirFor(runId), "agent-state");
+
+    if (meta.model === "codex") {
+      return Boolean(findCodexSessionFile(path.join(stateRoot, "codex"), conversationId));
+    }
+
+    if (meta.model === "claude") {
+      return Boolean(findClaudeSessionFile(path.join(stateRoot, "claude"), conversationId));
+    }
+
+    return false;
+  }
+
   // A true continue: re-spawn the agent into the SAME run dir with the CLI
   // conversation resumed, so the model keeps its full memory and the maze keeps
   // its state (both live here). The run itself is extended in place.
@@ -1613,7 +2032,9 @@ function createAgentRunService({
       finished_at: undefined,
       pause_reason: undefined,
       pause_message: undefined,
-      paused_at: undefined
+      paused_at: undefined,
+      active_started_at: new Date().toISOString(),
+      active_elapsed_ms: activeElapsedMs(meta)
     });
     attachRunChild(runId, child);
     return summarizeRun(runId);
@@ -1636,11 +2057,16 @@ function createAgentRunService({
       return launchRun(base);
     }
 
-    // Local: a TRUE continue resumes the same conversation in place (model keeps
-    // its memory). Only host runs qualify — container runs discard the CLI
-    // session on exit, so they fall back to a maze-state-only continue.
-    const conversationId = meta.container === false ? readConversationId(runId) : "";
-    if (conversationId) {
+    // Resume the same CLI conversation in the same run directory. Host agents
+    // use their normal CLI session store; new Docker runs keep a private,
+    // run-scoped session store under agent-state/ and mount it into every
+    // replacement container. Older Docker runs without that store fall back to
+    // a maze-state-only continuation because their model transcript is gone.
+    const conversationId = readConversationId(runId);
+    const canResumeConversation =
+      Boolean(conversationId) &&
+      (meta.container === false || hasPersistedContainerConversation(runId, meta, conversationId));
+    if (canResumeConversation) {
       return continueLocalInPlace(runId, meta, add, conversationId);
     }
 
@@ -1654,24 +2080,125 @@ function createAgentRunService({
     return launchRun(base);
   }
 
+  function generateRunVideo(runId) {
+    const meta = readRunMeta(runId);
+
+    if (!meta) {
+      throw new Error(`Unknown run "${runId}".`);
+    }
+
+    if (meta.status !== "finished") {
+      throw new Error("A replay video can be generated after the run finishes.");
+    }
+
+    const runDir = runDirFor(runId);
+    const videoPath = path.join(runDir, "maze_replay.mp4");
+    if (fs.existsSync(videoPath)) {
+      return summarizeRun(runId);
+    }
+
+    const activeVideo = videoChildren.get(runId);
+    if (activeVideo || (meta.video_status === "rendering" && pidAlive(meta.video_pid))) {
+      return summarizeRun(runId);
+    }
+
+    const sessionPath = path.join(runDir, "session.json");
+    const resultsPath = findPrimeResultsFile(runDir);
+    if (!fs.existsSync(sessionPath) && !resultsPath) {
+      throw new Error("This run has no saved session or eval result to render.");
+    }
+
+    fs.writeFileSync(
+      path.join(runDir, "replay-progress.json"),
+      `${JSON.stringify({ phase: "starting", percent: 0 })}\n`
+    );
+
+    const logFd = fs.openSync(path.join(runDir, "launcher.log"), "a");
+    let child;
+    try {
+      child = spawn(
+        process.execPath,
+        [replayScript, runDir, "--out-dir", runDir, "--draft", "--width", "640", "--height", "640"],
+        {
+          cwd: rootDir,
+          detached: true,
+          env: enrichedPathEnv(),
+          stdio: ["ignore", logFd, logFd]
+        }
+      );
+    } finally {
+      fs.closeSync(logFd);
+    }
+
+    const { video_error: _previousVideoError, ...cleanMeta } = meta;
+    writeRunMeta(runId, {
+      ...cleanMeta,
+      video: true,
+      video_pid: child.pid,
+      video_status: "rendering"
+    });
+
+    child.unref();
+    videoChildren.set(runId, child);
+    let settled = false;
+    const finish = (code, spawnError = null) => {
+      if (settled) return;
+      settled = true;
+      videoChildren.delete(runId);
+      const current = readRunMeta(runId);
+      if (!current) return;
+
+      const rendered = fs.existsSync(videoPath);
+      const { video_pid: _videoPid, ...rest } = current;
+      writeRunMeta(runId, {
+        ...rest,
+        video_status: rendered ? "ready" : "failed",
+        ...(rendered
+          ? { video_error: undefined }
+          : { video_error: spawnError?.message || `Video renderer exited with status ${code ?? "unknown"}.` })
+      });
+    };
+    child.on("exit", (code) => finish(code));
+    child.on("error", (error) => finish(null, error));
+
+    return summarizeRun(runId);
+  }
+
   function deleteRun(runId) {
     const meta = readRunMeta(runId);
     const runDir = runDirFor(runId);
 
-    // Kill any still-live (or paused) process before removing its directory.
-    if (meta && meta.pid && pidAlive(meta.pid)) {
+    // Remove the daemon-owned container first; killing only the attached docker
+    // client can otherwise leave the agent running after its card disappears.
+    if (meta?.container) {
       try {
-        process.kill(-meta.pid, "SIGKILL");
-      } catch (error) {
-        try {
-          process.kill(meta.pid, "SIGKILL");
-        } catch (innerError) {
-          /* already gone */
-        }
+        dockerRunControl(runId, ["rm", "-f"], "delete", { required: false });
+      } catch (_error) {
+        /* the container may already have exited and removed itself */
       }
     }
 
+    // Kill any still-live (or paused) host process before removing its directory.
+    if (meta && meta.pid && pidAlive(meta.pid)) {
+      signalRunProcess(meta, "SIGKILL");
+    }
+
+    const videoChild = videoChildren.get(runId);
+    if (videoChild?.pid) {
+      try {
+        process.kill(-videoChild.pid, "SIGKILL");
+      } catch (_error) {
+        try {
+          process.kill(videoChild.pid, "SIGKILL");
+        } catch (_innerError) {
+          /* renderer already exited */
+        }
+      }
+      videoChildren.delete(runId);
+    }
+
     liveChildren.delete(runId);
+    stopLegacyClaudeSnapshots(runId);
     stopLiveRenderer(runId);
     fs.rmSync(runDir, { recursive: true, force: true });
     return { id: runId, deleted: true };
@@ -1684,23 +2211,35 @@ function createAgentRunService({
       throw new Error(`Unknown run "${runId}".`);
     }
 
-    if (meta.status !== "running") {
+    if (meta.status !== "running" && !(meta.status === "paused" && meta.pause_reason === "manual")) {
       return summarizeRun(runId);
     }
 
     writeRunMeta(runId, { ...meta, status: "stopping" });
 
-    try {
-      // The runner was spawned detached (its own process group), so a negative
-      // pid signals the whole group — including docker/agent children.
-      process.kill(-meta.pid, "SIGTERM");
-    } catch (error) {
-      try {
-        process.kill(meta.pid, "SIGTERM");
-      } catch (innerError) {
-        /* already gone */
+    if (meta.container) {
+      if (meta.status === "paused") {
+        // Docker requires a paused container to be unpaused before graceful stop.
+        try {
+          dockerRunControl(runId, ["unpause"], "resume before stopping");
+        } catch (_error) {
+          /* it may already have resumed or exited */
+        }
       }
+
+      try {
+        dockerRunControl(runId, ["stop", "-t", "2"], "stop", { required: false });
+      } catch (_error) {
+        // Fall through to the host process signal below. Delete remains a
+        // forceful escape hatch if Docker itself is unavailable.
+      }
+    } else if (meta.status === "paused") {
+      signalRunProcess(meta, "SIGCONT");
     }
+
+    // Reap the outer node/docker/uv process group after the actual workload has
+    // been stopped. For Prime this also lets uv clean up its rollout children.
+    signalRunProcess(meta, "SIGTERM");
 
     return summarizeRun(runId);
   }
@@ -1720,6 +2259,7 @@ function createAgentRunService({
   return {
     continueRun,
     deleteRun,
+    generateRunVideo,
     getEnvironment,
     getRunProgress,
     launchRun,

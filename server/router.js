@@ -163,6 +163,7 @@ function createRequestRouter({
             pageSize: Number(url.searchParams.get("page_size")) || 10,
             provider: url.searchParams.get("provider") || "",
             model: url.searchParams.get("model") || "",
+            status: url.searchParams.get("status") || "",
             query: url.searchParams.get("q") || "",
             sort: url.searchParams.get("sort") || "newest"
           })
@@ -236,6 +237,12 @@ function createRequestRouter({
         const payload = await readJsonBody(request);
         const run = agentRuns.continueRun(runId, payload?.moves);
         sendJson(response, 201, { run, message: `Continuing as run ${run.id}.` });
+        return;
+      }
+
+      if (segments[4] === "video" && request.method === "POST") {
+        const run = agentRuns.generateRunVideo(runId);
+        sendJson(response, 202, { run, message: "Replay video generation started." });
         return;
       }
 

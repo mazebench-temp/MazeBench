@@ -20,6 +20,7 @@ const { spawn } = require("node:child_process");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const EXPORT_REPLAY = path.join(ROOT_DIR, "scripts", "maze-export-replay.js");
+const LIVE_EVAL = path.join(ROOT_DIR, "scripts", "maze-prime-live-eval.py");
 
 function parseArgs(argv) {
   const opts = { envDir: "", outDir: "", model: "", maxTurns: 20, vision: false, reasoning: "", video: true };
@@ -50,7 +51,16 @@ function parseArgs(argv) {
 // simply "make N moves and stop". -o keeps results inside the run dir.
 function runEval(opts) {
   const evalOutDir = path.join(opts.outDir, "eval-output");
-  const argv = ["run", "--project", opts.envDir, "eval", "mazebench"];
+  const liveUsagePath = path.join(opts.outDir, "prime-usage.jsonl");
+  const liveActionsPath = path.join(opts.outDir, "actions.jsonl");
+  const liveReasoningPath = path.join(opts.outDir, "prime-reasoning.jsonl");
+  const argv = ["run", "--project", opts.envDir, "python", LIVE_EVAL, "mazebench"];
+
+  // The live exporter appends after every model turn. Start each run clean so
+  // polling clients never mix usage from an earlier attempt.
+  fs.writeFileSync(liveUsagePath, "");
+  fs.writeFileSync(liveActionsPath, "");
+  fs.writeFileSync(liveReasoningPath, "");
 
   if (opts.model) {
     argv.push("-m", opts.model);
@@ -83,7 +93,16 @@ function runEval(opts) {
   console.log(`[mazebench] uv ${argv.join(" ")}`);
 
   return new Promise((resolve) => {
-    const child = spawn("uv", argv, { cwd: opts.envDir, stdio: ["ignore", "inherit", "inherit"] });
+    const child = spawn("uv", argv, {
+      cwd: opts.envDir,
+      env: {
+        ...process.env,
+        MAZEBENCH_LIVE_USAGE_PATH: liveUsagePath,
+        MAZEBENCH_LIVE_ACTIONS_PATH: liveActionsPath,
+        MAZEBENCH_LIVE_REASONING_PATH: liveReasoningPath
+      },
+      stdio: ["ignore", "inherit", "inherit"]
+    });
     child.on("error", (error) => {
       console.error(`[mazebench] could not start uv: ${error.message}`);
       resolve(127);

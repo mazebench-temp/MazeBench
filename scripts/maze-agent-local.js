@@ -306,28 +306,119 @@ function ensureAgentAvailable(bin) {
   }
 }
 
-function actionFromShellCommand(command) {
+function unwrapShellCommand(command) {
   let inner = String(command || "");
   const wrapped = inner.match(/-lc\s+'([\s\S]*)'\s*$/) || inner.match(/-lc\s+"([\s\S]*)"\s*$/);
   if (wrapped) inner = wrapped[1];
-  const match = inner.match(/\baction\s+--state\s+(?:"[^"]*"|'[^']*'|\S+)\s+([\s\S]+?)\s*$/);
-  if (!match) return null;
-  return match[1].trim().replace(/^["']|["']$/g, "");
+  return inner;
+}
+
+function splitShellCommands(command) {
+  const input = unwrapShellCommand(command);
+  const commands = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const separatorLength = input.startsWith("&&", index) || input.startsWith("||", index) ? 2 : character === ";" ? 1 : 0;
+    if (separatorLength) {
+      if (current.trim()) commands.push(current.trim());
+      current = "";
+      index += separatorLength - 1;
+      continue;
+    }
+    current += character;
+  }
+
+  if (current.trim()) commands.push(current.trim());
+  return commands;
+}
+
+function actionsFromShellCommand(command) {
+  return splitShellCommands(command).flatMap((inner) => {
+    const match = inner.match(/\baction\s+--state\s+(?:"[^"]*"|'[^']*'|\S+)\s+([\s\S]+?)\s*$/);
+    return match ? [match[1].trim().replace(/^["']|["']$/g, "")] : [];
+  });
+}
+
+function actionFromShellCommand(command) {
+  return actionsFromShellCommand(command)[0] || null;
+}
+
+function resultShape(status) {
+  return {
+    moved: status.moved,
+    gems: status.gem_count,
+    room: status.current_room,
+    room_changed: Boolean(status.room_changed),
+    player_dead: Boolean(status.player_dead)
+  };
+}
+
+function resultsFromOutput(output) {
+  const raw = String(output || "").trim();
+  if (!raw) return [];
+  const values = [];
+  let start = -1;
+  let depth = 0;
+  let quote = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quote = false;
+      continue;
+    }
+    if (character === '"') {
+      quote = true;
+      continue;
+    }
+    if (character === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (character === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        try {
+          values.push(resultShape(JSON.parse(raw.slice(start, index + 1))));
+        } catch (_error) {
+          /* skip non-status JSON */
+        }
+        start = -1;
+      }
+    }
+  }
+
+  return values;
 }
 
 function resultFromOutput(output) {
-  try {
-    const status = JSON.parse(String(output || "").trim());
-    return {
-      moved: status.moved,
-      gems: status.gem_count,
-      room: status.current_room,
-      room_changed: Boolean(status.room_changed),
-      player_dead: Boolean(status.player_dead)
-    };
-  } catch (_error) {
-    return {};
-  }
+  return resultsFromOutput(output)[0] || {};
 }
 
 // Turn codex's --json event stream into a per-move reasoning log plus a
@@ -363,14 +454,14 @@ function distillCodexEvents(raw) {
       const command = String(item.command || "");
       const output = String(item.aggregated_output || "");
       transcript.push(`$ ${command}`);
-      const action = actionFromShellCommand(command);
-      if (action) {
-        move += 1;
-        entries.push({
-          move,
-          action,
-          reasoning: commentary.join("\n\n").trim(),
-          ...resultFromOutput(output)
+      const actions = actionsFromShellCommand(command);
+      if (actions.length) {
+        const reasoning = commentary.join("\n\n").trim();
+        const results = resultsFromOutput(output);
+        const executed = results.length ? actions.slice(0, results.length) : actions;
+        executed.forEach((action, index) => {
+          move += 1;
+          entries.push({ move, action, reasoning, ...(results[index] || {}) });
         });
         commentary = [];
       }
@@ -420,26 +511,31 @@ function distillClaudeEvents(raw) {
 
     // Moves come from the aggregated assistant message's tool_use blocks.
     if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+      const reasoning = commentary.trim();
+      let hasActions = false;
       for (const block of event.message.content) {
         if (block.type !== "tool_use") continue;
         const command = block.name === "Bash" ? String(block.input?.command || "") : "";
         transcript.push(`$ ${command || block.name}`);
-        const action = actionFromShellCommand(command);
-        if (action) {
-          move += 1;
-          const reasoning = commentary.trim();
+        const actions = actionsFromShellCommand(command);
+        if (actions.length) {
+          hasActions = true;
           if (reasoning) transcript.push(`[reasoning] ${reasoning}`);
-          const entry = { move, action, reasoning };
-          entries.push(entry);
-          if (block.id) pending.set(block.id, entry);
-          commentary = "";
+          if (block.id) pending.set(block.id, { actions, reasoning });
         }
       }
+      if (hasActions) commentary = "";
     } else if (event.type === "user" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
         if (block.type === "tool_result" && pending.has(block.tool_use_id)) {
           const output = toolResultText(block.content);
-          Object.assign(pending.get(block.tool_use_id), resultFromOutput(output));
+          const batch = pending.get(block.tool_use_id);
+          const results = resultsFromOutput(output);
+          const executed = results.length ? batch.actions.slice(0, results.length) : batch.actions;
+          executed.forEach((action, index) => {
+            move += 1;
+            entries.push({ move, action, reasoning: batch.reasoning, ...(results[index] || {}) });
+          });
           if (output) transcript.push(output.split("\n").slice(0, 3).join("\n"));
           pending.delete(block.tool_use_id);
         }
@@ -648,6 +744,18 @@ function loadCodexModels() {
 // passed by env. Everything else the agent could touch lives in the image.
 function runInContainer(config, raw) {
   const hostOutputs = path.join(ROOT_DIR, "outputs", "maze-local");
+  const cidFile = path.join(config.outDir, "container.cid");
+  const agentStateDir = path.join(config.outDir, "agent-state");
+
+  // Docker writes the exact container id here as soon as it creates the
+  // container. The Agent backend uses it for real docker pause/unpause/stop
+  // operations instead of merely freezing the attached docker client.
+  fs.mkdirSync(config.outDir, { recursive: true });
+  try {
+    fs.unlinkSync(cidFile);
+  } catch (error) {
+    if (error && error.code !== "ENOENT") throw error;
+  }
 
   // Forward the meaningful options to the in-container runner. Host-specific
   // path options (out/session) are intentionally dropped; the inner run writes
@@ -656,7 +764,7 @@ function runInContainer(config, raw) {
     "model", "moves", "mode", "tools", "game", "level", "view", "yaw", "gems",
     "video", "no_video", "fast", "draft", "width", "height", "fps",
     "vision_width", "vision_height", "vision_view", "model_name", "llm",
-    "reasoning", "effort", "codex_fast",
+    "reasoning", "effort", "codex_fast", "resume", "seed",
     "codex_bin", "claude_bin", "claude_allowed_tools"
   ];
   const inner = ["node", "scripts/maze-agent-local.js", "container=false"];
@@ -675,10 +783,23 @@ function runInContainer(config, raw) {
   }
 
   const dockerArgs = [
-    "run", "--rm", "-i",
+    "run", "--rm", "-i", "--cidfile", cidFile,
     "-e", "MAZEBENCH_IN_CONTAINER=1",
     "-v", `${hostOutputs}:/app/outputs/maze-local`
   ];
+  // Keep only this run's CLI conversation transcript across disposable
+  // containers. These are the provider-owned stores consumed by `codex exec
+  // resume <id>` / `claude --resume <id>`, and persisting them avoids mounting
+  // the user's global agent history or colliding with the nested auth mounts.
+  if (config.model === "codex") {
+    const codexSessions = path.join(agentStateDir, "codex", "sessions");
+    fs.mkdirSync(codexSessions, { recursive: true });
+    dockerArgs.push("-v", `${codexSessions}:/home/pwuser/.codex/sessions`);
+  } else if (config.model === "claude") {
+    const claudeProjects = path.join(agentStateDir, "claude", "projects");
+    fs.mkdirSync(claudeProjects, { recursive: true });
+    dockerArgs.push("-v", `${claudeProjects}:/home/pwuser/.claude/projects`);
+  }
   // Draft/online worlds are not baked into the image — mount the game dir
   // read-only. Its images/assets_3d symlinks resolve against the in-image
   // /app/games/maze copy.
@@ -1131,10 +1252,12 @@ async function main() {
 
 module.exports = {
   actionFromShellCommand,
+  actionsFromShellCommand,
   distillClaudeEvents,
   distillCodexEvents,
   loadCodexModels,
-  resultFromOutput
+  resultFromOutput,
+  resultsFromOutput
 };
 
 if (require.main === module) {
