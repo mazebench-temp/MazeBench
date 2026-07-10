@@ -3,6 +3,7 @@ const {
   parseClaudeEvents,
   parseCodexEvents,
   parseCodexSession,
+  parseCodexSwarmSessions,
   parsePrimeLiveUsage,
   parsePrimeResults
 } = require("../server/token-usage");
@@ -32,6 +33,50 @@ const codexCall = (verb) => ({
   assert.equal(usage.actions.length, 2);
   assert.equal(usage.actions[1].context_tokens, 50);
   assert.equal(usage.context_window, 1000);
+}
+
+{
+  const tokenEvent = (timestamp, totalInput, latestInput, output = 10) => ({
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: { input_tokens: totalInput, output_tokens: output },
+        last_token_usage: { input_tokens: latestInput, output_tokens: output },
+        model_context_window: 1000
+      }
+    }
+  });
+  const lead = lines(
+    { timestamp: "2026-01-01T00:00:00.000Z", type: "session_meta", payload: { session_id: "lead" } },
+    tokenEvent("2026-01-01T00:00:01.000Z", 100, 100),
+    { timestamp: "2026-01-01T00:00:02.000Z", type: "response_item", payload: { type: "function_call", name: "spawn_agent", call_id: "spawn-1", arguments: '{"task_name":"scout"}' } },
+    { timestamp: "2026-01-01T00:00:03.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "spawn-1", output: '{"task_name":"/root/scout"}' } },
+    tokenEvent("2026-01-01T00:00:04.000Z", 200, 120, 20),
+    { timestamp: "2026-01-01T00:00:05.000Z", type: "response_item", payload: { type: "custom_tool_call", name: "exec", input: 'await tools.mcp__mazebench__maze_action({action:"right"})' } },
+    { timestamp: "2026-01-01T00:00:06.000Z", type: "response_item", payload: { type: "agent_message", author: "/root/scout", content: [{ type: "input_text", text: "Message Type: FINAL_ANSWER" }] } },
+    tokenEvent("2026-01-01T00:00:07.000Z", 280, 150, 20),
+    { timestamp: "2026-01-01T00:00:08.000Z", type: "response_item", payload: { type: "custom_tool_call", name: "exec", input: 'await tools.mcp__mazebench__maze_action({action:"up"})' } }
+  );
+  const worker = lines(
+    { timestamp: "2026-01-01T00:00:03.100Z", type: "session_meta", payload: { session_id: "worker" } },
+    tokenEvent("2026-01-01T00:00:03.500Z", 180, 180, 20)
+  );
+  const leadUsage = parseCodexSession(lead);
+  assert.deepEqual(leadUsage.actions.map((point) => point.active_agents), [2, 1]);
+
+  const swarmUsage = parseCodexSwarmSessions([lead, worker], "lead");
+  assert.equal(swarmUsage.total_tokens, 500);
+  assert.equal(swarmUsage.current_context_tokens, 330);
+  assert.equal(swarmUsage.context_window, 2000);
+  assert.equal(swarmUsage.average_tokens_per_action, 250);
+  assert.deepEqual(swarmUsage.actions.map((point) => point.context_tokens), [300, 330]);
+  assert.deepEqual(swarmUsage.actions.map((point) => point.active_agents), [2, 1]);
+  assert.deepEqual(swarmUsage.actions.map((point) => point.total_tokens), [420, 80]);
+  assert.equal(swarmUsage.actions.reduce((sum, point) => sum + point.total_tokens, 0), swarmUsage.total_tokens);
+  assert.equal(swarmUsage.agents_current, 1);
+  assert.equal(swarmUsage.agents_total, 2);
 }
 
 {
@@ -137,6 +182,29 @@ const codexCall = (verb) => ({
 }
 
 {
+  const usage = parseClaudeEvents(
+    lines(
+      { type: "stream_event", event: { type: "message_delta", usage: { input_tokens: 50, output_tokens: 10 } } },
+      { type: "assistant", message: { content: [
+        { type: "tool_use", id: "worker", name: "Agent", input: { prompt: "Scout" } },
+        { type: "tool_use", id: "move-1", name: "mcp__mazebench__maze_action", input: { action: "right" } }
+      ] } },
+      { type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "move-1", content: "{}" },
+        { type: "tool_result", tool_use_id: "worker", content: "done" }
+      ] } },
+      { type: "assistant", message: { content: [
+        { type: "tool_use", id: "move-2", name: "mcp__mazebench__maze_action", input: { action: "up" } }
+      ] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "move-2", content: "{}" }] } }
+    )
+  );
+  assert.deepEqual(usage.actions.map((point) => point.active_agents), [2, 1]);
+  assert.equal(usage.agents_current, 1);
+  assert.equal(usage.agents_total, 2);
+}
+
+{
   const usage = parsePrimeLiveUsage(
     lines(
       { turn: 1, prompt_tokens: 100, cached_input_tokens: 20, completion_tokens: 8, reasoning_tokens: 5, input_tokens: 120, total_tokens: 128 },
@@ -146,6 +214,8 @@ const codexCall = (verb) => ({
   assert.equal(usage.total_tokens, 278);
   assert.deepEqual(usage.actions.map((point) => point.context_tokens), [120, 140]);
   assert.equal(usage.reasoning_tokens, 12);
+  assert.equal(usage.agents_current, 1);
+  assert.equal(usage.agents_total, 1);
 }
 
 {

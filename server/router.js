@@ -248,6 +248,13 @@ function createRequestRouter({
         return;
       }
 
+      if (segments[4] === "budget" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const run = agentRuns.setRunMoveTarget(runId, payload?.moves);
+        sendJson(response, 200, { run, message: `Move target updated to ${run.moves}.` });
+        return;
+      }
+
       if (segments[4] === "video" && request.method === "POST") {
         const run = agentRuns.generateRunVideo(runId);
         sendJson(response, 202, { run, message: "Replay video generation started." });

@@ -55,7 +55,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-launch-49">
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-telemetry-54">
     ${extraHeadHtml}`
     })}
   </head>
@@ -259,7 +259,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-launch-49">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-telemetry-54">`;
   }
 
   function renderPlayPage(game, level) {
@@ -371,7 +371,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-launch-49">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-telemetry-54">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -839,9 +839,10 @@ function createPageRenderer({
                 <div class="animated-segmented" id="isolation-picker" role="radiogroup" aria-label="Isolation">
                   <span class="segmented__glider" aria-hidden="true"></span>
                   <button type="button" class="segmented__option" data-isolation="docker" aria-pressed="false"><span class="segmented__icon">BOX</span><span>Docker</span></button>
-                  <button type="button" class="segmented__option" data-isolation="full" aria-pressed="false"><span class="segmented__icon">ROOT</span><span>Full access</span></button>
+                  <button type="button" class="segmented__option" data-isolation="full" aria-pressed="false"><span class="segmented__icon">HOST</span><span>Host access</span></button>
                 </div>
                 <div id="docker-action" class="docker-action" hidden></div>
+                <div id="host-access-risk" class="host-access-risk" hidden>WEAKER ISOLATION</div>
               </article>
               <article class="setting-card setting-card--tool-use is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Tool-use</span></div>
@@ -929,7 +930,7 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260709-run-sorting-50" defer></script>`
+        <script src="/agent.js?v=20260709-tool-matrix-51" defer></script>`
     });
   }
 
@@ -989,12 +990,20 @@ function createPageRenderer({
               <img id="run-live-image" alt="Live maze view" hidden>
               <div id="run-live-placeholder" class="run-live__placeholder">
                 <span class="inline-spinner" aria-hidden="true"></span>
-                <span>Waiting for the first frame…</span>
+                <span>Loading move 0…</span>
               </div>
               <figcaption id="run-live-caption" class="run-live__caption" hidden></figcaption>
             </figure>
             ${boardWrap}
           </div>
+        </section>
+
+        <section class="panel run-swarm" id="run-swarm-section" hidden>
+          <div class="run-swarm__head">
+            <h2>Swarm views</h2>
+            <span class="run-swarm__count" id="run-swarm-count"></span>
+          </div>
+          <div class="run-swarm__grid" id="run-swarm-grid"></div>
         </section>
 
         ${replaySection}
@@ -1040,7 +1049,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
-        <script src="/agent-run.js?v=20260709-agent-redesign-45" defer></script>`
+        <script src="/agent-run.js?v=20260709-run-control-54" defer></script>`
     });
   }
 

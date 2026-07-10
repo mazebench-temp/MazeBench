@@ -22,6 +22,9 @@
   const tokenEmpty = document.getElementById("run-token-empty");
   const tokenBadge = document.getElementById("run-token-badge");
   const tokenNote = document.getElementById("run-token-note");
+  const swarmSection = document.getElementById("run-swarm-section");
+  const swarmGrid = document.getElementById("run-swarm-grid");
+  const swarmCount = document.getElementById("run-swarm-count");
 
   if (isPrime) stopButton.textContent = "Cancel Run";
 
@@ -32,12 +35,17 @@
     timer: null,
     moves: new Map(), // move# -> { action, room, gems, flags }
     reasoning: new Map(), // move# -> reasoning text
-    lastRenderedTurn: 0,
+    agentCounts: new Map(), // move# -> agents active when the move was made
+    tokenCounts: new Map(), // move# -> lead + worker tokens attributed to the move
+    swarmAgents: { running: 0, ran: 0 },
+    // -1 makes move 0 a real render target instead of waiting for move 1.
+    lastRenderedTurn: -1,
     lastImageUrl: null,
     frameRendering: false,
     frameFailures: 0,
     videoShown: false,
     tokenSignature: "",
+    swarmSignature: "",
     contextPoints: [],
     feedVersion: 0,
     renderedFeedVersion: -1
@@ -55,6 +63,83 @@
   }
 
   const levelLabel = (id) => String(id || "").replace(/^level_/, "");
+
+  const SWARM_TILE_COLORS = {
+    " ": "#05070f",
+    A: "#16203a",
+    a: "#0d1428",
+    W: "#5363ae",
+    w: "#2c376f",
+    P: "#65f3d4",
+    p: "#2fbda9",
+    G: "#46e8f1",
+    g: "#168a9a",
+    U: "#9c86ff",
+    u: "#6250bd",
+    "+": "#e3b94f",
+    "(": "#405283",
+    ")": "#405283"
+  };
+
+  function drawSwarmBoard(canvas, board) {
+    const rows = String(board || "").split("\n").filter(Boolean);
+    if (!rows.length) return;
+    const width = Math.max(...rows.map((row) => row.length));
+    canvas.width = Math.max(1, width);
+    canvas.height = Math.max(1, rows.length);
+    const context = canvas.getContext("2d", { alpha: false });
+    context.fillStyle = SWARM_TILE_COLORS[" "];
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    rows.forEach((row, y) => {
+      for (let x = 0; x < row.length; x += 1) {
+        const symbol = row[x];
+        context.fillStyle = SWARM_TILE_COLORS[symbol] || (/\d/.test(symbol) ? "#775fe1" : "#263250");
+        context.fillRect(x, y, 1, 1);
+      }
+    });
+  }
+
+  function renderSwarmViews(views) {
+    if (!swarmSection || !swarmGrid || !swarmCount) return;
+    const workers = Array.isArray(views) ? views : [];
+    const signature = JSON.stringify(workers);
+    if (signature === state.swarmSignature) return;
+    state.swarmSignature = signature;
+    swarmSection.hidden = workers.length === 0;
+    if (!workers.length) return;
+
+    const exploring = workers.filter((worker) => worker.activity === "exploring").length;
+    swarmCount.textContent = `${workers.length} worker${workers.length === 1 ? "" : "s"}${exploring ? ` · ${exploring} exploring` : ""}`;
+    swarmGrid.innerHTML = workers.map((worker, index) => {
+      const player = worker.player ? `@ ${worker.player.x},${worker.player.y}` : "no player";
+      const frame = worker.frame_url
+        ? `<img class="run-swarm-card__image" src="${escapeText(worker.frame_url)}" alt="${escapeText(worker.id)} current maze view">`
+        : "";
+      return `<article class="run-swarm-card" data-worker-index="${index}">
+        <div class="run-swarm-card__screen">
+          ${frame}
+          <canvas class="run-swarm-card__map${worker.frame_url ? " is-fallback" : ""}" aria-label="${escapeText(worker.id)} current room minimap"></canvas>
+          <span class="run-swarm-card__activity is-${escapeText(worker.activity.replaceAll(" ", "-"))}"><i></i>${escapeText(worker.activity)}</span>
+        </div>
+        <div class="run-swarm-card__copy">
+          <strong>${escapeText(worker.id.replaceAll("_", " "))}</strong>
+          <span>${escapeText(levelLabel(worker.room))} · ${escapeText(player)}</span>
+          <small>${escapeText(worker.turn)} moves · ${escapeText(worker.gem_count)} gems</small>
+        </div>
+      </article>`;
+    }).join("");
+
+    workers.forEach((worker, index) => {
+      const card = swarmGrid.querySelector(`[data-worker-index="${index}"]`);
+      const canvas = card?.querySelector("canvas");
+      if (canvas) drawSwarmBoard(canvas, worker.board);
+      const image = card?.querySelector("img");
+      image?.addEventListener("error", () => {
+        image.hidden = true;
+        canvas?.classList.remove("is-fallback");
+      }, { once: true });
+    });
+  }
 
   function describeRun(run) {
     document.getElementById("run-title").textContent =
@@ -88,6 +173,12 @@
           ["room", levelLabel(run.current_room)],
           run.solved ? ["result", "SOLVED"] : null
         ].filter(Boolean);
+    if (run.swarm) {
+      chips.push(
+        ["agents running", String(state.swarmAgents.running)],
+        ["agents ran", String(state.swarmAgents.ran)]
+      );
+    }
     document.getElementById("run-stats").innerHTML = chips
       .map(
         ([label, value]) =>
@@ -255,6 +346,26 @@
     if (signature === state.tokenSignature) return;
     state.tokenSignature = signature;
 
+    let agentCountsChanged = false;
+    (Array.isArray(usage?.actions) ? usage.actions : []).forEach((point, index) => {
+      const action = Number(point.action) || index + 1;
+      const count = Math.max(0, Math.floor(Number(point.active_agents) || 0));
+      if (count && state.agentCounts.get(action) !== count) {
+        state.agentCounts.set(action, count);
+        agentCountsChanged = true;
+      }
+      const tokens = Math.max(0, Math.round(Number(point.total_tokens) || 0));
+      if (state.tokenCounts.get(action) !== tokens) {
+        state.tokenCounts.set(action, tokens);
+        agentCountsChanged = true;
+      }
+    });
+    state.swarmAgents = {
+      running: Math.max(0, Math.floor(Number(usage?.agents_running) || 0)),
+      ran: Math.max(0, Math.floor(Number(usage?.agents_ran) || 0))
+    };
+    if (agentCountsChanged) state.feedVersion += 1;
+
     const available = Boolean(usage?.available);
     document.getElementById("run-token-total").textContent = available ? formatTokens(usage.total_tokens) : "—";
     document.getElementById("run-token-average").textContent = available
@@ -392,13 +503,29 @@
       .map((num) => {
         const move = state.moves.get(num);
         const reasoning = state.reasoning.get(num);
+        const activeAgents = state.agentCounts.get(num) || (state.run.swarm ? 0 : 1);
+        const moveTokens = state.tokenCounts.get(num);
         const meta = [`${escapeText(move.room)}`, `${escapeText(move.gems)} gems`, ...move.flags.map(escapeText)]
           .filter(Boolean)
           .join(" · ");
+        const agentBadge = activeAgents
+          ? `<span class="agent-feed__agents" role="img" aria-label="${escapeText(activeAgents)} agent${activeAgents === 1 ? "" : "s"} active" title="Agents active on this move">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              <strong>${escapeText(activeAgents)}</strong>
+            </span>`
+          : "";
+        const tokenBadge = Number.isFinite(moveTokens)
+          ? `<span class="agent-feed__tokens" role="img" aria-label="${escapeText(moveTokens.toLocaleString())} tokens used on this move" title="Lead + worker tokens for this move">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 8h8M12 8v8"/></svg>
+              <strong>${escapeText(formatTokens(moveTokens))}</strong>
+            </span>`
+          : "";
         return `<div class="agent-feed__row" data-move="${escapeText(num)}">
           <div class="agent-feed__head">
             <span class="agent-feed__num">${escapeText(num)}</span>
             <span class="agent-feed__action">${escapeText(move.action)}</span>
+            ${tokenBadge}
+            ${agentBadge}
             <span class="agent-feed__meta">${meta}</span>
           </div>
           ${reasoning ? `<p class="agent-feed__reasoning">${escapeText(reasoning)}</p>` : ""}
@@ -439,15 +566,16 @@
     liveImage.hidden = false;
     livePlaceholder.hidden = true;
     if (captionEl && turn != null) {
-      captionEl.textContent = `after move ${turn}`;
+      captionEl.textContent = Number(turn) === 0 ? "move 0 · starting state" : `after move ${turn}`;
       captionEl.hidden = false;
     }
   }
 
-  // Text-mode runs have no agent frames, so render one on demand for the latest
-  // turn (throttled to one render at a time so we never queue browser boots).
-  async function maybeRenderTextFrame() {
-    if (isVision || state.frameRendering) return;
+  // Text-mode runs always use an on-demand frame. Vision runs use the same
+  // renderer for move 0 until the agent's own first vision frame is available.
+  // Throttle to one render at a time so we never queue browser boots.
+  async function maybeRenderLocalFrame() {
+    if (state.frameRendering) return;
     const latest = state.afterTurn;
     if (latest <= state.lastRenderedTurn) return;
 
@@ -456,10 +584,11 @@
       const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/frame?turn=${latest}`);
       const payload = await response.json();
       if (payload.url) {
+        const renderedTurn = Number.isFinite(Number(payload.turn)) ? Number(payload.turn) : latest;
         state.frameFailures = 0;
-        showImage(payload.url, latest);
-        state.lastRenderedTurn = latest;
-      } else if (payload.error) {
+        showImage(payload.url, renderedTurn);
+        state.lastRenderedTurn = Math.max(state.lastRenderedTurn, renderedTurn);
+      } else if (payload.error && !payload.pending) {
         state.frameFailures += 1;
         if (livePlaceholder && !liveImage.src) {
           livePlaceholder.querySelector("span:last-child").textContent = payload.error;
@@ -529,8 +658,9 @@
       state.run = progress.run;
 
       describeRun(progress.run);
-      renderStats(progress.run);
       renderTokenUsage(progress.token_usage);
+      renderStats(progress.run);
+      renderSwarmViews(progress.swarm_views);
 
       if (isPrime) {
         // Prime actions and token usage stream as each turn lands. The board,
@@ -548,10 +678,20 @@
         ingestReasoning(progress.reasoning || []);
         renderFeed();
 
+        const mayRenderLiveFrame = !["paused", "stopping", "stopped", "waiting", "failed"].includes(
+          progress.run.status
+        );
+
         if (isVision && progress.vision_frame_url) {
-          showImage(progress.vision_frame_url, state.afterTurn);
-        } else if (!isVision) {
-          maybeRenderTextFrame();
+          const match = String(progress.vision_frame_url).match(/frame-(\d+)\.png(?:$|\?)/);
+          const visionTurn = match ? Number(match[1]) : state.afterTurn;
+          if (visionTurn >= state.afterTurn && visionTurn >= state.lastRenderedTurn) {
+            showImage(progress.vision_frame_url, visionTurn);
+            state.lastRenderedTurn = visionTurn;
+          }
+          if (mayRenderLiveFrame && state.lastRenderedTurn < state.afterTurn) maybeRenderLocalFrame();
+        } else if (mayRenderLiveFrame) {
+          maybeRenderLocalFrame();
         }
 
         updateReplay(progress.run, progress.replay_progress);
@@ -615,7 +755,7 @@
         // Give up after a few consecutive renderer failures — otherwise a
         // finished run whose renderer keeps erroring polls forever.
         if (!isPrime && !isVision && state.lastRenderedTurn < state.afterTurn && state.frameFailures < 5) {
-          maybeRenderTextFrame();
+          maybeRenderLocalFrame();
           state.timer = setTimeout(poll, 1200);
         }
       }

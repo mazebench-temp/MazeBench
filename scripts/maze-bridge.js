@@ -293,6 +293,52 @@ function splitRenderedScreen(rendered) {
   };
 }
 
+function terrainOverridesForRender(context) {
+  const overrides = [];
+  const typeNames = Object.fromEntries(
+    Object.entries(context.engine.terrainTypes || {}).map(([name, value]) => [value, name])
+  );
+  const initialTerrain = context.engine.initialState?.terrain || [];
+
+  for (let index = 0; index < context.state.terrain.length; index += 1) {
+    const currentType = typeNames[context.state.terrain[index]] || "empty";
+    const initialType = typeNames[initialTerrain[index]] || "empty";
+    const raised = Boolean(context.state.liftRaised[index]);
+    const initiallyRaised = Boolean(context.engine.initialState?.liftRaised?.[index]);
+    if (currentType !== initialType) {
+      overrides.push({ index, type: currentType, raised });
+    } else if (raised !== initiallyRaised) {
+      overrides.push({ index, raised });
+    }
+  }
+
+  return overrides;
+}
+
+// A compact, authoritative render checkpoint. codex-play removes this private
+// field before returning the observation to the model and keeps only the newest
+// checkpoint on disk, so a 100k-move run does not accumulate 100k snapshots.
+function renderStateSnapshot(session) {
+  const context = session.context;
+  const actors = (context.playData.actors || []).map((actor, index) => ({
+    ...actor,
+    elevation: context.state.actorElevation[index] ?? actor.elevation ?? 0,
+    removed: Boolean(context.state.actorRemoved[index]),
+    x: context.state.actorX[index] ?? actor.x,
+    y: context.state.actorY[index] ?? actor.y
+  }));
+
+  return {
+    version: 1,
+    game_id: context.playData.gameId || context.game?.id || "maze",
+    level_id: context.level.id,
+    pitch: context.options.pitch,
+    yaw: context.options.yaw,
+    actors,
+    terrain_overrides: terrainOverridesForRender(context)
+  };
+}
+
 function sessionSnapshot(session, extra = {}) {
   const context = session.context;
   applyCollectedGemsToContext(session);
@@ -326,6 +372,7 @@ function sessionSnapshot(session, extra = {}) {
     solved: context.engine.isSolved(context.state),
     visited_levels: Array.from(session.visitedLevels),
     yaw: context.options.yaw,
+    _render_state: renderStateSnapshot(session),
     ...terminalExtra
   };
 }

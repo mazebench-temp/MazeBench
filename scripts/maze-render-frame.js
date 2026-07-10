@@ -109,6 +109,19 @@ async function launchBrowser(chromium, browserName = "") {
     candidates.push(...DEFAULT_BROWSER_PATHS);
   }
 
+  // MCP servers receive an intentionally narrow environment from Codex and
+  // Claude, which can omit PLAYWRIGHT_BROWSERS_PATH even inside our Playwright
+  // Docker image. Discover the bundled executable directly instead of falling
+  // back to a nonexistent per-user cache.
+  if (fs.existsSync("/ms-playwright")) {
+    for (const directory of fs.readdirSync("/ms-playwright")) {
+      candidates.push(
+        path.join("/ms-playwright", directory, "chrome-linux", "headless_shell"),
+        path.join("/ms-playwright", directory, "chrome-linux", "chrome")
+      );
+    }
+  }
+
   let lastError = null;
   for (const executablePath of candidates) {
     if (!fs.existsSync(executablePath)) {
@@ -346,6 +359,11 @@ async function createRenderSession(payload) {
       app.syncEdgeToggle?.();
 
       if (fast) {
+        // Historical live-view rebuilds may replay hundreds of actions after a
+        // site-server restart. Advance animation clocks by a full second per
+        // RAF so every move settles in a couple of frames instead of real time.
+        app.replayAnimationFrameStepMs = 1000;
+        app.replayMoveDurationMs = 1;
         [
           "MOVE_DURATION_MS",
           "GATE_RISE_DURATION_MS",
@@ -453,6 +471,67 @@ async function applySessionAction(session, commandText) {
   return true;
 }
 
+async function applyRenderStateSnapshot(session, snapshot) {
+  if (!snapshot?.level_id || !Array.isArray(snapshot.actors)) {
+    return false;
+  }
+
+  await session.page.evaluate(async (renderState) => {
+    const app = window.__PIXEL_GAME_APP__;
+    const response = await fetch(
+      `/api/play/${encodeURIComponent(renderState.game_id || app.currentGameId)}/${encodeURIComponent(renderState.level_id)}`
+    );
+    if (!response.ok) throw new Error(`Could not load ${renderState.level_id}`);
+    const levelState = await response.json();
+    levelState.actors = renderState.actors;
+    (renderState.terrain_overrides || []).forEach((override) => {
+      const index = Number(override.index);
+      const x = index % levelState.width;
+      const y = Math.floor(index / levelState.width);
+      const cell = levelState.terrain?.[y]?.[x];
+      if (!cell) return;
+      if (override.type) {
+        levelState.terrain[y][x] = {
+          elevation: 0,
+          imageUrl: null,
+          label: String(override.type).replaceAll("_", " "),
+          layers: null,
+          raised: Boolean(override.raised),
+          type: override.type,
+          underlay: null
+        };
+      } else {
+        cell.raised = Boolean(override.raised);
+        if (Array.isArray(cell.layers)) {
+          cell.layers.forEach((layer) => {
+            if (layer?.type === "player_lift") layer.raised = Boolean(override.raised);
+          });
+        }
+      }
+    });
+
+    app.applyLevelState(levelState, {
+      deferRender: true,
+      immediateCamera: true,
+      resetHistory: true,
+      resetLevelEntry: true
+    });
+    await app.preloadImagesForLevelState?.(levelState);
+    app.render?.();
+  }, snapshot);
+
+  session.cameraYawTurns = ((Number(snapshot.yaw) || 0) % 4 + 4) % 4;
+  const pitch = Math.max(0, Math.min(4, Number(snapshot.pitch) || 0));
+  session.cameraTiltDegrees = Math.max(
+    20,
+    Math.min(82, 58 + (pitch - 1) * session.options.cameraStepDegrees)
+  );
+  session.appliedActions = [];
+  await setCameraView(session);
+  await waitUntilSettled(session.page, 20);
+  return true;
+}
+
 async function captureSessionFrame(session) {
   await setCameraView(session);
   return captureFrame(session.page);
@@ -536,6 +615,15 @@ function createServeHandler() {
     const next = normalizeRenderOptions(message);
     const wanted = next.actions.map(String).filter((text) => parseCommandLine(text));
 
+    if (message.snapshot?.level_id && Array.isArray(message.snapshot.actors)) {
+      if (!session || !renderOptionsMatch(session.options, next)) {
+        await closeSession();
+        session = await createRenderSession(message);
+      }
+      await applyRenderStateSnapshot(session, message.snapshot);
+      return;
+    }
+
     if (session && renderOptionsMatch(session.options, next)) {
       const applied = session.appliedActions;
       const extendsApplied =
@@ -596,10 +684,14 @@ function runServeMode() {
   let queue = Promise.resolve();
 
   function shutdown() {
+    const forceExit = setTimeout(() => process.exit(0), 2000);
     queue = queue
       .then(() => handler.closeSession())
       .catch(() => {})
-      .finally(() => process.exit(0));
+      .finally(() => {
+        clearTimeout(forceExit);
+        process.exit(0);
+      });
   }
 
   process.on("SIGTERM", shutdown);

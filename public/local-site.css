@@ -1671,6 +1671,136 @@ body.play-body {
   margin: 0;
 }
 
+/* ---- Agent run: swarm mini views ---- */
+
+.run-swarm__head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.run-swarm__head h2 {
+  margin: 0;
+}
+
+.run-swarm__count {
+  color: var(--muted, #9aa3c7);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.run-swarm__grid {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 14px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  scrollbar-color: rgba(101, 243, 212, 0.42) transparent;
+}
+
+.run-swarm-card {
+  background: rgba(5, 8, 20, 0.78);
+  border: 1px solid rgba(124, 143, 255, 0.22);
+  border-radius: 11px;
+  flex: 0 0 clamp(180px, 18vw, 230px);
+  min-width: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 780px) {
+  .run-swarm__grid {
+    justify-content: flex-start;
+  }
+}
+
+.run-swarm-card__screen {
+  aspect-ratio: 16 / 10;
+  background: #05070f;
+  overflow: hidden;
+  position: relative;
+}
+
+.run-swarm-card__image,
+.run-swarm-card__map {
+  display: block;
+  height: 100%;
+  image-rendering: pixelated;
+  object-fit: contain;
+  width: 100%;
+}
+
+.run-swarm-card__map.is-fallback {
+  display: none;
+}
+
+.run-swarm-card__activity {
+  align-items: center;
+  backdrop-filter: blur(8px);
+  background: rgba(4, 7, 17, 0.8);
+  border: 1px solid rgba(124, 143, 255, 0.25);
+  border-radius: 999px;
+  bottom: 8px;
+  color: #aeb6d9;
+  display: inline-flex;
+  font-size: 9px;
+  gap: 5px;
+  left: 8px;
+  letter-spacing: 0.06em;
+  padding: 4px 7px;
+  position: absolute;
+  text-transform: uppercase;
+}
+
+.run-swarm-card__activity i {
+  background: #697291;
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
+.run-swarm-card__activity.is-exploring {
+  border-color: rgba(101, 243, 212, 0.34);
+  color: #65f3d4;
+}
+
+.run-swarm-card__activity.is-exploring i {
+  background: #65f3d4;
+  box-shadow: 0 0 8px rgba(101, 243, 212, 0.72);
+}
+
+.run-swarm-card__activity.is-finished {
+  color: #8e9abe;
+}
+
+.run-swarm-card__copy {
+  display: grid;
+  gap: 3px;
+  padding: 10px 11px 11px;
+}
+
+.run-swarm-card__copy strong {
+  color: #edf0ff;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.run-swarm-card__copy span,
+.run-swarm-card__copy small {
+  color: var(--muted, #9aa3c7);
+  font-size: 10px;
+}
+
+.run-swarm-card__copy small {
+  opacity: 0.72;
+}
+
 /* ---- Agent run: completion + ETA ---- */
 
 .run-progress {
@@ -1868,6 +1998,43 @@ body.play-body {
 .agent-feed__meta {
   color: var(--muted, #9aa3c7);
   font-size: 12px;
+}
+
+.agent-feed__agents,
+.agent-feed__tokens {
+  align-items: center;
+  background: rgba(169, 153, 255, 0.09);
+  border: 1px solid rgba(169, 153, 255, 0.24);
+  border-radius: 999px;
+  color: #b9abff;
+  display: inline-flex;
+  gap: 5px;
+  padding: 2px 7px;
+}
+
+.agent-feed__tokens {
+  background: rgba(52, 231, 240, 0.07);
+  border-color: rgba(52, 231, 240, 0.2);
+  color: var(--cyan, #34e7f0);
+}
+
+.agent-feed__agents svg,
+.agent-feed__tokens svg {
+  fill: none;
+  height: 13px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 13px;
+}
+
+.agent-feed__agents strong,
+.agent-feed__tokens strong {
+  color: #e8e3ff;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1;
 }
 
 .agent-feed__reasoning {
@@ -2471,6 +2638,24 @@ body.play-body {
   background: rgba(164, 116, 255, 0.14);
   border-color: rgba(181, 137, 255, 0.74);
   box-shadow: 0 0 20px rgba(153, 96, 255, 0.18);
+}
+
+.setting-card--access {
+  position: relative;
+}
+
+.host-access-risk {
+  border: 1px solid rgba(255, 209, 92, 0.36);
+  border-radius: 999px;
+  color: rgba(255, 220, 128, 0.78);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 8px;
+  letter-spacing: 0.11em;
+  line-height: 1;
+  padding: 5px 8px;
+  position: absolute;
+  right: 12px;
+  top: 10px;
 }
 
 .animated-segmented .segmented__option {

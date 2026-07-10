@@ -19,6 +19,23 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function consumeRenderState(response, stateFile) {
+  const status = response?.status || response;
+  const snapshot = status?._render_state;
+
+  if (!snapshot) {
+    return response;
+  }
+
+  writeJson(path.join(path.dirname(stateFile), "current-render-state.json"), {
+    snapshot,
+    turn: Math.max(0, Number(status.action_count) || 0),
+    updated_at: new Date().toISOString()
+  });
+  delete status._render_state;
+  return response;
+}
+
 function normalizeLevelId(value) {
   const raw = String(value || "level_HxI").trim();
   const match = raw.match(/^(?:level_)?([A-Z])x([A-Z])$/i);
@@ -399,7 +416,10 @@ async function main() {
       visionWidth: positiveInt(options.visionWidth, 512),
       yaw: normalizeYaw(Number(options.yaw))
     };
-    const response = runBridge(session, { command: "observe" });
+    const response = consumeRenderState(
+      runBridge(session, { command: "observe" }),
+      options.state
+    );
     session.initial = response.status || response;
     session.lastStatus = session.initial;
     writeJson(options.state, session);
@@ -411,12 +431,19 @@ async function main() {
   if (!session) throw new Error(`No session found at ${options.state}`);
 
   if (command === "observe") {
-    await emitStatus(session, runBridge(session, { command: "observe" }), session.actions.length, options.state);
+    const response = consumeRenderState(
+      runBridge(session, { command: "observe" }),
+      options.state
+    );
+    await emitStatus(session, response, session.actions.length, options.state);
     return;
   }
 
   if (command === "scorecard") {
-    const response = runBridge(session, { command: "scorecard" });
+    const response = consumeRenderState(
+      runBridge(session, { command: "scorecard" }),
+      options.state
+    );
     session.scorecard = (response.status || response).scorecard || response.scorecard || response.status || response;
     session.lastStatus = response.status || response;
     writeJson(options.state, session);
@@ -430,7 +457,7 @@ async function main() {
 
   if (command === "action") {
     const message = normalizeAction(options.positional);
-    const response = runBridge(session, message);
+    const response = consumeRenderState(runBridge(session, message), options.state);
     const status = response.status || response;
     const record = {
       turn: session.actions.length + 1,

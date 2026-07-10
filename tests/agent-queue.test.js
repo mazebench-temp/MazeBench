@@ -42,6 +42,93 @@ const service = createAgentRunService({
 const launchedIds = [];
 
 try {
+  const [hostReadOnlySwarm] = service.launchRuns({
+    kind: "local",
+    model: "codex",
+    model_name: "gpt-test",
+    game_id: "maze",
+    level_id: "level_HxI",
+    moves: 1,
+    mode: "text",
+    container: false,
+    tools: false,
+    tool_use: "read-only",
+    swarm: true,
+    video: false
+  });
+  launchedIds.push(hostReadOnlySwarm.id);
+  const hostSwarmMeta = loadJson(
+    path.join(rootDir, "outputs", "maze-local", "site", hostReadOnlySwarm.id, "run.json")
+  );
+  assert.equal(hostSwarmMeta.tool_use, "read-only");
+  assert.equal(hostSwarmMeta.tools, false);
+  assert.equal(hostSwarmMeta.swarm, true);
+  assert.equal(hostSwarmMeta.container, false);
+  assert.match(hostSwarmMeta.command, /tool_use=read-only/);
+  assert.match(hostSwarmMeta.command, /swarm=true/);
+  const retargeted = service.setRunMoveTarget(hostReadOnlySwarm.id, 100_000);
+  assert.equal(retargeted.moves, 100_000);
+  const retargetedMeta = loadJson(
+    path.join(rootDir, "outputs", "maze-local", "site", hostReadOnlySwarm.id, "run.json")
+  );
+  assert.equal(retargetedMeta.auto_continue_target, 100_000);
+  assert.equal(retargetedMeta.segment_move_budget, 1);
+  assert.equal(retargetedMeta.launch_params.moves, 100_000);
+
+  const swarmWorkerDir = path.join(
+    rootDir,
+    "outputs",
+    "maze-local",
+    "site",
+    hostReadOnlySwarm.id,
+    "swarm",
+    "scout_one"
+  );
+  fs.mkdirSync(path.join(swarmWorkerDir, "frames"), { recursive: true });
+  fs.writeFileSync(path.join(swarmWorkerDir, "worker.json"), JSON.stringify({ id: "scout_one" }));
+  fs.writeFileSync(
+    path.join(swarmWorkerDir, "actions.jsonl"),
+    `${JSON.stringify({
+      turn: 7,
+      status: {
+        current_room: "level_GxH",
+        current_view: "top-diagonal",
+        gem_count: 2,
+        level: "AAAP",
+        player: { elevation: 0, x: 3, y: 0 },
+        yaw: 1
+      }
+    })}\n`
+  );
+  fs.writeFileSync(path.join(swarmWorkerDir, "frames", "frame-007.png"), "png");
+  const swarmProgress = service.getRunProgress(hostReadOnlySwarm.id);
+  assert.equal(swarmProgress.swarm_views.length, 1);
+  assert.equal(swarmProgress.swarm_views[0].id, "scout_one");
+  assert.equal(swarmProgress.swarm_views[0].room, "level_GxH");
+  assert.equal(swarmProgress.swarm_views[0].turn, 7);
+  assert.deepEqual(swarmProgress.swarm_views[0].player, { elevation: 0, x: 3, y: 0 });
+  assert.match(swarmProgress.swarm_views[0].frame_url, /swarm\/scout_one\/frames\/frame-007\.png$/);
+  assert.equal(
+    service.resolveRunFilePath(hostReadOnlySwarm.id, "swarm/scout_one/frames/frame-007.png"),
+    path.join(swarmWorkerDir, "frames", "frame-007.png")
+  );
+  assert.equal(service.resolveRunFilePath(hostReadOnlySwarm.id, "swarm/../run.json"), null);
+
+  const pausedHostRun = service.pauseRun(hostReadOnlySwarm.id);
+  assert.equal(pausedHostRun.status, "paused");
+  assert.equal(pausedHostRun.pause_reason, "manual");
+  const resumedHostRun = service.resumeRun(hostReadOnlySwarm.id);
+  assert.equal(resumedHostRun.status, "running");
+  service.stopRun(hostReadOnlySwarm.id);
+  const stopDeadline = Date.now() + 3000;
+  let stoppedHostRun = service.summarizeRun(hostReadOnlySwarm.id);
+  while (stoppedHostRun.status === "stopping" && Date.now() < stopDeadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    stoppedHostRun = service.summarizeRun(hostReadOnlySwarm.id);
+  }
+  assert.equal(stoppedHostRun.status, "stopped");
+  service.deleteRun(hostReadOnlySwarm.id);
+
   const runs = service.launchRuns({
     kind: "local",
     model: "claude",

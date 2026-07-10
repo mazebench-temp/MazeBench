@@ -49,7 +49,28 @@ function withCompactionFlags(points) {
   });
 }
 
-function finishUsage({ provider, points, totals, currentContext, contextWindow, exact, note = "" }) {
+function reconcilePointTotals(points, totals) {
+  if (!points.length) return points;
+  const last = points[points.length - 1];
+  ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens"].forEach((key) => {
+    const accounted = points.reduce((sum, point) => sum + number(point[key]), 0);
+    last[key] = number(last[key]) + Math.max(0, number(totals?.[key]) - accounted);
+  });
+  return points;
+}
+
+function finishUsage({
+  provider,
+  points,
+  totals,
+  currentContext,
+  contextWindow,
+  exact,
+  note = "",
+  averageTokensPerAction = null,
+  agentsCurrent = null,
+  agentsTotal = null
+}) {
   const marked = withCompactionFlags(points);
   const perActionTotal = marked.reduce((sum, point) => sum + number(point.total_tokens), 0);
 
@@ -65,7 +86,15 @@ function finishUsage({ provider, points, totals, currentContext, contextWindow, 
     reasoning_tokens: number(totals.reasoning_tokens),
     current_context_tokens: number(currentContext) || null,
     context_window: number(contextWindow) || null,
-    average_tokens_per_action: marked.length ? Math.round(perActionTotal / marked.length) : null,
+    average_tokens_per_action: marked.length
+      ? Math.round(
+          Number.isFinite(Number(averageTokensPerAction))
+            ? Number(averageTokensPerAction)
+            : perActionTotal / marked.length
+        )
+      : null,
+    agents_current: agentsCurrent != null && Number.isFinite(Number(agentsCurrent)) ? Number(agentsCurrent) : null,
+    agents_total: agentsTotal != null && Number.isFinite(Number(agentsTotal)) ? Number(agentsTotal) : null,
     compactions: marked.filter((point) => point.compacted).length,
     actions: marked
   };
@@ -83,13 +112,105 @@ function codexUsageShape(usage = {}) {
   };
 }
 
+function parsedJson(value, fallback = {}) {
+  if (value && typeof value === "object") return value;
+  try {
+    return JSON.parse(String(value || ""));
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+// Codex CLI's saved session wraps MCP calls made through the exec compositor
+// as JavaScript source. Recover primary maze actions from that wrapper while
+// continuing to exclude private worker-clone exploration.
+function codexPayloadActions(payload = {}) {
+  const name = payload.name || payload.tool || payload.tool_name;
+  const input = payload.input || payload.arguments || payload.command;
+  const direct = mazeToolActionCount(name, input) || mazeActionCount(input);
+  if (direct) return Array.from({ length: direct }, () => "action");
+
+  const source = typeof input === "string" ? input : "";
+  const actions = [];
+  const callPattern = /mcp__mazebench__maze_action\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
+  let match;
+
+  while ((match = callPattern.exec(source))) {
+    const body = match[1];
+    if (/\bclone_id\s*:/.test(body)) continue;
+    const action = body.match(/(?:^|[,\s])action\s*:\s*(["'`])([\s\S]*?)\1/);
+    if (action?.[2]?.trim()) actions.push(action[2].trim());
+  }
+
+  return actions;
+}
+
+function codexSessionId(raw) {
+  const meta = jsonLines(raw).find((event) => event.type === "session_meta");
+  return String(meta?.payload?.session_id || meta?.payload?.id || "");
+}
+
+function codexTokenTimeline(raw) {
+  return jsonLines(raw).flatMap((event, index) => {
+    if (event.type !== "event_msg" || event.payload?.type !== "token_count" || !event.payload.info) {
+      return [];
+    }
+    const timestamp = Date.parse(event.timestamp || "");
+    return [{
+      at_ms: Number.isFinite(timestamp) ? timestamp : index,
+      cumulative: codexUsageShape(event.payload.info.total_token_usage || {}),
+      latest: codexUsageShape(event.payload.info.last_token_usage || {}),
+      context_window: number(event.payload.info.model_context_window)
+    }];
+  });
+}
+
+function codexAgentMessageText(payload = {}) {
+  return (Array.isArray(payload.content) ? payload.content : [])
+    .map((part) => String(part?.text || ""))
+    .join("\n");
+}
+
 function parseCodexSession(raw) {
   const points = [];
   let latest = null;
   let cumulative = {};
   let contextWindow = 0;
+  const activeAgents = new Set(["/root"]);
+  const allAgents = new Set(["/root"]);
+  const pendingSpawns = new Map();
 
-  for (const event of jsonLines(raw)) {
+  for (const [eventIndex, event] of jsonLines(raw).entries()) {
+    const payload = event.payload || {};
+    const timestamp = Date.parse(event.timestamp || "");
+    const atMs = Number.isFinite(timestamp) ? timestamp : eventIndex;
+
+    if (event.type === "response_item" && payload.type === "function_call" && payload.name === "spawn_agent") {
+      const args = parsedJson(payload.arguments);
+      if (payload.call_id) pendingSpawns.set(payload.call_id, String(args.task_name || "worker"));
+      continue;
+    }
+
+    if (event.type === "response_item" && payload.type === "function_call_output" && pendingSpawns.has(payload.call_id)) {
+      const result = parsedJson(payload.output);
+      if (result.task_name) {
+        activeAgents.add(String(result.task_name));
+        allAgents.add(String(result.task_name));
+      }
+      pendingSpawns.delete(payload.call_id);
+      continue;
+    }
+
+    if (
+      event.type === "response_item" &&
+      payload.type === "agent_message" &&
+      payload.author &&
+      /Message Type:\s*FINAL_ANSWER/i.test(codexAgentMessageText(payload))
+    ) {
+      activeAgents.delete(String(payload.author));
+      continue;
+    }
+
     if (event.type === "event_msg" && event.payload?.type === "token_count" && event.payload.info) {
       latest = codexUsageShape(event.payload.info.last_token_usage || {});
       cumulative = codexUsageShape(event.payload.info.total_token_usage || {});
@@ -102,9 +223,8 @@ function parseCodexSession(raw) {
       ["custom_tool_call", "function_call", "mcp_tool_call"].includes(event.payload?.type) &&
       latest
     ) {
-      const count =
-        mazeToolActionCount(event.payload.name || event.payload.tool || event.payload.tool_name, event.payload.input || event.payload.arguments) ||
-        mazeActionCount(event.payload.input || event.payload.arguments || event.payload.command);
+      const actions = codexPayloadActions(event.payload);
+      const count = actions.length;
       if (!count) continue;
       for (let index = 0; index < count; index += 1) {
         points.push({
@@ -114,7 +234,9 @@ function parseCodexSession(raw) {
           cached_input_tokens: Math.round(latest.cached_input_tokens / count),
           output_tokens: Math.round(latest.output_tokens / count),
           reasoning_tokens: Math.round(latest.reasoning_tokens / count),
-          context_tokens: latest.input_tokens
+          context_tokens: latest.input_tokens,
+          active_agents: activeAgents.size,
+          at_ms: atMs
         });
       }
     }
@@ -122,11 +244,101 @@ function parseCodexSession(raw) {
 
   return finishUsage({
     provider: "codex",
-    points,
+    points: reconcilePointTotals(points, cumulative),
     totals: cumulative,
     currentContext: latest?.input_tokens,
     contextWindow,
-    exact: true
+    exact: true,
+    agentsCurrent: activeAgents.size,
+    agentsTotal: allAgents.size
+  });
+}
+
+function sumUsageShapes(values) {
+  return values.reduce(
+    (sum, value) => {
+      Object.keys(sum).forEach((key) => {
+        sum[key] += number(value?.[key]);
+      });
+      return sum;
+    },
+    { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0 }
+  );
+}
+
+function timelineSnapshotAt(timeline, atMs) {
+  let snapshot = null;
+  for (const entry of timeline) {
+    if (entry.at_ms > atMs) break;
+    snapshot = entry;
+  }
+  return snapshot;
+}
+
+// A Codex swarm stores one rollout session per agent. Aggregate every saved
+// thread so Total and Context include the workers, then align the combined
+// context timeline to the lead's primary maze actions.
+function parseCodexSwarmSessions(rawSessions, leadConversationId = "") {
+  const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
+    .filter(Boolean)
+    .map((raw) => ({
+      id: codexSessionId(raw),
+      usage: parseCodexSession(raw),
+      timeline: codexTokenTimeline(raw)
+    }));
+  const lead = sessions.find((session) => session.id === leadConversationId) ||
+    sessions.find((session) => session.usage.actions.length) ||
+    sessions[0];
+
+  if (!lead) return parseCodexSession("");
+
+  const totals = sumUsageShapes(sessions.map((session) => session.usage));
+  let previousCumulative = {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    total_tokens: 0
+  };
+  const points = lead.usage.actions.map((leadPoint) => {
+    const snapshots = sessions
+      .map((session) => timelineSnapshotAt(session.timeline, number(leadPoint.at_ms)))
+      .filter(Boolean);
+    const cumulative = sumUsageShapes(snapshots.map((snapshot) => snapshot.cumulative));
+    const delta = {};
+    Object.keys(previousCumulative).forEach((key) => {
+      delta[key] = Math.max(0, cumulative[key] - previousCumulative[key]);
+    });
+    previousCumulative = cumulative;
+    return {
+      action: leadPoint.action,
+      ...delta,
+      context_tokens: snapshots.reduce((sum, snapshot) => sum + number(snapshot.latest.input_tokens), 0),
+      active_agents: leadPoint.active_agents
+    };
+  });
+  const currentContext = sessions.reduce(
+    (sum, session) => sum + number(session.usage.current_context_tokens),
+    0
+  );
+  const contextWindow = sessions.reduce(
+    (sum, session) => sum + number(session.usage.context_window),
+    0
+  );
+  const agentCount = sessions.filter((session) => session.usage.available).length || sessions.length;
+  reconcilePointTotals(points, totals);
+
+  return finishUsage({
+    provider: "codex",
+    points,
+    totals,
+    currentContext,
+    contextWindow,
+    exact: true,
+    note: `${agentCount} agent session${agentCount === 1 ? "" : "s"} · combined token use and context`,
+    averageTokensPerAction: points.length ? totals.total_tokens / points.length : null,
+    agentsCurrent: lead.usage.agents_current,
+    agentsTotal: Math.max(number(lead.usage.agents_total), agentCount)
   });
 }
 
@@ -170,7 +382,8 @@ function parseCodexEvents(raw) {
         cached_input_tokens: Math.round(delta.cached_input_tokens / count),
         output_tokens: Math.round(delta.output_tokens / count),
         reasoning_tokens: Math.round(delta.reasoning_tokens / count),
-        context_tokens: null
+        context_tokens: null,
+        active_agents: 1
       });
     }
 
@@ -186,7 +399,9 @@ function parseCodexEvents(raw) {
     currentContext: null,
     contextWindow: null,
     exact: false,
-    note: "Per-action use is estimated from the CLI turn total; container context size is not exposed."
+    note: "Per-action use is estimated from the CLI turn total; container context size is not exposed.",
+    agentsCurrent: 1,
+    agentsTotal: 1
   });
 }
 
@@ -206,10 +421,15 @@ function claudeUsageShape(usage = {}) {
 function parseClaudeEvents(raw) {
   const points = [];
   const pending = new Map();
+  const pendingAgents = new Set();
+  const allAgentTools = new Set();
   const totals = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0 };
+  let previousActionTotals = { ...totals };
+  let reportedTotals = null;
   let latest = null;
   let contextWindow = 0;
   let selectedModelWeight = -1;
+  let sawAgentTools = false;
 
   for (const event of jsonLines(raw)) {
     if (event.type === "stream_event" && event.event?.type === "message_delta" && event.event.usage) {
@@ -221,37 +441,78 @@ function parseClaudeEvents(raw) {
     }
 
     if (event.type === "assistant" && Array.isArray(event.message?.content) && latest) {
+      event.message.content.forEach((block) => {
+        if (
+          block?.type === "tool_use" &&
+          block.id &&
+          ["agent", "task"].includes(String(block.name || "").toLowerCase())
+        ) {
+          pendingAgents.add(block.id);
+          allAgentTools.add(block.id);
+          sawAgentTools = true;
+        }
+      });
       for (const block of event.message.content) {
         if (block?.type !== "tool_use" || !block.id) continue;
         const count = block.name === "Bash"
           ? mazeActionCount(block.input?.command)
           : mazeToolActionCount(block.name, block.input);
-        if (count) pending.set(block.id, { count, usage: { ...latest } });
+        if (count) {
+          pending.set(block.id, {
+            count,
+            cumulative: { ...totals },
+            context: { ...latest },
+            active_agents: 1 + pendingAgents.size
+          });
+        }
       }
     }
 
     if (event.type === "user" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
-        if (block?.type !== "tool_result" || !pending.has(block.tool_use_id)) continue;
+        if (block?.type !== "tool_result") continue;
+        if (pendingAgents.delete(block.tool_use_id)) continue;
+        if (!pending.has(block.tool_use_id)) continue;
         const batch = pending.get(block.tool_use_id);
         pending.delete(block.tool_use_id);
         if (block.is_error) continue;
+        const delta = {};
+        Object.keys(previousActionTotals).forEach((key) => {
+          delta[key] = Math.max(0, number(batch.cumulative[key]) - number(previousActionTotals[key]));
+        });
+        previousActionTotals = batch.cumulative;
         for (let index = 0; index < batch.count; index += 1) {
           points.push({
             action: points.length + 1,
-            total_tokens: Math.round(batch.usage.total_tokens / batch.count),
-            input_tokens: Math.round(batch.usage.input_tokens / batch.count),
-            cached_input_tokens: Math.round(batch.usage.cached_input_tokens / batch.count),
-            output_tokens: Math.round(batch.usage.output_tokens / batch.count),
-            reasoning_tokens: Math.round(batch.usage.reasoning_tokens / batch.count),
-            context_tokens: batch.usage.input_tokens
+            total_tokens: Math.round(delta.total_tokens / batch.count),
+            input_tokens: Math.round(delta.input_tokens / batch.count),
+            cached_input_tokens: Math.round(delta.cached_input_tokens / batch.count),
+            output_tokens: Math.round(delta.output_tokens / batch.count),
+            reasoning_tokens: Math.round(delta.reasoning_tokens / batch.count),
+            context_tokens: batch.context.input_tokens,
+            active_agents: batch.active_agents
           });
         }
       }
     }
 
     if (event.type === "result" && event.modelUsage && typeof event.modelUsage === "object") {
-      for (const stats of Object.values(event.modelUsage)) {
+      const modelStats = Object.values(event.modelUsage);
+      reportedTotals = modelStats.reduce(
+        (sum, stats) => {
+          const input = number(stats?.inputTokens) +
+            number(stats?.cacheReadInputTokens) +
+            number(stats?.cacheCreationInputTokens);
+          const output = number(stats?.outputTokens);
+          sum.input_tokens += input;
+          sum.cached_input_tokens += number(stats?.cacheReadInputTokens) + number(stats?.cacheCreationInputTokens);
+          sum.output_tokens += output;
+          sum.total_tokens += input + output;
+          return sum;
+        },
+        { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0 }
+      );
+      for (const stats of modelStats) {
         const weight =
           number(stats?.inputTokens) +
           number(stats?.cacheReadInputTokens) +
@@ -265,13 +526,22 @@ function parseClaudeEvents(raw) {
     }
   }
 
+  const finalTotals = reportedTotals?.total_tokens ? reportedTotals : totals;
+  reconcilePointTotals(points, finalTotals);
+
   return finishUsage({
     provider: "claude",
     points,
-    totals,
+    totals: finalTotals,
     currentContext: latest?.input_tokens,
     contextWindow,
-    exact: true
+    exact: true,
+    note: sawAgentTools ? "Claude Code · subagent usage included" : "",
+    averageTokensPerAction: points.length && finalTotals.total_tokens
+      ? finalTotals.total_tokens / points.length
+      : null,
+    agentsCurrent: 1 + pendingAgents.size,
+    agentsTotal: 1 + allAgentTools.size
   });
 }
 
@@ -289,7 +559,8 @@ function parsePrimeResults(raw) {
       cached_input_tokens: number(usage.cached_input_tokens),
       output_tokens: output,
       reasoning_tokens: number(usage.reasoning_tokens),
-      context_tokens: input
+      context_tokens: input,
+      active_agents: 1
     };
   });
   const totals = points.reduce(
@@ -310,7 +581,9 @@ function parsePrimeResults(raw) {
     totals,
     currentContext: points.at(-1)?.context_tokens,
     contextWindow: null,
-    exact: true
+    exact: true,
+    agentsCurrent: 1,
+    agentsTotal: 1
   });
 }
 
@@ -327,7 +600,8 @@ function parsePrimeLiveUsage(raw) {
       cached_input_tokens: number(record.cached_input_tokens),
       output_tokens: output,
       reasoning_tokens: number(record.reasoning_tokens),
-      context_tokens: input
+      context_tokens: input,
+      active_agents: 1
     });
   }
 
@@ -350,7 +624,9 @@ function parsePrimeLiveUsage(raw) {
     totals,
     currentContext: points.at(-1)?.context_tokens,
     contextWindow: null,
-    exact: true
+    exact: true,
+    agentsCurrent: 1,
+    agentsTotal: 1
   });
 }
 
@@ -377,12 +653,38 @@ function findFile(directory, predicate, depth = 0) {
   return "";
 }
 
+function findFiles(directory, predicate, depth = 0, results = []) {
+  if (!directory || depth > 8 || !fs.existsSync(directory)) return results;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (_error) {
+    return results;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isFile() && predicate(entry.name)) results.push(entryPath);
+    else if (entry.isDirectory()) findFiles(entryPath, predicate, depth + 1, results);
+  }
+
+  return results;
+}
+
 function findCodexSessionFile(codexHome, conversationId) {
   if (!conversationId) return "";
   return findFile(
     path.join(codexHome || "", "sessions"),
     (name) => name.endsWith(".jsonl") && name.includes(conversationId)
   );
+}
+
+function findCodexSessionFiles(codexHome) {
+  return findFiles(
+    path.join(codexHome || "", "sessions"),
+    (name) => name.endsWith(".jsonl")
+  ).sort();
 }
 
 function findClaudeSessionFile(claudeHome, conversationId) {
@@ -400,10 +702,12 @@ function findPrimeResultsFile(runDir) {
 module.exports = {
   findClaudeSessionFile,
   findCodexSessionFile,
+  findCodexSessionFiles,
   findPrimeResultsFile,
   parseClaudeEvents,
   parseCodexEvents,
   parseCodexSession,
+  parseCodexSwarmSessions,
   parsePrimeLiveUsage,
   parsePrimeResults
 };

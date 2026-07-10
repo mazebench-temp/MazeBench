@@ -300,14 +300,11 @@
   }
 
   function runOptionsReady() {
-    const dockerReady =
-      state.isolation === "docker" &&
-      (state.toolUse === "read-only" ||
-        (state.toolUse === "offline" && Boolean(state.orchestration)));
     return Boolean(
       composerSettingsReady() &&
       state.mode &&
-      (state.provider === "prime" || state.isolation === "full" || dockerReady)
+      (state.provider === "prime" ||
+        (state.isolation && state.toolUse && state.orchestration))
     );
   }
 
@@ -854,12 +851,8 @@
     const primeSettings = document.getElementById("prime-settings");
     const hasObservation = Boolean(state.mode);
     const hasAccess = Boolean(state.isolation);
-    const dockerSelected = state.isolation === "docker";
-    const offlineSelected = dockerSelected && state.toolUse === "offline";
-    const localBudgetReady =
-      state.isolation === "full" ||
-      (dockerSelected && state.toolUse === "read-only") ||
-      (offlineSelected && Boolean(state.orchestration));
+    const hasToolUse = Boolean(state.toolUse);
+    const hasOrchestration = Boolean(state.orchestration);
 
     const setCardVisibility = (card, show) => {
       if (!card) return;
@@ -869,9 +862,9 @@
     };
 
     setCardVisibility(localSettings?.querySelector(".setting-card--access"), hasObservation);
-    setCardVisibility(localSettings?.querySelector(".setting-card--tool-use"), hasObservation && dockerSelected);
-    setCardVisibility(localSettings?.querySelector(".setting-card--orchestration"), hasObservation && offlineSelected);
-    setCardVisibility(localSettings?.querySelector(".setting-card--budget"), hasObservation && hasAccess && localBudgetReady);
+    setCardVisibility(localSettings?.querySelector(".setting-card--tool-use"), hasObservation && hasAccess);
+    setCardVisibility(localSettings?.querySelector(".setting-card--orchestration"), hasObservation && hasAccess && hasToolUse);
+    setCardVisibility(localSettings?.querySelector(".setting-card--budget"), hasObservation && hasAccess && hasToolUse && hasOrchestration);
     setCardVisibility(primeSettings?.querySelector(".setting-card--budget"), hasObservation);
   }
 
@@ -934,9 +927,8 @@
     }
   }
 
-  // Isolation is a two-way choice — Docker (isolated container) or Full tools
-  // (full host access). There is no host-sandbox middle mode: the codex/claude
-  // workspace-write sandbox has no network, so it can't render vision frames.
+  // Access chooses where the run executes. Tool-use and orchestration are
+  // independent choices that follow it for both Docker and host runs.
   function setIsolation(value, syncSteps = true) {
     const next = value === "full" || value === "docker" ? value : null;
     if (state.isolation !== next) {
@@ -952,6 +944,8 @@
     const picker = document.getElementById("isolation-picker");
     picker?.classList.toggle("has-selection", Boolean(state.isolation));
     picker?.classList.toggle("is-second", state.isolation === "full");
+    const hostRisk = document.getElementById("host-access-risk");
+    if (hostRisk) hostRisk.hidden = state.isolation !== "full";
     syncToolUsePicker();
     syncOrchestrationPicker();
     syncRunSettingCards();
@@ -970,10 +964,10 @@
   }
 
   function setToolUse(value, syncSteps = true) {
-    if (state.isolation !== "docker") return;
+    if (!state.isolation) return;
     const next = value === "read-only" || value === "offline" ? value : null;
     if (state.toolUse !== next) {
-      state.orchestration = next === "read-only" ? "single" : null;
+      state.orchestration = null;
     }
     state.toolUse = next;
     syncToolUsePicker();
@@ -994,7 +988,7 @@
   }
 
   function setOrchestration(value, syncSteps = true) {
-    if (state.isolation !== "docker" || state.toolUse !== "offline") return;
+    if (!state.isolation || !state.toolUse) return;
     state.orchestration = value === "single" || value === "swarm" ? value : null;
     syncOrchestrationPicker();
     syncRunSettingCards();
@@ -1030,8 +1024,8 @@
     } else {
       if (hint) hint.textContent = env.docker_installed ? "start Docker below" : "Docker not installed";
       dockerOption.title = env.docker_installed
-        ? "Docker is installed but its daemon isn't running. Start it below, or use Full tools."
-        : "Install Docker to isolate agent runs, or use Full tools.";
+        ? "Docker is installed but its daemon isn't running. Start it below, or use Host access."
+        : "Install Docker to isolate agent runs, or use Host access.";
       if (state.isolation === "docker") setIsolation(null);
     }
 
@@ -1158,9 +1152,9 @@
             codex_fast: state.provider === "codex" && document.getElementById("run-codex-fast").checked,
             container: state.isolation === "docker",
             video: false,
-            tools: state.isolation === "full" || state.toolUse === "offline",
-            tool_use: state.isolation === "docker" ? state.toolUse : "full",
-            swarm: state.isolation === "docker" && state.toolUse === "offline" && state.orchestration === "swarm"
+            tools: state.toolUse === "offline",
+            tool_use: state.toolUse,
+            swarm: state.orchestration === "swarm"
           };
 
     body.count = 1;
