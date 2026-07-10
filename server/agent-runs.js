@@ -78,6 +78,13 @@ const SERVABLE_RUN_FILES = new Set([
   "maze_replay.mp4"
 ]);
 
+function collectedAllWorldGems(gemCount, gemTotal) {
+  if (gemTotal === null || gemTotal === undefined || gemTotal === "") return false;
+  const collected = Number(gemCount);
+  const total = Number(gemTotal);
+  return Number.isFinite(collected) && Number.isFinite(total) && total >= 0 && collected >= total;
+}
+
 function createAgentRunService({
   agentEnvironment,
   ensureDirectory,
@@ -482,9 +489,8 @@ function createAgentRunService({
     }
 
     const total = Math.max(1, Math.floor(Number(meta.moves) || 1));
-    const terminalComplete = meta.status === "finished";
     const rawPercent = (Math.min(current, total) / total) * 100;
-    const percent = terminalComplete ? 100 : Math.max(0, Math.min(100, rawPercent));
+    const percent = Math.max(0, Math.min(100, rawPercent));
     const etaMs = meta.status === "running" && averageTurnMs != null
       ? Math.max(0, Math.round(averageTurnMs * Math.max(0, total - current)))
       : null;
@@ -1057,11 +1063,21 @@ function createAgentRunService({
     );
     const scorecardRooms = Number(scorecard?.rooms?.visited);
     const scorecardRoomTotal = Number(scorecard?.rooms?.total);
+    const scorecardGemCount = Number(scorecard?.gems?.collected);
     const scorecardGemTotal = Number(scorecard?.gems?.total);
     const turns = meta.kind === "prime" ? Math.max(actions.length, readPrimeLiveTurns(runDir)) : actions.length;
     const game = getGame(meta.game_id);
     const defaultLevelId = game ? worldMaps.defaultLevelIdForGame(game) : "";
     const instanceMetrics = readInstanceMetrics(runId);
+    const gemCount = Number.isFinite(scorecardGemCount)
+      ? scorecardGemCount
+      : Math.max(0, Number(last?.gem_count) || 0);
+    const gemTotal = Number.isFinite(scorecardGemTotal)
+      ? scorecardGemTotal
+      : Number.isFinite(Number(meta.gem_total))
+        ? Number(meta.gem_total)
+        : null;
+    const complete = collectedAllWorldGems(gemCount, gemTotal);
 
     const hasVideo = fs.existsSync(path.join(runDir, "maze_replay.mp4"));
     const storedVideoStatus =
@@ -1082,13 +1098,14 @@ function createAgentRunService({
       auxiliary_action_attempts: instanceMetrics.auxiliary_action_attempts,
       simulated_actions: turns + instanceMetrics.auxiliary_actions,
       explorer_instances: instanceMetrics.instances,
-      gem_count: last ? last.gem_count : 0,
-      gem_total: Number.isFinite(scorecardGemTotal) ? scorecardGemTotal : meta.gem_total ?? null,
+      gem_count: gemCount,
+      gem_total: gemTotal,
       room_count: Number.isFinite(scorecardRooms) ? scorecardRooms : observedRooms.size,
       room_total: Number.isFinite(scorecardRoomTotal) ? scorecardRoomTotal : meta.room_total ?? null,
       progress: progressForRun(meta, turns),
       start_room_is_default: Boolean(defaultLevelId && meta.level_id === defaultLevelId),
       current_room: last ? last.current_room : meta.level_id,
+      complete,
       solved: Boolean(last && last.solved),
       has_video: hasVideo,
       video_status: videoStatus,
@@ -3551,6 +3568,7 @@ function createAgentRunService({
 }
 
 module.exports = {
+  collectedAllWorldGems,
   createAgentRunService,
   enrichedPathEnv
 };

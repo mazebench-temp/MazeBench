@@ -79,6 +79,7 @@ function topbar({ rightHtml = "", extraNavHtml = "", extraHtml = "" } = {}) {
         <a class="nav-link play-nav-link" href="/play">Play</a>
         <a class="nav-link" href="/build">Build</a>
         <a class="nav-link" href="/agent">Agent</a>
+        <a class="nav-link" href="/train">Train</a>
         ${extraNavHtml}
       </nav>
       <div class="topbar-end">
@@ -95,6 +96,7 @@ function siteFooter() {
       <a class="text-link" href="/play">Play</a>
       <a class="text-link" href="/build">Build</a>
       <a class="text-link" href="/agent">Agent</a>
+      <a class="text-link" href="/train">Train</a>
       <a class="text-link" href="https://mazebench.com">mazebench.com</a>
     </footer>`;
 }

@@ -1,12 +1,13 @@
 const { escapeHtml, serializeForScript } = require("./support");
 const { accountActionsHtml, pageHead, siteFooter, topbar } = require("./page-chrome");
 
-// Gamepad 2, Blocks, and Bot from Lucide Icons (ISC License).
+// Gamepad 2, Blocks, Bot, and Brain Circuit from Lucide Icons (ISC License).
 // https://lucide.dev/
 const HOME_MODE_ICONS = Object.freeze({
   play: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><line x1="6" x2="10" y1="11" y2="11"></line><line x1="8" x2="8" y1="9" y2="13"></line><line x1="15" x2="15.01" y1="12" y2="12"></line><line x1="18" x2="18.01" y1="10" y2="10"></line><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"></path></svg>`,
   build: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"></path><rect x="14" y="2" width="8" height="8" rx="1"></rect></svg>`,
-  agent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>`
+  agent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>`,
+  train: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"></path><path d="M9 13a4.5 4.5 0 0 0 3-4"></path><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"></path><path d="M3.477 10.896a4 4 0 0 1 .585-.396"></path><path d="M6 18a4 4 0 0 1-1.967-.516"></path><path d="M12 13h4"></path><path d="M12 18h6a2 2 0 0 1 2 2v1"></path><path d="M12 8h8"></path><path d="M16 8V5a2 2 0 0 1 2-2"></path><circle cx="16" cy="13" r=".5"></circle><circle cx="18" cy="3" r=".5"></circle><circle cx="20" cy="21" r=".5"></circle><circle cx="20" cy="8" r=".5"></circle></svg>`
 });
 
 // Trash 2 from Lucide Icons (ISC License).
@@ -15,6 +16,12 @@ const TRASH_ICON = `<svg class="trash-icon" viewBox="0 0 24 24" fill="none" stro
 
 // Folder Closed from Lucide Icons (ISC License).
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path><path d="M2 10h20"></path></svg>`;
+
+const TRAIN_REWARD_ICONS = Object.freeze({
+  gems: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12l4 6-10 12L2 9Z"></path><path d="m11 3-3 6 4 12 4-12-3-6"></path><path d="M2 9h20"></path></svg>`,
+  rooms: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"></path><path d="M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16"></path><path d="M10 9h4"></path><path d="M10 13h4"></path><path d="M10 17h4"></path></svg>`,
+  blocks: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12.89 1.45 8 4A2 2 0 0 1 22 7.24v9.52a2 2 0 0 1-1.11 1.79l-8 4a2 2 0 0 1-1.78 0l-8-4A2 2 0 0 1 2 16.76V7.24a2 2 0 0 1 1.11-1.79l8-4a2 2 0 0 1 1.78 0Z"></path><path d="m2.32 6.16 9.68 4.84 9.68-4.84"></path><path d="M12 22.76V11"></path></svg>`
+});
 
 // Page renderers. The chrome (topbar, footer, fonts, site.css) is ported from
 // the MazeJam repo so the local site looks exactly like the hosted one:
@@ -153,6 +160,7 @@ function createPageRenderer({
           ${modeCard("/play", "play", "Play", "Play the official Maze Bench environment or your local drafts.")}
           ${modeCard("/build", "build", "Build", "Create and save worlds locally, edit the official Maze Bench environment, or download published worlds from mazebench.com.")}
           ${modeCard("/agent", "agent", "Agent", "Run Codex, Claude Code, or Prime Verifiers on any world and watch live.")}
+          ${modeCard("/train", "train", "Train", "Train models on Maze Bench with Prime Verifiers.")}
         </div>
         ${otherGamesSection}`
     });
@@ -732,6 +740,105 @@ function createPageRenderer({
     };
   }
 
+  function renderTrainPage() {
+    const game = getGame("maze");
+    const trainData = {
+      bootstrapUrl: "/api/train/bootstrap",
+      runsUrl: "/api/train/runs",
+      environment: {
+        id: "maze",
+        title: game?.name || "Maze Bench",
+        default_level_id: game ? defaultLevelIdForGame(game) : "level_HxI",
+        room_total: game?.worldMap?.levels?.length || 0,
+        gem_total: game ? buildWorlds.countWorldGems(game) : 0
+      }
+    };
+
+    return renderSitePage({
+      title: "Train — Maze Bench",
+      bodyClass: "train-page",
+      main: `<div class="page-head train-page-head">
+          <h1>Train</h1>
+          <p id="train-status" class="author-status" role="status" aria-live="polite"></p>
+        </div>
+        <section class="panel agent-composer train-composer" aria-label="Launch training">
+          <div class="composer-head train-composer__head">
+            <h2>New training run</h2>
+            <span id="train-readiness" class="train-readiness">Checking Prime…</span>
+          </div>
+
+          <section class="composer-section train-section train-section--model">
+            <div class="composer-section-title"><span class="composer-step">01</span><div><h3>Base model</h3></div></div>
+            <div id="train-model-loading" class="train-model-loading"><span class="model-loading-spinner" aria-hidden="true"></span><span>Loading models</span></div>
+            <div id="train-model-picker" class="train-model-grid" role="radiogroup" aria-label="Base model" hidden></div>
+          </section>
+
+          <section id="train-observation-section" class="composer-section train-section" hidden>
+            <div class="composer-section-title"><span class="composer-step">02</span><div><h3>Observation mode</h3></div></div>
+            <div class="animated-segmented train-segmented" id="train-observation-picker" role="radiogroup" aria-label="Observation mode">
+              <span class="segmented__glider" aria-hidden="true"></span>
+              <button type="button" class="segmented__option" data-observation="ascii" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
+              <button type="button" class="segmented__option" data-observation="vision" aria-pressed="false"><span class="segmented__icon">IMG</span><span>Vision</span></button>
+            </div>
+          </section>
+
+          <section id="train-rewards-section" class="composer-section train-section" hidden>
+            <div class="composer-section-title"><span class="composer-step">03</span><div><h3>Reward values</h3></div></div>
+            <div class="train-reward-grid">
+              <label class="train-reward-card train-reward-card--gems">
+                <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.gems}</span>
+                <span class="train-reward-card__copy"><strong>Collecting gems</strong><small>per gem</small></span>
+                <input id="train-reward-gems" type="number" min="0" max="100" step="0.05" inputmode="decimal">
+              </label>
+              <label class="train-reward-card train-reward-card--rooms">
+                <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.rooms}</span>
+                <span class="train-reward-card__copy"><strong>New rooms</strong><small>per room</small></span>
+                <input id="train-reward-rooms" type="number" min="0" max="100" step="0.05" inputmode="decimal">
+              </label>
+              <label class="train-reward-card train-reward-card--blocks">
+                <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.blocks}</span>
+                <span class="train-reward-card__copy"><strong>Pushing blocks</strong><small>per novel position</small></span>
+                <input id="train-reward-blocks" type="number" min="0" max="100" step="0.05" inputmode="decimal">
+              </label>
+            </div>
+          </section>
+
+          <section id="train-rollout-section" class="composer-section train-section" hidden>
+            <div class="composer-section-title"><span class="composer-step">04</span><div><h3>Rollouts</h3></div></div>
+            <div class="train-settings-grid">
+              <label class="field"><span>Actions per rollout</span><input id="train-max-actions" type="number" min="1" max="100000" inputmode="numeric"></label>
+              <label class="field"><span>Rollouts per example</span><input id="train-rollouts" type="number" min="2" max="128" inputmode="numeric"></label>
+              <label class="field"><span>Tokens per turn</span><input id="train-max-tokens" type="number" min="64" max="131072" inputmode="numeric"></label>
+            </div>
+          </section>
+
+          <section id="train-settings-section" class="composer-section train-section" hidden>
+            <div class="composer-section-title"><span class="composer-step">05</span><div><h3>Training</h3></div></div>
+            <div class="train-settings-grid">
+              <label class="field"><span>Training steps</span><input id="train-max-steps" type="number" min="1" max="100000" inputmode="numeric"></label>
+              <label class="field"><span>Batch size</span><input id="train-batch-size" type="number" min="2" max="8192" inputmode="numeric"></label>
+              <label class="field"><span>Temperature</span><input id="train-temperature" type="number" min="0" max="2" step="0.05" inputmode="decimal"></label>
+            </div>
+          </section>
+
+          <section id="train-launch-section" class="composer-section composer-section--run train-section" hidden>
+            <div class="composer-section-title"><span class="composer-step">06</span><div><h3>Train</h3></div></div>
+            <div class="train-launch-dock">
+              <div class="train-launch-summary"><strong id="train-launch-model">Choose a model</strong><span id="train-launch-environment">Maze Bench · ${trainData.environment.room_total} rooms · ${trainData.environment.gem_total} gems</span></div>
+              <button id="launch-training" class="button--primary train-launch-button" type="button" disabled><span>Train</span><span aria-hidden="true">↗</span></button>
+            </div>
+          </section>
+        </section>
+
+        <section class="panel train-runs-panel" aria-label="Training runs">
+          <div class="runs-head"><div><h2>Training runs</h2></div><button id="refresh-training-runs" class="catalog-refresh" type="button">↻ Refresh</button></div>
+          <div id="training-runs" class="training-runs"></div>
+        </section>
+        <script>window.__TRAIN_DATA__ = ${serializeForScript(trainData)};</script>
+        <script src="/train.js?v=20260710-train-v1-1" defer></script>`
+    });
+  }
+
   function renderAgentPage() {
     const masterGame = getGame("maze");
     const worlds = [
@@ -1108,6 +1215,7 @@ function createPageRenderer({
     renderNotFound,
     renderPlayModePage,
     renderPlayPage,
+    renderTrainPage,
     renderWorldMapEditorPage
   };
 }

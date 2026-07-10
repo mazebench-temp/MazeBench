@@ -20,15 +20,46 @@ from pydantic import Field
 import verifiers.v1 as vf
 
 
+def env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+def env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = str(os.environ.get(name, "")).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 DEFAULT_GAME_ID = "maze"
-DEFAULT_START_LEVEL_ID = "level_HxI"
+DEFAULT_START_LEVEL_ID = os.environ.get("MAZEBENCH_START_LEVEL_ID", "level_HxI")
 DEFAULT_VIEW = "top-diagonal"
 DEFAULT_YAW = 0
 DEFAULT_NODE_BIN = "node"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_TURNS = 40
+DEFAULT_MAX_ACTIONS = env_int("MAZEBENCH_MAX_ACTIONS", 256, minimum=1)
 DEFAULT_TARGET_GEMS = 0
-DEFAULT_OBSERVATION_MODE = "ascii"
+DEFAULT_OBSERVATION_MODE = (
+    "vision"
+    if str(os.environ.get("MAZEBENCH_OBSERVATION_MODE", "ascii")).lower()
+    == "vision"
+    else "ascii"
+)
 DEFAULT_VISION_HEIGHT = 512
 DEFAULT_VISION_WIDTH = 512
 # How far vision frames see: 1..26 rings of neighbor rooms (1 = the classic
@@ -36,13 +67,19 @@ DEFAULT_VISION_WIDTH = 512
 DEFAULT_VISION_VIEW = "1"
 DEFAULT_GAME_WON_GEM_COUNT = 100
 GAME_CONFIG_RELATIVE_PATH = Path("games") / "maze" / "config.json"
-ROOM_EXPLORATION_REWARD_WEIGHT = 0.1
+DEFAULT_GEM_REWARD_WEIGHT = env_float("MAZEBENCH_GEM_REWARD_WEIGHT", 1.0)
+DEFAULT_ROOM_REWARD_WEIGHT = env_float("MAZEBENCH_ROOM_REWARD_WEIGHT", 0.1)
+DEFAULT_PUSH_REWARD_WEIGHT = env_float("MAZEBENCH_PUSH_REWARD_WEIGHT", 0.05)
 REPO_ROOT_ENV = "MAZEBENCH_REPO_ROOT"
 INFO_KEY = "mazebench"
 
 
 def load_game_won_gem_count() -> int:
     """Read the shared win threshold from games/maze/config.json."""
+    configured = env_int("MAZEBENCH_GAME_WON_GEM_COUNT", 0, minimum=1)
+    if configured > 0:
+        return configured
+
     candidates: list[Path] = []
 
     env_root = os.environ.get(REPO_ROOT_ENV)
@@ -935,10 +972,14 @@ def slim_status(status: dict[str, Any] | None) -> dict[str, Any]:
         "game_won",
         "gem_count",
         "moved",
+        "novel_push_count",
+        "novel_pushes_this_action",
         "player",
         "player_dead",
         "quit",
         "room_changed",
+        "push_count",
+        "pushes_this_action",
         "solved",
         "visited_levels",
         "yaw",
@@ -1001,10 +1042,11 @@ def set_maze_scorecard(state: vf.State, scorecard: dict[str, Any] | None) -> Non
 
 class MazeBenchTask(vf.Task):
     example_id: int
-    allow_quit: bool = True
+    allow_quit: bool = env_bool("MAZEBENCH_ALLOW_QUIT", True)
     game_id: str = DEFAULT_GAME_ID
     game_won_gem_count: int = GAME_WON_GEM_COUNT
     level_id: str = DEFAULT_START_LEVEL_ID
+    max_actions: int = DEFAULT_MAX_ACTIONS
     node_bin: str = DEFAULT_NODE_BIN
     observation: str = ""
     observation_mode: Literal["ascii", "vision"] = DEFAULT_OBSERVATION_MODE
@@ -1026,12 +1068,16 @@ _EnvId = getattr(vf, "EnvId", None) or getattr(vf, "ID", str)
 class MazeBenchConfig(vf.TasksetConfig):
     id: _EnvId = "mazebench"
     num_examples: int = 1
-    allow_quit: bool = True
+    allow_quit: bool = env_bool("MAZEBENCH_ALLOW_QUIT", True)
     level_ids: str | list[str] | None = None
     start_level_id: str = DEFAULT_START_LEVEL_ID
     view: str = DEFAULT_VIEW
     yaw: int = DEFAULT_YAW
     game_won_gem_count: int = GAME_WON_GEM_COUNT
+    gem_reward_weight: float = Field(DEFAULT_GEM_REWARD_WEIGHT, ge=0)
+    room_reward_weight: float = Field(DEFAULT_ROOM_REWARD_WEIGHT, ge=0)
+    push_reward_weight: float = Field(DEFAULT_PUSH_REWARD_WEIGHT, ge=0)
+    max_actions: int = Field(DEFAULT_MAX_ACTIONS, ge=1)
     node_bin: str = DEFAULT_NODE_BIN
     observation_mode: Literal["ascii", "vision"] = DEFAULT_OBSERVATION_MODE
     repo_root: str | None = None
@@ -1289,6 +1335,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState
                 game_id=str(row["game_id"]),
                 game_won_gem_count=int(row["game_won_gem_count"]),
                 level_id=str(row["level_id"]),
+                max_actions=int(self.config.max_actions),
                 node_bin=str(row["node_bin"]),
                 observation=str(row["observation"]),
                 observation_mode=self.config.observation_mode,
@@ -1321,21 +1368,34 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
-        return bool(trace.state.game_lost or trace.state.game_won)
+        return bool(
+            trace.state.game_lost
+            or trace.state.game_won
+            or len(trace.state.maze_actions) >= int(trace.task.max_actions)
+        )
 
-    @vf.reward(weight=1.0)
+    @vf.reward
     async def gem_score(self, task: MazeBenchTask, trace: vf.Trace) -> float:
         status = trace.state.maze_status or {}
         gem_count = int(status.get("gem_count") or 0)
         target = int(task.target_gems or 0)
         if target <= 0:
-            return float(gem_count)
-        return min(1.0, gem_count / target)
+            raw_score = float(gem_count)
+        else:
+            raw_score = min(1.0, gem_count / target)
+        return raw_score * float(self.config.gem_reward_weight)
 
-    @vf.reward(weight=ROOM_EXPLORATION_REWARD_WEIGHT)
+    @vf.reward
     async def room_exploration_score(self, trace: vf.Trace) -> float:
         status = trace.state.maze_status or {}
-        return float(max(0, len(status.get("visited_levels") or []) - 1))
+        new_rooms = max(0, len(status.get("visited_levels") or []) - 1)
+        return float(new_rooms) * float(self.config.room_reward_weight)
+
+    @vf.reward
+    async def block_progress_score(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        novel_positions = int(status.get("novel_push_count") or 0)
+        return float(novel_positions) * float(self.config.push_reward_weight)
 
     @vf.metric
     async def collected_gems(self, trace: vf.Trace) -> float:
@@ -1351,6 +1411,16 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState
     async def visited_level_count(self, trace: vf.Trace) -> float:
         status = trace.state.maze_status or {}
         return float(len(status.get("visited_levels") or []))
+
+    @vf.metric
+    async def block_pushes(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return float(status.get("push_count") or 0)
+
+    @vf.metric
+    async def novel_block_positions(self, trace: vf.Trace) -> float:
+        status = trace.state.maze_status or {}
+        return float(status.get("novel_push_count") or 0)
 
 
 def load_taskset(config: MazeBenchConfig) -> MazeBenchTaskset:

@@ -23,6 +23,7 @@ const DIRECTION_TO_MOVE = {
 };
 const LEVEL_PATTERN = /^(?:level_)?([A-Z])x([A-Z])$/;
 const COORDINATE_PATTERN = /^[A-Z]$/i;
+const PUSHABLE_ACTOR_TYPES = new Set(["box", "floating_floor", "weightless_box"]);
 
 function normalizeLevelId(value) {
   const raw = String(value || "level_HxI").trim();
@@ -244,6 +245,41 @@ function recordCollectedGems(session, beforeIds) {
   return collected;
 }
 
+function recordPushedBlocks(session, result) {
+  const pushed = new Map();
+
+  (Array.isArray(result?.moves) ? result.moves : []).forEach((move) => {
+    if (
+      move?.visualOnly ||
+      !PUSHABLE_ACTOR_TYPES.has(String(move?.actorType || "")) ||
+      (move.fromX === move.toX && move.fromY === move.toY && move.fromElevation === move.toElevation)
+    ) {
+      return;
+    }
+
+    pushed.set(String(move.actorIndex), move);
+  });
+
+  let novel = 0;
+  pushed.forEach((move) => {
+    const stateKey = [
+      session.context.level.id,
+      move.actorType,
+      move.actorIndex,
+      move.toX,
+      move.toY,
+      move.toElevation ?? 0
+    ].join(":");
+    if (!session.novelPushStates.has(stateKey)) {
+      session.novelPushStates.add(stateKey);
+      novel += 1;
+    }
+  });
+
+  session.pushCount += pushed.size;
+  return { pushes: pushed.size, novel };
+}
+
 function syncSessionStats(session) {
   const stats = session?.context?.stats;
 
@@ -266,6 +302,10 @@ function sessionScorecard(session) {
   actions.quit = extraActions.quit || 0;
   actions.total = (actions.total || 0) + actions.go_to_level + actions.quit;
   scorecard.actions = actions;
+  scorecard.blocks = {
+    pushes: session.pushCount,
+    novel_positions: session.novelPushStates.size
+  };
   return scorecard;
 }
 
@@ -366,6 +406,8 @@ function sessionSnapshot(session, extra = {}) {
     current_view: currentView,
     death_message: playerDead ? DEATH_MESSAGE : "",
     gem_count: session.collectedGemIds.size,
+    novel_push_count: session.novelPushStates.size,
+    push_count: session.pushCount,
     level: rendered.level,
     player,
     player_dead: playerDead,
@@ -398,6 +440,8 @@ function createSession(options) {
     },
     initialOptions: { ...options },
     mazeEngine,
+    novelPushStates: new Set(),
+    pushCount: 0,
     visitedLevels: new Set([context.level.id])
   };
 
@@ -410,6 +454,8 @@ function resetSession(session) {
   session.collectedGemIds = next.collectedGemIds;
   session.context = next.context;
   session.extraActionCounts = next.extraActionCounts;
+  session.novelPushStates = next.novelPushStates;
+  session.pushCount = next.pushCount;
   session.visitedLevels = next.visitedLevels;
 }
 
@@ -436,6 +482,7 @@ function handleCommand(session, message) {
     const result = applyMove(session.context, move);
     const roomChanged = beforeLevel !== session.context.level.id;
     const collected = roomChanged ? [] : recordCollectedGems(session, beforeGems);
+    const pushed = recordPushedBlocks(session, result);
     session.actionCount += 1;
     session.visitedLevels.add(session.context.level.id);
 
@@ -444,6 +491,8 @@ function handleCommand(session, message) {
       collected_this_action: collected,
       direction: String(message.direction).toLowerCase(),
       moved: Boolean(result === true || result?.moved),
+      novel_pushes_this_action: pushed.novel,
+      pushes_this_action: pushed.pushes,
       room_changed: roomChanged
     });
   }
@@ -512,6 +561,8 @@ function handleCommand(session, message) {
 
     const previousVisited = new Set(session.visitedLevels);
     const previousGems = new Set(session.collectedGemIds);
+    const previousNovelPushStates = new Set(session.novelPushStates);
+    const previousPushCount = session.pushCount;
     const previousStats = session.context.stats;
     const next = createSession({
       ...session.initialOptions,
@@ -524,6 +575,8 @@ function handleCommand(session, message) {
     session.context.stats = previousStats || session.context.stats;
     previousVisited.forEach((visited) => session.visitedLevels.add(visited));
     previousGems.forEach((gemId) => session.collectedGemIds.add(gemId));
+    session.novelPushStates = previousNovelPushStates;
+    session.pushCount = previousPushCount;
     session.extraActionCounts.goto_level += 1;
     session.actionCount += 1;
 

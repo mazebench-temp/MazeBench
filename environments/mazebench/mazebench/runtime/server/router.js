@@ -31,6 +31,7 @@ function createRequestRouter({
   renderNotFound,
   renderPlayModePage,
   renderPlayPage,
+  renderTrainPage,
   renderWorldMapEditorPage,
   resolveGameAssetPath,
   sanitizeEditorPayload,
@@ -38,6 +39,7 @@ function createRequestRouter({
   sendHtml,
   sendJson,
   sendRedirect,
+  training,
   worldMaps,
   writeMazePreviewImageData
 }) {
@@ -84,6 +86,36 @@ function createRequestRouter({
 
     if (url.pathname === "/agent") {
       sendHtml(response, 200, renderAgentPage());
+      return;
+    }
+
+    if (url.pathname === "/train") {
+      sendHtml(response, 200, renderTrainPage());
+      return;
+    }
+
+    if (url.pathname === "/api/train/bootstrap") {
+      if (request.method !== "GET") {
+        response.writeHead(405, { Allow: "GET" });
+        response.end();
+        return;
+      }
+      sendJson(response, 200, training.bootstrap({ fresh: url.searchParams.get("refresh") === "1" }));
+      return;
+    }
+
+    if (url.pathname === "/api/train/runs") {
+      if (request.method === "GET") {
+        sendJson(response, 200, training.listRuns());
+        return;
+      }
+      if (request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 201, training.launch(payload));
+        return;
+      }
+      response.writeHead(405, { Allow: "GET, POST" });
+      response.end();
       return;
     }
 

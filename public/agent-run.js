@@ -408,16 +408,17 @@
   }
 
   function renderStats(run) {
+    const statusLabel = run.status === "finished" ? (run.complete ? "complete" : "ended") : run.status;
     const chips = isPrime
       ? [
-          ["status", run.status],
+          ["status", statusLabel],
           ["turn budget", String(run.moves ?? "")],
           run.turns ? ["moves", String(run.turns)] : null,
           run.turns ? ["gems", String(run.gem_count ?? 0)] : null,
           run.solved ? ["result", "SOLVED"] : null
         ].filter(Boolean)
       : [
-          ["status", run.status],
+          ["status", statusLabel],
           ["moves", `${run.turns}/${run.unlimited ? "∞" : run.moves}`],
           ["gems", String(run.gem_count ?? 0)],
           ["room", levelLabel(run.current_room)],
@@ -467,7 +468,9 @@
       run.status === "waiting"
         ? "Waiting"
         : run.status === "finished"
-        ? "Complete"
+        ? run.complete
+          ? "Complete"
+          : "Ended"
         : run.status === "paused"
           ? "Paused"
           : run.status === "pausing"
@@ -1070,10 +1073,10 @@
           progress.run.status !== "finished"
             ? `Run ${progress.run.status}.`
             : isPrime
-              ? `Eval finished — ${progress.run.turns || 0} move${progress.run.turns === 1 ? "" : "s"}${
+              ? `${progress.run.complete ? "Eval complete" : "Eval ended"} — ${progress.run.turns || 0} move${progress.run.turns === 1 ? "" : "s"}${
                   progress.run.has_video ? ", replay video above" : ""
                 }; see the runner log for rewards and scores.`
-              : `Finished — ${progress.run.gem_count ?? 0} gems in ${progress.run.turns} moves${progress.run.solved ? " (solved!)" : ""}.`,
+              : `${progress.run.complete ? "Complete" : "Ended"} — ${progress.run.gem_count ?? 0}/${progress.run.gem_total ?? "—"} gems in ${progress.run.turns} moves.`,
           progress.run.status === "failed"
         );
         // The text-mode image renders async and lags the board; keep polling

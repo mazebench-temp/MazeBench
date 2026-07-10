@@ -17,7 +17,7 @@
 - **Goal**: collect `game_won_gem_count` unique gems across the run. Not every room has a gem, and some rooms have multiple gems.
 - **Terminal states**: `game_won` fires when the run has collected `game_won_gem_count` unique gems. `game_lost` fires when the model types `quit`. Both terminal states end the loop and return a final scorecard.
 - **Scorecard result**: includes `won` and `percent`. `percent` is `100 * collected_gems / game_won_gem_count`.
-- **Reward overview**: default reward is the number of unique gems collected, plus a small `0.1` shaped reward for each newly visited room after the start room. If `target_gems > 0`, the gem reward is normalized to that target, but the semantic win condition remains `game_won_gem_count`.
+- **Reward overview**: three independent v1 reward components score unique gems, newly visited rooms, and novel pushed-block positions. Their default per-event weights are `1.0`, `0.1`, and `0.05`. Counting a block only when it reaches a new position prevents reward farming by pushing it back and forth. If `target_gems > 0`, the gem reward is normalized to that target, but the semantic win condition remains `game_won_gem_count`.
 
 Each assistant response should be exactly one text command. The v1 user simulator then replies as the next `user` message with the current ASCII room layout, metadata, and the allowed commands. Framework-level v1 limits such as `max_turns`, token caps, and timeouts are configured on the eval environment, while MazeBench-specific task generation lives under the taskset config.
 
@@ -143,6 +143,10 @@ Accepted text forms include `up`, `rotate camera left`, `undo`, `reset`, `go to 
 | `view` | str | `top-diagonal` | Initial ASCII camera view. |
 | `yaw` | int | `0` | Initial camera yaw. Movement actions are screen-relative. |
 | `game_won_gem_count` | int | package default | Unique gems required for `game_won`. This value is also passed into the JS bridge/scorecard. |
+| `gem_reward_weight` | float | `1.0` | Reward added per unique gem collected. |
+| `room_reward_weight` | float | `0.1` | Reward added per newly visited room after the starting room. |
+| `push_reward_weight` | float | `0.05` | Reward added per novel pushed-block position. |
+| `max_actions` | int | `256` | Maze-action cap enforced by the taskset stop condition. |
 | `observation_mode` | `ascii`/`vision` | `ascii` | Observation surface. `vision` sends a perspective PNG image plus text metadata instead of an ASCII board. |
 | `target_gems` | int | `0` | Optional gem-reward/prompt target for smoke runs. `0` uses the `game_won_gem_count` objective. The semantic `game_won` condition remains `game_won_gem_count`. |
 | `repo_root` | str/null | `None` | MazeBench repo root. Falls back to `MAZEBENCH_REPO_ROOT` or current working directory. |
@@ -163,7 +167,17 @@ timeouts are v1 eval/harness settings, not MazeBench taskset arguments.
 | Metric | Meaning |
 | ------ | ------- |
 | `gem_score` | Reward: raw unique gems collected, or normalized if `target_gems > 0`. |
-| `room_exploration_score` | Reward: newly visited rooms after the start room. Weighted by `0.1`. |
+| `room_exploration_score` | Reward: newly visited rooms after the start room, multiplied by `room_reward_weight`. |
+| `block_progress_score` | Reward: novel pushed-block positions, multiplied by `push_reward_weight`. |
 | `collected_gems` | Number of unique gem IDs collected across the run. |
 | `current_level_solved` | Whether the current room's JS solved condition is true. |
 | `visited_level_count` | Number of rooms visited during the rollout. |
+| `block_pushes` | Total successful block displacements, including revisits. |
+| `novel_block_positions` | Unique block positions reached through pushing; this is the anti-farming training signal. |
+
+The local Train page supplies these typed taskset defaults to isolated Hosted
+Training workers through `MAZEBENCH_GEM_REWARD_WEIGHT`,
+`MAZEBENCH_ROOM_REWARD_WEIGHT`, `MAZEBENCH_PUSH_REWARD_WEIGHT`, and
+`MAZEBENCH_MAX_ACTIONS`. This compatibility layer works with the current Hosted
+Training CLI while the upstream CLI migrates its public TOML schema to nested
+v1 taskset/harness blocks.

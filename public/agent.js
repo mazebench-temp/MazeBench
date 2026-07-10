@@ -41,7 +41,7 @@
     pausing: "Pausing",
     stopping: "Stopping",
     stopped: "Stopped",
-    finished: "Completed",
+    finished: "Ended",
     failed: "Failed"
   };
 
@@ -1234,7 +1234,7 @@
   function runProgressLabel(run) {
     if (run.status === "waiting") return "Waiting";
     const eta = Number(run.progress?.eta_ms);
-    if (run.status === "finished") return "Complete";
+    if (run.status === "finished") return run.complete ? "Complete" : "Ended";
     if (run.status === "paused") return "Paused";
     if (run.status === "pausing") return "Pausing…";
     if (run.status === "stopping") return "Stopping…";
@@ -1261,7 +1261,11 @@
         ? run.pause_reason === "quota"
           ? "paused · out of funds"
           : "paused"
-        : run.status;
+        : run.status === "finished"
+          ? run.complete
+            ? "complete"
+            : "ended"
+          : run.status;
     const modelName = run.model_name || run.model;
     const providerName = {
       codex: "Codex",

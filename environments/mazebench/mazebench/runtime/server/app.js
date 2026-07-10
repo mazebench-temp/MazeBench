@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { createAgentRunService, enrichedPathEnv } = require("./agent-runs");
+const { createTrainingService } = require("./training");
 const { createLocalBuildWorldService } = require("./build-worlds-local");
 const { createRemoteService } = require("./remote");
 const { createMazeLevelService } = require("./maze-levels");
@@ -49,6 +50,7 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/build.js",
     "/agent.js",
     "/agent-run.js",
+    "/train.js",
     "/site.css",
     "/build-theme.css",
     "/author-theme.css",
@@ -190,6 +192,13 @@ const agentRuns = createAgentRunService({
   ensureDirectory,
   getGame,
   loadJson,
+  rootDir: ROOT_DIR,
+  worldMaps
+});
+
+const training = createTrainingService({
+  buildWorlds,
+  getGame,
   rootDir: ROOT_DIR,
   worldMaps
 });
@@ -399,6 +408,7 @@ const {
   renderNotFound,
   renderPlayModePage,
   renderPlayPage,
+  renderTrainPage,
   renderWorldMapEditorPage
 } = createPageRenderer({
   agentEnvironment,
@@ -439,6 +449,7 @@ const { handleRequest } = createRequestRouter({
   renderNotFound,
   renderPlayModePage,
   renderPlayPage,
+  renderTrainPage,
   renderWorldMapEditorPage,
   resolveGameAssetPath,
   sanitizeEditorPayload,
@@ -446,6 +457,7 @@ const { handleRequest } = createRequestRouter({
   sendHtml,
   sendJson,
   sendRedirect,
+  training,
   worldMaps,
   writeMazePreviewImageData
 });
