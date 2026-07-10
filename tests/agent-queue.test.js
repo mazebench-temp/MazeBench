@@ -66,6 +66,38 @@ try {
   const thirdMeta = loadJson(path.join(rootDir, "outputs", "maze-local", "site", runs[2].id, "run.json"));
   assert.ok(secondMeta.queue_order < thirdMeta.queue_order, "waiting runs should have stable FIFO order");
 
+  const metricFixtures = [
+    { run: runs[0], actions: 1, rooms: 2, gems: 3 },
+    { run: runs[1], actions: 3, rooms: 1, gems: 2 },
+    { run: runs[2], actions: 2, rooms: 3, gems: 5 }
+  ];
+  metricFixtures.forEach(({ run, actions, rooms, gems }) => {
+    const runDir = path.join(rootDir, "outputs", "maze-local", "site", run.id);
+    const actionRows = Array.from({ length: actions }, (_, index) => ({
+      turn: index + 1,
+      command_text: "up",
+      status: { current_room: `level_${String.fromCharCode(65 + index)}xA`, gem_count: gems }
+    }));
+    fs.writeFileSync(path.join(runDir, "actions.jsonl"), `${actionRows.map(JSON.stringify).join("\n")}\n`);
+    fs.writeFileSync(
+      path.join(runDir, "maze_scorecard.json"),
+      `${JSON.stringify({ rooms: { visited: rooms, total: 256 }, gems: { total: 69 } })}\n`
+    );
+  });
+
+  assert.deepEqual(
+    service.listRuns({ sort: "actions", pageSize: 10 }).runs.map((run) => run.id),
+    [runs[1].id, runs[2].id, runs[0].id]
+  );
+  assert.deepEqual(
+    service.listRuns({ sort: "rooms", pageSize: 10 }).runs.map((run) => run.id),
+    [runs[2].id, runs[0].id, runs[1].id]
+  );
+  assert.deepEqual(
+    service.listRuns({ sort: "gems", pageSize: 10 }).runs.map((run) => run.id),
+    [runs[2].id, runs[0].id, runs[1].id]
+  );
+
   service.deleteRun(runs[0].id);
   assert.equal(service.summarizeRun(runs[1].id).status, "running");
   assert.equal(service.summarizeRun(runs[2].id).status, "waiting");

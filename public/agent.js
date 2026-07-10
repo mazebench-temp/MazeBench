@@ -1035,7 +1035,6 @@
           dockerStarting = false;
           setIsolation("docker"); // the user clearly wants containers
           syncIsolationPicker();
-          describeEnvironment();
           setStatus("Docker is running — Docker mode enabled.");
           return;
         }
@@ -1052,26 +1051,6 @@
       }
     };
     setTimeout(poll, 3000);
-  }
-
-  function describeEnvironment() {
-    const env = data.environment || {};
-    const found = [];
-    const missing = [];
-    [["codex", "Codex CLI"], ["claude", "Claude Code"], ["uv", "uv (Prime evals)"]].forEach(
-      ([key, label]) => (env[key] ? found : missing).push(label)
-    );
-    // Docker has three states: ready, installed-but-stopped, and absent.
-    if (env.docker) found.push("Docker");
-    else if (env.docker_installed) missing.push("Docker (installed, daemon not running)");
-    else missing.push("Docker");
-
-    const environmentEl = document.getElementById("agent-environment");
-    environmentEl.classList.toggle("is-ready", missing.length === 0);
-    environmentEl.classList.toggle("is-warning", missing.length > 0);
-    environmentEl.textContent = missing.length
-      ? `Needs attention: ${missing.join(", ")}. ${!env.docker ? "Full access remains available." : ""}`
-      : `System ready · ${found.join(" · ")}`;
   }
 
   // ---- launch ---------------------------------------------------------------
@@ -1458,7 +1437,6 @@
   });
   syncIsolationPicker();
   syncRunSettingCards();
-  describeEnvironment();
   wireModelCatalog();
   wireConfigurationSummary();
   wireSelectionResize();

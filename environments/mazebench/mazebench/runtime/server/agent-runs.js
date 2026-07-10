@@ -834,8 +834,12 @@ function createAgentRunService({
 
     if (sort === "oldest") {
       filtered = [...filtered].reverse();
-    } else if (sort === "status") {
-      filtered = [...filtered].sort((left, right) => String(left.status).localeCompare(String(right.status)));
+    } else if (["actions", "rooms", "gems"].includes(sort)) {
+      const key = { actions: "turns", rooms: "room_count", gems: "gem_count" }[sort];
+      filtered = [...filtered].sort((left, right) => {
+        const difference = (Number(right[key]) || 0) - (Number(left[key]) || 0);
+        return difference || String(right.created_at || "").localeCompare(String(left.created_at || ""));
+      });
     }
 
     const total = filtered.length;

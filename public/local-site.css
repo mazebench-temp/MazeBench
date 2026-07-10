@@ -2545,13 +2545,14 @@ body.play-body {
 
 .launch-button {
   align-items: center;
-  background: linear-gradient(145deg, #39e7e7 0%, #20c5cf 48%, #118395 100%);
-  border: 1px solid rgba(190, 255, 250, 0.92);
+  background: linear-gradient(145deg, rgba(24, 66, 91, 0.98) 0%, rgba(13, 45, 69, 0.98) 52%, rgba(8, 29, 50, 0.99) 100%);
+  border: 1px solid rgba(124, 143, 255, 0.44);
   border-radius: 50%;
   box-shadow:
-    0 0 0 8px rgba(52, 231, 240, 0.08),
-    0 0 38px rgba(52, 231, 240, 0.48),
-    inset 0 -16px 30px rgba(3, 56, 73, 0.38);
+    0 0 0 8px rgba(124, 143, 255, 0.035),
+    0 0 28px rgba(38, 103, 145, 0.18),
+    inset 0 -16px 30px rgba(2, 14, 31, 0.34);
+  color: #d9e2ff;
   display: inline-flex;
   flex: 0 0 auto;
   flex-direction: column;
@@ -2567,7 +2568,7 @@ body.play-body {
 }
 
 .launch-button::before {
-  border: 1px solid rgba(52, 231, 240, 0.3);
+  border: 1px solid rgba(124, 143, 255, 0.2);
   border-radius: 50%;
   content: "";
   inset: -12px;
@@ -2577,12 +2578,12 @@ body.play-body {
 
 .launch-button:hover,
 .launch-button:focus-visible {
-  background: linear-gradient(145deg, #4cefed 0%, #27d3d9 48%, #1592a1 100%);
+  background: linear-gradient(145deg, rgba(30, 79, 105, 0.99) 0%, rgba(17, 55, 81, 0.99) 52%, rgba(10, 36, 58, 1) 100%);
   box-shadow:
-    0 0 0 10px rgba(52, 231, 240, 0.1),
-    0 0 52px rgba(52, 231, 240, 0.62),
-    inset 0 -16px 30px rgba(3, 56, 73, 0.3);
-  filter: saturate(1.08);
+    0 0 0 9px rgba(124, 143, 255, 0.05),
+    0 0 34px rgba(38, 103, 145, 0.25),
+    inset 0 -16px 30px rgba(2, 14, 31, 0.28);
+  filter: brightness(1.05);
   transform: translateY(-3px) scale(1.025);
 }
 
@@ -2602,28 +2603,6 @@ body.play-body {
   font-size: 22px;
   font-weight: 400;
   line-height: 1;
-}
-
-.composer-health {
-  color: var(--muted, #9aa3c7);
-  font-size: 10px;
-  margin: 12px 0 0;
-  text-align: center;
-}
-
-.composer-health::before {
-  background: var(--yellow, #ffd15c);
-  border-radius: 50%;
-  content: "";
-  display: inline-block;
-  height: 6px;
-  margin-right: 7px;
-  width: 6px;
-}
-
-.composer-health.is-ready::before {
-  background: var(--mint, #46f0a0);
-  box-shadow: 0 0 8px rgba(70, 240, 160, 0.7);
 }
 
 /* Runs */

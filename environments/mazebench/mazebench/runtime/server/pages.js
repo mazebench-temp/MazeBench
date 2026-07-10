@@ -55,7 +55,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-home-icons-48">
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-launch-49">
     ${extraHeadHtml}`
     })}
   </head>
@@ -259,7 +259,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-home-icons-48">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-launch-49">`;
   }
 
   function renderPlayPage(game, level) {
@@ -371,7 +371,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260709-home-icons-48">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260709-agent-launch-49">`;
   }
 
   function renderAuthorPage(game, level) {
@@ -757,7 +757,7 @@ function createPageRenderer({
           <section class="composer-section composer-section--agent">
             <div class="composer-section-title">
               <span class="composer-step">01</span>
-              <div><h3>Agent</h3></div>
+              <div><h3>Pick a provider</h3></div>
             </div>
             <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent provider"></div>
           </section>
@@ -804,7 +804,7 @@ function createPageRenderer({
           <section id="world-section" class="composer-section composer-section--target" hidden>
             <div class="composer-section-title">
               <span class="composer-step">04</span>
-              <div><h3>Target</h3></div>
+              <div><h3>Target environment</h3></div>
             </div>
             <div class="target-grid">
               <div class="target-block">
@@ -827,7 +827,7 @@ function createPageRenderer({
             <div class="settings-stage">
               <div id="local-settings" class="settings-deck">
               <article class="setting-card setting-card--observation">
-                <div class="setting-card__head"><span>Observation</span></div>
+                <div class="setting-card__head"><span>Observation mode</span></div>
                 <div class="animated-segmented" id="mode-picker" role="radiogroup" aria-label="Observation mode">
                   <span class="segmented__glider" aria-hidden="true"></span>
                   <button type="button" class="segmented__option" data-mode="text" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
@@ -850,7 +850,7 @@ function createPageRenderer({
               </div>
               <div id="prime-settings" class="settings-deck settings-deck--prime" hidden>
               <article class="setting-card setting-card--observation">
-                <div class="setting-card__head"><span>Observation</span></div>
+                <div class="setting-card__head"><span>Observation mode</span></div>
                 <div class="animated-segmented" id="prime-mode-picker" role="radiogroup" aria-label="Observation mode">
                   <span class="segmented__glider" aria-hidden="true"></span>
                   <button type="button" class="segmented__option" data-mode="text" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
@@ -876,7 +876,6 @@ function createPageRenderer({
                 <button id="launch-run" class="button--primary launch-button" type="button"><span class="launch-button__label">Launch</span><span class="launch-button__arrow" aria-hidden="true">↗</span></button>
               </div>
             </div>
-            <p id="agent-environment" class="composer-health"></p>
           </section>
         </section>
         <section class="panel agent-runs-panel" aria-label="Runs">
@@ -893,7 +892,9 @@ function createPageRenderer({
               <label class="runs-filter"><span>Sort</span><select id="runs-sort" aria-label="Sort">
                 <option value="newest">Newest</option>
                 <option value="oldest">Oldest</option>
-                <option value="status">Status</option>
+                <option value="actions">Most Actions</option>
+                <option value="rooms">Most Rooms</option>
+                <option value="gems">Most Gems</option>
               </select></label>
               <label class="runs-filter runs-filter--count"><span>Show</span><select id="runs-page-size" aria-label="Per page">
                 <option value="5" selected>5</option>
@@ -912,7 +913,7 @@ function createPageRenderer({
           </div>
         </section>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260709-agent-redesign-44" defer></script>`
+        <script src="/agent.js?v=20260709-run-sorting-50" defer></script>`
     });
   }
 
