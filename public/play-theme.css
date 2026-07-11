@@ -501,6 +501,11 @@ a.save-button:focus-visible {
   position: absolute;
   right: var(--mazebench-control-pad-right, 16px);
 }
+.control-pad[data-quadrant-pad] {
+  border-radius: 50%;
+  pointer-events: auto;
+  touch-action: none;
+}
 .camera-pad {
   left: var(--mazebench-camera-pad-left, 16px);
   right: var(--mazebench-camera-pad-right, auto);

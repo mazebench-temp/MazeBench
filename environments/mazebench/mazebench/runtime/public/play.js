@@ -738,6 +738,26 @@
     const moveRepeatIntervalMs = 100;
     if (!controls) return;
 
+    function quadrantPadButtonAtPoint(pad, clientX, clientY) {
+      if (!pad || !controls.contains(pad)) return null;
+      const rect = pad.getBoundingClientRect();
+      const radius = Math.min(rect.width, rect.height) * 0.56;
+      const dx = clientX - (rect.left + rect.width / 2);
+      const dy = clientY - (rect.top + rect.height / 2);
+      if (Math.hypot(dx, dy) > radius) return null;
+
+      const direction = Math.abs(dx) > Math.abs(dy)
+        ? (dx < 0 ? "left" : "right")
+        : (dy < 0 ? "up" : "down");
+      const attribute = pad.dataset.quadrantPad === "camera" ? "data-camera" : "data-move";
+      return pad.querySelector(`button[${attribute}="${direction}"]`);
+    }
+
+    function quadrantPadButtonForEvent(event) {
+      const pad = event.target.closest?.("[data-quadrant-pad]");
+      return quadrantPadButtonAtPoint(pad, event.clientX, event.clientY);
+    }
+
     controls.addEventListener("click", (event) => {
       const button = event.target.closest("button");
       if (!button) return;
@@ -764,7 +784,8 @@
     });
 
     controls.addEventListener("pointerdown", (event) => {
-      const moveButton = event.target.closest("button[data-move]");
+      const padButton = quadrantPadButtonForEvent(event);
+      const moveButton = padButton?.dataset.move ? padButton : null;
       if (moveButton) {
         if (movePointerId !== null || cameraInputLocked()) return;
         event.preventDefault();
@@ -778,7 +799,7 @@
         return;
       }
 
-      const button = event.target.closest("button[data-camera]");
+      const button = padButton?.dataset.camera ? padButton : null;
       if (!button || cameraInputLocked() || cameraPointerId !== null) return;
       event.preventDefault();
       cameraPointerId = event.pointerId;

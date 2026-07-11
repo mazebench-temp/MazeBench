@@ -290,14 +290,14 @@ function createPageRenderer({
                 </div>
               </div>
             </div>
-            <div class="control-pad" aria-label="Move controls">
+            <div class="control-pad" data-quadrant-pad="move" aria-label="Move controls">
               <button class="control-button dpad-button" type="button" data-move="up" aria-label="Move up" tabindex="-1"></button>
               <button class="control-button dpad-button" type="button" data-move="left" aria-label="Move left" tabindex="-1"></button>
               <span class="dpad-center" aria-hidden="true">MOVE</span>
               <button class="control-button dpad-button" type="button" data-move="right" aria-label="Move right" tabindex="-1"></button>
               <button class="control-button dpad-button" type="button" data-move="down" aria-label="Move down" tabindex="-1"></button>
             </div>
-            <div class="camera-pad control-pad" aria-label="Camera controls">
+            <div class="camera-pad control-pad" data-quadrant-pad="camera" aria-label="Camera controls">
               <button class="control-button dpad-button" type="button" data-camera="up" aria-label="Camera up" tabindex="-1"></button>
               <button class="control-button dpad-button" type="button" data-camera="left" aria-label="Rotate camera left" tabindex="-1"></button>
               <span class="dpad-center" aria-hidden="true">CAM</span>
