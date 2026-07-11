@@ -365,10 +365,10 @@ function createPageRenderer({
     };
     const hasBoard = levelState.width > 0 && levelState.height > 0;
     const boardMarkup = hasBoard
-      ? `<main id="game-root" class="is-fullbleed">
+      ? `<main id="game-root" class="is-fullbleed is-loading">
         <div class="play-shell flyover-shell">
           <section class="play-stage flyover-stage" aria-label="${escapeHtml(game.name)} flyover">
-            <div class="maze-frame flyover-frame">
+            <div class="maze-frame flyover-frame is-loading">
               <canvas
                 id="maze-canvas"
                 class="maze-canvas"
@@ -376,8 +376,33 @@ function createPageRenderer({
                 height="${levelState.height * 64}"
                 aria-label="${escapeHtml(game.name)} flyover"
               ></canvas>
+              <div class="flyover-loading" role="status" aria-live="polite">
+                <span class="flyover-loading__spinner" aria-hidden="true"></span>
+                <span class="flyover-loading__label">Loading world</span>
+              </div>
             </div>
             <div class="flyover-hud"></div>
+            <nav class="mazebench-controls flyover-controls" aria-label="Flyover controls">
+              <div class="camera-pad control-pad flyover-pad flyover-pad--camera" aria-label="Camera controls">
+                <button id="flyover-tilt-up" class="control-button dpad-button flyover-pad-button" type="button" data-camera="up" aria-label="Tilt camera up"></button>
+                <button id="flyover-rotate-left" class="control-button dpad-button flyover-pad-button" type="button" data-camera="left" aria-label="Rotate camera left"></button>
+                <span class="dpad-center flyover-pad-center" aria-hidden="true">CAM</span>
+                <button id="flyover-rotate-right" class="control-button dpad-button flyover-pad-button" type="button" data-camera="right" aria-label="Rotate camera right"></button>
+                <button id="flyover-tilt-down" class="control-button dpad-button flyover-pad-button" type="button" data-camera="down" aria-label="Tilt camera down"></button>
+              </div>
+              <div class="flyover-zoom-controls" aria-label="Zoom controls">
+                <button id="flyover-zoom-out" class="control-button play-icon-button flyover-zoom-button" type="button" aria-label="Zoom out" title="Zoom out"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="8"></circle><line x1="21" x2="16.65" y1="21" y2="16.65"></line><line x1="8" x2="14" y1="11" y2="11"></line></svg></button>
+                <button id="flyover-edge-toggle" class="control-button play-icon-button flyover-edge-toggle" type="button" aria-label="Blue edge mode" aria-pressed="false" title="Blue edge mode"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7V5a2 2 0 0 1 2-2h2"></path><path d="M17 3h2a2 2 0 0 1 2 2v2"></path><path d="M21 17v2a2 2 0 0 1-2 2h-2"></path><path d="M7 21H5a2 2 0 0 1-2-2v-2"></path><path d="M7 12h10"></path></svg></button>
+                <button id="flyover-zoom-in" class="control-button play-icon-button flyover-zoom-button" type="button" aria-label="Zoom in" title="Zoom in"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="8"></circle><line x1="21" x2="16.65" y1="21" y2="16.65"></line><line x1="11" x2="11" y1="8" y2="14"></line><line x1="8" x2="14" y1="11" y2="11"></line></svg></button>
+              </div>
+              <div class="control-pad flyover-pad flyover-pad--move" aria-label="Movement controls">
+                <button id="flyover-move-forward" class="control-button dpad-button flyover-pad-button" type="button" data-move="up" aria-label="Fly forward"></button>
+                <button id="flyover-move-left" class="control-button dpad-button flyover-pad-button" type="button" data-move="left" aria-label="Fly left"></button>
+                <span class="dpad-center flyover-pad-center" aria-hidden="true">MOVE</span>
+                <button id="flyover-move-right" class="control-button dpad-button flyover-pad-button" type="button" data-move="right" aria-label="Fly right"></button>
+                <button id="flyover-move-backward" class="control-button dpad-button flyover-pad-button" type="button" data-move="down" aria-label="Fly backward"></button>
+              </div>
+            </nav>
           </section>
         </div>
       </main>

@@ -43,7 +43,7 @@
     lastPrefetchLevelId: "",
     lastMinimapLevelId: "",
     lastStatsHudMs: 0,
-    forwardEnabled: true,
+    forwardEnabled: false,
     diagnosticsVisible: false,
     manualSpeedMultiplier: 8,
     speedRoomsPerSecond: 0.32
@@ -100,6 +100,9 @@
   app.flyoverRenderableLevelIds = new Set([app.currentLevelId]);
   app.flyoverPendingRenderableLevelIds = new Set();
   app.flyoverRenderableFlushId = 0;
+  app.homeVectorTheme = true;
+  app.vectorGlowAmount = 1;
+  app.worldViewUniformBrightness = true;
   let selectionPanel = null;
   let selectionPreviousForwardEnabled = null;
   let selectionPreviousCameraTilt = null;
@@ -108,6 +111,77 @@
     pausedUntilMs: 0,
     radiansPerSecond: (Math.PI * 2) / 20
   };
+  let vectorThemeFrameId = 0;
+  let edgeModeEnabled = true;
+
+  function syncEdgeModeToggle() {
+    const button = document.getElementById("flyover-edge-toggle");
+    if (!button) return;
+    button.setAttribute("aria-pressed", edgeModeEnabled ? "true" : "false");
+    button.title = edgeModeEnabled ? "Use full color" : "Use blue edge mode";
+  }
+
+  function setFlyoverEdgeMode(enabled, options = {}) {
+    const nextEnabled = enabled === true;
+    const durationMs = Math.max(0, Number(options.durationMs ?? 520));
+    const from = Math.max(0, Math.min(1, Number(app.vectorGlowAmount) || 0));
+    const to = nextEnabled ? 1 : 0;
+    edgeModeEnabled = nextEnabled;
+    syncEdgeModeToggle();
+    if (vectorThemeFrameId) window.cancelAnimationFrame(vectorThemeFrameId);
+    vectorThemeFrameId = 0;
+    app.homeVectorTheme = true;
+    if (nextEnabled) app.worldViewUniformBrightness = true;
+    const startedAt = performance.now();
+
+    const finish = () => {
+      app.vectorGlowAmount = to;
+      app.homeVectorTheme = nextEnabled;
+      app.worldViewUniformBrightness = nextEnabled;
+      app.threeRenderer?.invalidateSceneCache?.();
+      app.render();
+    };
+    if (durationMs === 0 || Math.abs(to - from) < 0.001) {
+      finish();
+      return;
+    }
+
+    const step = (now) => {
+      const progress = Math.max(0, Math.min(1, (now - startedAt) / durationMs));
+      const eased = 0.5 - Math.cos(Math.PI * progress) / 2;
+      app.vectorGlowAmount = from + (to - from) * eased;
+      app.threeRenderer?.invalidateSceneCache?.();
+      app.render(now);
+      if (progress < 1) {
+        vectorThemeFrameId = window.requestAnimationFrame(step);
+      } else {
+        vectorThemeFrameId = 0;
+        finish();
+      }
+    };
+    vectorThemeFrameId = window.requestAnimationFrame(step);
+  }
+
+  function revealLoadedFlyoverWorld() {
+    const gameRoot = document.getElementById("game-root");
+    const frame = document.querySelector(".flyover-frame");
+    const loading = document.querySelector(".flyover-loading");
+    gameRoot?.classList.remove("is-loading");
+    gameRoot?.classList.add("is-flyover-revealing");
+    frame?.classList.remove("is-loading");
+    loading?.classList.add("is-hidden");
+    window.setTimeout(() => loading?.remove(), 280);
+
+    const completeReveal = () => {
+      gameRoot?.classList.remove("is-flyover-revealing");
+      setFlyoverEdgeMode(false, { durationMs: 950 });
+    };
+    if (typeof app.threeRenderer?.beginHomeEdgeReveal === "function") {
+      app.threeRenderer.beginHomeEdgeReveal({ onComplete: completeReveal });
+    } else {
+      completeReveal();
+    }
+  }
 
   function currentWorldIndex() {
     return app.parseWorldLevelId?.(app.currentLevelId || playData.levelId) || null;
@@ -427,6 +501,50 @@
 
       suppressNextClick = true;
       heldCameraControls.set(control, performance.now());
+    });
+    button.addEventListener("pointerup", stop);
+    button.addEventListener("pointercancel", stop);
+    button.addEventListener("pointerleave", stop);
+  }
+
+  function nudgeFlightControl(control, distanceRooms = 0.14) {
+    const local = {
+      forward: { x: 0, z: distanceRooms },
+      backward: { x: 0, z: -distanceRooms },
+      left: { x: -distanceRooms, z: 0 },
+      right: { x: distanceRooms, z: 0 }
+    }[control];
+    if (!local) return false;
+    const yawSin = Math.sin(camera.yaw);
+    const yawCos = Math.cos(camera.yaw);
+    const worldX = yawCos * local.x - yawSin * local.z;
+    const worldZ = -yawSin * local.x - yawCos * local.z;
+    app.flyoverCameraOffsetX += worldX * roomSize.width * app.TILE_SIZE;
+    app.flyoverCameraOffsetZ += worldZ * roomSize.height * app.TILE_SIZE;
+    tryRecenterFlyover();
+    app.render();
+    return true;
+  }
+
+  function bindFlightHoldButton(id, control) {
+    const button = document.getElementById(id);
+    if (!button) return;
+    let suppressNextClick = false;
+    const stop = () => heldFlightControls.delete(control);
+
+    button.addEventListener("click", () => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
+      nudgeFlightControl(control);
+    });
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      suppressNextClick = true;
+      nudgeFlightControl(control, 0.08);
+      heldFlightControls.set(control, performance.now());
     });
     button.addEventListener("pointerup", stop);
     button.addEventListener("pointercancel", stop);
@@ -1438,7 +1556,15 @@
   bindHoldButton("flyover-tilt-down", "tilt-down");
   bindHoldButton("flyover-zoom-in", "zoom-in");
   bindHoldButton("flyover-zoom-out", "zoom-out");
+  bindFlightHoldButton("flyover-move-forward", "forward");
+  bindFlightHoldButton("flyover-move-backward", "backward");
+  bindFlightHoldButton("flyover-move-left", "left");
+  bindFlightHoldButton("flyover-move-right", "right");
   bindFlyoverLevelSelection();
+  document.getElementById("flyover-edge-toggle")?.addEventListener("click", () => {
+    setFlyoverEdgeMode(!edgeModeEnabled);
+  });
+  syncEdgeModeToggle();
 
   function cameraControlForKey(key) {
     if (key === "a") {
@@ -1607,12 +1733,16 @@
     rendererReady
       .then(() => {
         applyCamera(false);
+        app.threeRenderer?.primeHomeEdgeReveal?.();
+        app.threeRenderer?.invalidateSceneCache?.();
         app.render();
         return waitForInitialFlyoverWindow();
       })
       .finally(() => {
         resetFlyoverFrameStats();
+        app.threeRenderer?.invalidateSceneCache?.();
         app.render();
+        revealLoadedFlyoverWorld();
         updateFlyoverStatsHud(performance.now(), true);
         scheduleFlight();
       });

@@ -1223,6 +1223,108 @@ body.play-body {
   white-space: nowrap;
 }
 
+/* ---- flyover controls / vector presentation ---- */
+
+.flyover-body .flyover-stage::after {
+  background: radial-gradient(circle at 50% 45%, rgba(84, 240, 255, 0.08), rgba(3, 5, 14, 0.16) 62%, rgba(3, 5, 14, 0.48));
+  mix-blend-mode: normal;
+  opacity: 1;
+}
+
+.flyover-body .flyover-frame,
+.flyover-body .flyover-frame .maze-canvas {
+  background: #03050d;
+}
+
+.flyover-loading {
+  align-items: center;
+  background: #03050d;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  inset: 0;
+  justify-content: center;
+  opacity: 1;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 240ms ease;
+  z-index: 8;
+}
+
+.flyover-loading.is-hidden { opacity: 0; }
+
+.flyover-loading__spinner {
+  animation: docker-spin 0.85s linear infinite;
+  border: 5px solid rgba(84, 240, 255, 0.12);
+  border-radius: 50%;
+  border-right-color: rgba(124, 143, 255, 0.78);
+  border-top-color: var(--cyan, #54f0ff);
+  box-shadow: 0 0 28px rgba(84, 240, 255, 0.28), inset 0 0 18px rgba(84, 240, 255, 0.08);
+  height: 66px;
+  width: 66px;
+}
+
+.flyover-loading__label {
+  color: var(--cyan, #54f0ff);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.flyover-controls {
+  opacity: 1;
+  transition: opacity 220ms ease;
+}
+
+#game-root.is-flyover-revealing .flyover-controls,
+#game-root.is-flyover-revealing .flyover-hud {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.flyover-controls .control-pad {
+  bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+.flyover-zoom-controls {
+  align-items: center;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  display: flex;
+  gap: 10px;
+  left: 50%;
+  pointer-events: auto;
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.flyover-controls .flyover-zoom-button,
+.flyover-controls .flyover-edge-toggle {
+  flex-basis: 46px;
+  height: 46px;
+  min-width: 46px;
+  width: 46px;
+}
+
+.flyover-controls .flyover-edge-toggle[aria-pressed="true"] {
+  background: rgba(var(--cyan-rgb), 0.2);
+  border-color: var(--cyan, #54f0ff);
+  box-shadow: 0 0 18px rgba(var(--cyan-rgb), 0.38);
+  color: var(--cyan, #54f0ff);
+}
+
+@media (max-width: 620px), (max-height: 560px) {
+  .flyover-zoom-controls { bottom: max(10px, env(safe-area-inset-bottom)); }
+  .flyover-controls .flyover-zoom-button,
+  .flyover-controls .flyover-edge-toggle {
+    flex-basis: 40px;
+    height: 40px;
+    min-width: 40px;
+    width: 40px;
+  }
+}
+
 /* ---- Agent page: visual pickers ---- */
 
 .picker-label {
