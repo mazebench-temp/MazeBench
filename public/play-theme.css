@@ -1007,7 +1007,6 @@ a.save-button:focus-visible {
 .home-hero.is-run .wm { animation: mbWordsnap .45s linear 2.0s both; }
 .home-hero.is-run .bar { animation: mbGrowx .3s cubic-bezier(.2,0,.2,1) 2.45s both; }
 .home-hero.is-run .mb-crt { animation: mbHum 3.4s linear 2.9s infinite; }
-.home-hero.is-run .jitter { animation: mbTick 5s step-end 3.4s infinite; }
 .home-hero.is-run .scan { animation: mbCrawl 7s linear 0s infinite; }
 @keyframes mbTrace { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes mbBeamlife { 0% { opacity: 0; } 4% { opacity: 1; } 88% { opacity: 1; } 100% { opacity: 0; } }
@@ -1034,13 +1033,6 @@ a.save-button:focus-visible {
 @keyframes mbHalobreathe { 0%, 100% { opacity: .4; } 50% { opacity: .56; } }
 @keyframes mbBandsbreathe { 0%, 100% { opacity: 1; } 50% { opacity: .88; } }
 @keyframes mbMazebreathe { 0%, 100% { opacity: 1; } 55% { opacity: .86; } }
-@keyframes mbTick {
-  0%, 95.8% { transform: translate(0, 0); }
-  96% { transform: translate(4px, -1px); }
-  96.6% { transform: translate(-3px, 1px); }
-  97.2% { transform: translate(1.5px, 0); }
-  97.8%, 100% { transform: translate(0, 0); }
-}
 @keyframes mbCrawl { from { background-position: 0 0, 0 0; } to { background-position: 0 6px, 0 0; } }
 @media (prefers-reduced-motion: reduce) {
   .home-hero.is-run .sun-rise, .home-hero.is-run .halo, .home-hero.is-run .sun-bg,

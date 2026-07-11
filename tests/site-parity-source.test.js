@@ -12,6 +12,7 @@ const playCore = fs.readFileSync(path.join(root, "public", "play-core.js"), "utf
 const playRenderer = fs.readFileSync(path.join(root, "public", "play-render-three.js"), "utf8");
 const playScript = fs.readFileSync(path.join(root, "public", "play.js"), "utf8");
 const playTheme = fs.readFileSync(path.join(root, "public", "play-theme.css"), "utf8");
+const favicon = fs.readFileSync(path.join(root, "public", "favicon.svg"), "utf8");
 const router = fs.readFileSync(path.join(root, "server", "router.js"), "utf8");
 
 assert.match(buildScript, /world-card new-world-card/);
@@ -38,7 +39,15 @@ assert.doesNotMatch(playTheme, /mbChromL|mbChromR|mbWrtick|mbWbtick/);
 assert.match(playTheme, /translate: 0 calc\(-1 \* var\(--mb-logo-lift, 0px\)\)/);
 assert.doesNotMatch(playTheme, /--mb-sign-gap|--mb-scene-h/);
 assert.doesNotMatch(playTheme, /wordmark-m/);
+assert.doesNotMatch(playTheme, /mbTick/);
 assert.match(router, /if \(url\.pathname === "\/play"\) \{[\s\S]*?sendRedirect\(response, "\/build"\)/);
+assert.match(favicon, /Maze Bench Minotaur/);
+assert.match(favicon, /M 358\.428 591\.327/);
+assert.match(favicon, /M 684 591\.750/);
+assert.match(favicon, /fill-rule="evenodd"/);
+assert.doesNotMatch(favicon, /Minotaur icon by Lorc|M189\.78 118\.22|<ellipse/);
+assert.match(favicon, /stroke="#34e7f0" stroke-width="3"/);
+assert.match(pageChrome, /BRAND_MARK_SVG = `[\s\S]*?M 358\.428 591\.327/);
 
 assert.match(pages, /window\.__PLAY_WORLD_DATA__/);
 assert.match(pages, /maze-frame is-loading/);

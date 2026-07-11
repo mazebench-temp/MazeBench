@@ -91,7 +91,19 @@ const service = createMazeLevelService({
   buildMazePreviewData: () => ({ previewUrl: null }),
   gamesDir,
   listTopLevelFiles: () => [],
-  loadJson: () => null,
+  loadJson: (filePath) =>
+    filePath.endsWith(path.join("maze", "toolbox.json"))
+      ? {
+          format: 1,
+          tools: {
+            M0: {
+              name: "Feather Box",
+              description: "Catalog description.",
+              demo: { layout: ["p $ ."], moves: "R" }
+            }
+          }
+        }
+      : null,
   loadText: (filePath, fallback) => fs.readFileSync(filePath, "utf8") || fallback,
   resolveGameAssetPath: () => null,
   rootDir: tempRoot,
@@ -100,6 +112,16 @@ const service = createMazeLevelService({
 });
 
 const editorState = service.getLevelEditorState(game, game.worldMap.byPosition.get("level_AxA"));
+
+const authorPageData = service.buildAuthorPageData(
+  game,
+  game.worldMap.byPosition.get("level_AxA")
+);
+const catalogWeightless = authorPageData.palette.find((tool) => tool.token === "M0");
+assert.equal(catalogWeightless.label, "Feather Box");
+assert.equal(catalogWeightless.description, "Catalog description.");
+assert.deepEqual(catalogWeightless.demo, { layout: ["p $ ."], moves: "R" });
+assert.equal(authorPageData.toolboxCatalog.format, 1);
 
 assert.deepEqual(editorState.cells[0].slice(0, 3), ["+", ".", "+++#"]);
 

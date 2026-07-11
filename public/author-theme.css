@@ -1047,13 +1047,6 @@ details[open] > .author-disclosure__summary .author-disclosure__chevron {
   font-size: 15px;
   margin: 0;
 }
-.author-inventory__token {
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  margin: 0;
-  min-height: 14px;
-}
 .author-inventory__text {
   color: var(--muted);
   font-size: 12px;

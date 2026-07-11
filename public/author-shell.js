@@ -149,7 +149,7 @@
               </div>
               <section id="author-inventory" class="author-inventory" aria-label="Toolbox" hidden>
                 <div class="author-inventory__head"><h2>Toolbox</h2><button id="inventory-close" class="author-inventory__close" type="button" aria-label="Close the toolbox">&times;</button></div>
-                <div class="author-inventory__layout"><div id="palette" class="author-inventory__grid"></div><aside class="author-inventory__detail" aria-live="polite"><div id="inventory-detail-stage" class="author-inventory__stage"><canvas id="inventory-demo-canvas" class="author-inventory__democanvas" aria-hidden="true"></canvas><span id="inventory-detail-swatch" class="author-inventory__swatch"></span></div><h3 id="inventory-detail-name">Pick a tool</h3><p id="inventory-detail-token" class="author-inventory__token"></p><p id="inventory-detail-text" class="author-inventory__text">Click any tool to see what it does.</p></aside></div>
+                <div class="author-inventory__layout"><div id="palette" class="author-inventory__grid"></div><aside class="author-inventory__detail" aria-live="polite"><div id="inventory-detail-stage" class="author-inventory__stage"><canvas id="inventory-demo-canvas" class="author-inventory__democanvas" aria-hidden="true"></canvas><span id="inventory-detail-swatch" class="author-inventory__swatch"></span></div><h3 id="inventory-detail-name">Pick a tool</h3><p id="inventory-detail-text" class="author-inventory__text">Click any tool to see what it does.</p></aside></div>
               </section>
             </section>
           </section>

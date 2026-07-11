@@ -48,6 +48,7 @@ assert.match(shell, /requestAnimationFrame\(announceResize\)/);
 assert.match(shell, /app\.hostFullBleedView = true/);
 assert.match(shell, /window\.setTimeout\(reveal, 8000\)/);
 assert.match(shell, /author-hotbar__shortcut/);
+assert.doesNotMatch(shell, /inventory-detail-token|Board token/);
 assert.match(shell, /data-panel-info-description=/);
 assert.doesNotMatch(shell, /author-panel__note/);
 assert.doesNotMatch(shell, /author-disclosure--world/);

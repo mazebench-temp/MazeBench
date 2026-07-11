@@ -160,17 +160,27 @@
   const eraserToken = "__erase_top__";
   const emptyCellToken = authorData.blockAdder || "+";
   const noopToken = "__select_only__";
+  const toolboxToolConfigs =
+    authorData.toolboxCatalog?.tools && typeof authorData.toolboxCatalog.tools === "object"
+      ? authorData.toolboxCatalog.tools
+      : {};
+  const noopToolConfig = toolboxToolConfigs[noopToken] || {};
+  const eraserToolConfig = toolboxToolConfigs[eraserToken] || {};
   const noopTool = {
+    description:
+      typeof noopToolConfig.description === "string" ? noopToolConfig.description : "",
     imageUrl: null,
-    label: "Deselect",
+    label: typeof noopToolConfig.name === "string" ? noopToolConfig.name : "Deselect",
     name: "select_only",
     selectable: true,
     token: noopToken,
     type: "select_only"
   };
   const eraserTool = {
+    description:
+      typeof eraserToolConfig.description === "string" ? eraserToolConfig.description : "",
     imageUrl: null,
-    label: "Erase",
+    label: typeof eraserToolConfig.name === "string" ? eraserToolConfig.name : "Erase",
     name: "eraser",
     selectable: true,
     token: eraserToken,
@@ -202,17 +212,16 @@
     ? {
         ...iceSlopeTools[0],
         description:
+          iceSlopeTools[0].description ||
           "An icy ramp that carries a slide between heights. It aims to match the camera — turn the camera to change which way it climbs.",
         displayToken: "S",
-        label: "Ice Slope",
+        label: iceSlopeTools[0].label || "Ice Slope",
         token: canonicalIceSlopeToken
       }
     : null;
 
   function toolDescription(tool) {
     if (!tool) return "";
-    if (tool.token === noopToken) return "Stop painting; clicks only inspect and select cells.";
-    if (tool.token === eraserToken) return "Clear the cell back to plain floor.";
     return typeof tool.description === "string" ? tool.description : "";
   }
   const worldColumns =
@@ -2001,8 +2010,8 @@
     authorData.defaultWallToken || "#",
     authorData.defaultFloorToken || ".",
     toolByName.get("ice")?.token || "i",
+    toolByToken.get("M0")?.token || "M0",
     toolByToken.get("M1")?.token || "M1",
-    toolByToken.get("M2")?.token || "M2",
     toolByToken.get("l")?.token || "l"
   ];
   const hotbarPersistenceEnabled = Array.isArray(authorData.hotbarTokens);
@@ -2237,7 +2246,6 @@
     const tool = toolForToken(state.selectedToken);
     const stage = document.getElementById("inventory-detail-stage");
     const swatch = document.getElementById("inventory-detail-swatch");
-    const tokenEl = document.getElementById("inventory-detail-token");
     const textEl = document.getElementById("inventory-detail-text");
     if (!tool) {
       nameEl.textContent = "Pick a tool";
@@ -2247,12 +2255,6 @@
       return;
     }
     nameEl.textContent = tool.label || tool.token;
-    if (tokenEl) {
-      tokenEl.textContent =
-        tool.token === noopToken || tool.token === eraserToken
-          ? ""
-          : "Board token: " + (tool.displayToken || tool.token);
-    }
     if (textEl) {
       textEl.textContent = toolDescription(tool) || "No description yet.";
     }
@@ -2488,6 +2490,10 @@
     if (!app) {
       return null;
     }
+    // Toolbox demos should remain crisp. With no fuzzy toggle present, the
+    // gameplay renderer otherwise defaults these small canvases to grain-on.
+    app.state.effects.fuzzyEnabled = false;
+    app.state.effects.noisePhase = 0;
     if (hostFrame) {
       // Slow the demo app's native movement clock instead of overriding an
       // individual move. Punch and ice scenes depend on the native clock to
@@ -2565,7 +2571,55 @@
   // Each scene is a tiny board plus a scripted move loop played by the real
   // engine on a dedicated offscreen app, so tools demonstrate their actual
   // behavior (slides, punches, toggles, collection) with real models.
+  function configuredDemoSceneForTool(tool) {
+    const demo = tool?.demo;
+    if (!demo || !Array.isArray(demo.layout) || demo.layout.length === 0) {
+      return null;
+    }
+
+    const rows = demo.layout
+      .map((row) =>
+        Array.isArray(row)
+          ? row.map((cell) => String(cell || ""))
+          : String(row || "")
+              .trim()
+              .split(/\s+/)
+      )
+      .filter((row) => row.length > 0 && row.some((cell) => cell.length > 0));
+    const width = rows.reduce((largest, row) => Math.max(largest, row.length), 0);
+    if (rows.length === 0 || width === 0) {
+      return null;
+    }
+
+    const floorToken = authorData.defaultFloorToken || ".";
+    const cells = rows.map((row) =>
+      Array.from({ length: width }, (_, index) =>
+        String(row[index] || floorToken)
+          .split("$")
+          .join(tool.token)
+      )
+    );
+    const scene = {
+      ambient: demo.ambient === true,
+      cells,
+      moves:
+        typeof demo.moves === "string"
+          ? demo.moves.toUpperCase().replace(/[^UDLR]/g, "")
+          : ""
+    };
+    const zoom = Number(demo.zoom);
+    if (Number.isFinite(zoom) && zoom > 0) {
+      scene.zoom = zoom;
+    }
+    return scene;
+  }
+
   function demoSceneForTool(tool) {
+    const configuredScene = configuredDemoSceneForTool(tool);
+    if (configuredScene) {
+      return configuredScene;
+    }
+
     const kind = tool.type || tool.name || "";
     const t = tool.token;
     switch (kind) {
@@ -3380,6 +3434,10 @@
         throw new Error("Palette preview renderer is unavailable.");
       }
 
+      // These captures become the hotbar and toolbox icons, so never bake the
+      // gameplay grain into them.
+      app.state.effects.fuzzyEnabled = false;
+      app.state.effects.noisePhase = 0;
       modules.registerRenderFunctions(app);
       app.setupCanvas();
       app.syncCameraTarget?.(true);

@@ -23,6 +23,8 @@ assert.match(auxiliarySection, /hostFullBleedView: true/);
 assert.match(auxiliarySection, /playStage: hostFrame/);
 assert.match(auxiliarySection, /mazeFrame: hostFrame/);
 assert.match(auxiliarySection, /app\.MOVE_DURATION_MS = 220/);
+assert.match(auxiliarySection, /app\.state\.effects\.fuzzyEnabled = false/);
+assert.match(auxiliarySection, /app\.state\.effects\.noisePhase = 0/);
 
 const detailSection = sourceSection(
   "function renderInventoryDetail",
@@ -41,6 +43,14 @@ assert.match(demoRunSection, /if \(scene\.ambient\)/);
 assert.doesNotMatch(demoRunSection, /scene\.orbit/);
 assert.doesNotMatch(demoRunSection, /durationMs:/);
 assert.match(demoRunSection, /is-demo-resetting/);
+
+const configuredDemoSection = sourceSection(
+  "function configuredDemoSceneForTool",
+  "const demoSceneRenderer"
+);
+assert.match(configuredDemoSection, /\.split\("\$"\)/);
+assert.match(configuredDemoSection, /replace\(\/\[\^UDLR\]\/g, ""\)/);
+assert.match(configuredDemoSection, /const configuredScene = configuredDemoSceneForTool\(tool\)/);
 
 const thumbnailSection = sourceSection(
   "async function renderLevelThumbFromCells",
@@ -97,6 +107,8 @@ assert.match(previewSection, /await preloadTool\(tool\)/);
 assert.match(previewSection, /publishPalettePreview\(tool, previewUrl\)/);
 assert.match(previewSection, /await yieldPalettePreviewPaint\(\)/);
 assert.match(previewSection, /disposeAuxiliaryRenderApp\(app, canvas\)/);
+assert.match(previewSection, /app\.state\.effects\.fuzzyEnabled = false/);
+assert.match(previewSection, /app\.state\.effects\.noisePhase = 0/);
 assert.doesNotMatch(previewSection, /await Promise\.all\(/);
 assert.doesNotMatch(previewSection, /palettePreviewRenderer\.previewsByToken\s*=/);
 
@@ -112,8 +124,8 @@ const defaultHotbarMarkers = [
   "authorData.defaultWallToken",
   "authorData.defaultFloorToken",
   'toolByName.get("ice")',
+  'toolByToken.get("M0")',
   'toolByToken.get("M1")',
-  'toolByToken.get("M2")',
   'toolByToken.get("l")'
 ];
 let previousDefaultMarkerIndex = -1;
@@ -126,8 +138,13 @@ assert.match(source, /const hotbarPersistenceEnabled = Array\.isArray\(authorDat
 assert.match(source, /if \(normalized\.length >= 10\)/);
 assert.match(source, /\.slice\(0, 10\)/);
 assert.match(source, /const slotIndex = key === "0" \? 9 : Number\(key\) - 1/);
-assert.match(source, /label: "Deselect"/);
-assert.match(source, /label: "Erase"/);
+assert.match(source, /toolboxToolConfigs\[noopToken\]/);
+assert.match(source, /toolboxToolConfigs\[eraserToken\]/);
+assert.match(source, /noopToolConfig\.name[\s\S]*?: "Deselect"/);
+assert.match(source, /eraserToolConfig\.name[\s\S]*?: "Erase"/);
+assert.match(source, /const toolboxToolConfigs =/);
+assert.doesNotMatch(source, /Board token:/);
+assert.doesNotMatch(source, /inventory-detail-token/);
 assert.match(source, /lucide\.dev\/icons\/mouse-pointer-2-off/);
 assert.match(source, /lucide\.dev\/icons\/eraser/);
 assert.match(source, /return deselectToolIconSvg/);
