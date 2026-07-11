@@ -57,6 +57,23 @@ const thumbnailUploadSection = sourceSection(
 assert.match(thumbnailUploadSection, /authorData\.previewApiBaseUrl/);
 assert.match(thumbnailUploadSection, /method: "POST"/);
 
+const levelMapSection = sourceSection(
+  "function renderExistingLevels",
+  "function renderAll"
+);
+assert.match(levelMapSection, /preview[\s\S]*?author-level-pill__thumb/);
+assert.match(levelMapSection, /: '<span class="author-level-pill__label">'/);
+assert.match(levelMapSection, /renderStartRoomGrid\(\)/);
+
+const startRoomSection = sourceSection(
+  "// Details: a compact pixel map chooses the room the world boots into.",
+  "// Publish gate: the page's publish button"
+);
+assert.match(startRoomSection, /document\.getElementById\("world-start-grid"\)/);
+assert.match(startRoomSection, /className = "author-start-room-pixel"/);
+assert.match(startRoomSection, /pixel\.setAttribute\("aria-pressed", isStart \? "true" : "false"\)/);
+assert.match(startRoomSection, /body: JSON\.stringify\(\{ start_level_id: startLevelId \}\)/);
+
 const socialCardSection = sourceSection(
   "async function renderWorldHeroCardDataUrl",
   'window.addEventListener("pagehide"'

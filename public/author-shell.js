@@ -41,10 +41,10 @@
                 <button id="world-title-save" class="tool-button" type="button">Rename</button>
               </div>
               <div class="author-control-row">
-                <label class="field">
+                <div class="field author-start-room-field">
                   <span>Starting room</span>
-                  <select id="world-start-select" aria-label="Starting room"></select>
-                </label>
+                  <div id="world-start-grid" class="author-start-room-grid" role="grid" aria-label="Choose the starting room"></div>
+                </div>
               </div>
               <dl class="author-stats">
                 <div><dt>Size</dt><dd id="world-stat-size">--</dd></div>

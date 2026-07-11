@@ -601,6 +601,34 @@
     syncPlayOverlayInputLock();
   }
 
+  function playWorldMapTransitionSnapshot() {
+    const snapshot = typeof app.cloneLevelSnapshot === "function"
+      ? app.cloneLevelSnapshot()
+      : {
+          actors: (app.state.actors || []).map((actor) => ({ ...actor })),
+          height: app.state.height,
+          levelId: app.currentLevelId,
+          terrain: app.state.terrain,
+          width: app.state.width
+        };
+    const raisedPlayerGates = typeof app.computeRaisedPlayerGateSet === "function"
+      ? Array.from(app.computeRaisedPlayerGateSet())
+      : [];
+    const raisedOrangeWalls = typeof app.computeRaisedOrangeWallSet === "function"
+      ? Array.from(app.computeRaisedOrangeWallSet())
+      : [];
+    return { ...snapshot, raisedPlayerGates, raisedOrangeWalls };
+  }
+
+  function finishPlayWorldMapSwitch(levelId) {
+    const editLink = document.querySelector("[data-play-author-link]");
+    if (editLink && playWorldData?.game?.id) {
+      editLink.href =
+        "/author/" + encodeURIComponent(playWorldData.game.id) + "/" + encodeURIComponent(levelId);
+    }
+    syncPlayHud();
+  }
+
   async function switchPlayWorldLevel(levelId) {
     if (!levelId || worldMapSwitching) return;
     if (levelId === app.currentLevelId) {
@@ -611,19 +639,68 @@
     setWorldMapOpen(false);
     syncPlayOverlayInputLock();
     try {
+      const cells = worldMapCells();
+      const outgoingCell = cells.find((cell) => cell.id === app.currentLevelId);
+      const incomingCell = cells.find((cell) => cell.id === levelId);
+      const dx = incomingCell && outgoingCell
+        ? incomingCell.columnIndex - outgoingCell.columnIndex
+        : 0;
+      const dy = incomingCell && outgoingCell
+        ? incomingCell.rowIndex - outgoingCell.rowIndex
+        : 0;
+      const canAnimate =
+        (dx !== 0 || dy !== 0) &&
+        typeof app.applyLevelState === "function" &&
+        typeof app.renderCompositor?.startLevelTransition === "function";
+      const outgoingLevel = canAnimate ? playWorldMapTransitionSnapshot() : null;
       const levelState = await app.loadLevelState(levelId);
       app.applyLevelState(levelState, {
+        deferRender: canAnimate,
         immediateCamera: true,
         resetHistory: true,
         resetLevelEntry: true,
         updateUrl: true
       });
-      const editLink = document.querySelector("[data-play-author-link]");
-      if (editLink && playWorldData?.game?.id) {
-        editLink.href =
-          "/author/" + encodeURIComponent(playWorldData.game.id) + "/" + encodeURIComponent(levelId);
+
+      if (!canAnimate) {
+        finishPlayWorldMapSwitch(levelId);
+        return;
       }
-      syncPlayHud();
+
+      await Promise.resolve(app.preloadImagesForLevelState?.(levelState)).catch(() => {});
+      if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
+        await app.threeRendererReady.catch(() => {});
+      }
+      await Promise.resolve(app.threeRenderer?.whenLevelStateModelsReady?.(levelState)).catch(() => {});
+      const incomingLevel = playWorldMapTransitionSnapshot();
+      const roomDistance = Math.hypot(dx, dy);
+      const durationMs = Math.min(
+        2600,
+        (app.LEVEL_TRANSITION_DURATION_MS || 1000) + Math.max(0, roomDistance - 1) * 150
+      );
+      const transitionData = {
+        kind: "adjacent-scene",
+        dx,
+        dy,
+        outgoingLevel,
+        outgoingResetLevel: outgoingLevel,
+        incomingLevel,
+        incomingRaisedPlayerGates: incomingLevel.raisedPlayerGates,
+        incomingRaisedOrangeWalls: incomingLevel.raisedOrangeWalls
+      };
+      app.threeRenderer?.prewarmAdjacentLevelTransition?.(transitionData, durationMs);
+      await new Promise((resolve) => {
+        app.renderCompositor.startLevelTransition(null, null, dx, dy, null, null, null, {
+          durationMs,
+          renderImmediately: false,
+          transitionData,
+          onComplete: () => {
+            finishPlayWorldMapSwitch(levelId);
+            resolve();
+          }
+        });
+        app.render();
+      });
     } catch {
       if (playWorldData?.game?.id) {
         window.location.assign(

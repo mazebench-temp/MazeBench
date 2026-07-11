@@ -55,6 +55,10 @@ assert.match(pages, /play\.js\?v=\$\{PLAY_ASSET_VERSION\}/);
 assert.match(appSource, /STATIC_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"/);
 assert.match(playScript, /function renderPlayWorldMap\(\)/);
 assert.match(playScript, /async function switchPlayWorldLevel\(levelId\)/);
+assert.match(playScript, /function playWorldMapTransitionSnapshot\(\)/);
+assert.match(playScript, /const roomDistance = Math\.hypot\(dx, dy\)/);
+assert.match(playScript, /prewarmAdjacentLevelTransition\?\.\(transitionData, durationMs\)/);
+assert.match(playScript, /startLevelTransition\(null, null, dx, dy/);
 assert.match(playTheme, /#world-map-overlay \.world-map-grid \{[\s\S]*?grid-auto-rows: var\(--world-map-tile-size/);
 assert.ok(
   playScript.indexOf("let worldMapSwitching = false;") < playScript.indexOf("installPlayControls();"),

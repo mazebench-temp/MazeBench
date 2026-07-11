@@ -25,6 +25,7 @@ for (const id of [
   "solver-mode-reach",
   "solve-level",
   "world-details-panel",
+  "world-start-grid",
   "author-info-popover",
   "unsaved-changes-modal",
   "unsaved-changes-cancel",
@@ -47,6 +48,7 @@ assert.match(shell, /data-panel-info-description=/);
 assert.doesNotMatch(shell, /author-panel__note/);
 assert.doesNotMatch(shell, /author-disclosure--world/);
 assert.doesNotMatch(shell, /author-world-solver|World Solver/);
+assert.doesNotMatch(shell, /world-start-select/);
 assert.match(shell, /The solver uses the A\* search algorithm/);
 assert.match(shell, /Reach Gem becomes available when this room contains a gem/);
 assert.doesNotMatch(shell, /id=["']solver-algorithm["']/);
@@ -58,6 +60,8 @@ assert.match(theme, /\.author-layout\.is-sidebar-collapsed/);
 assert.match(theme, /\.author-inventory__democanvas \{/);
 assert.match(theme, /\.author-tool-icon--eraser \{/);
 assert.match(theme, /\.author-world-map-overlay\.is-open/);
+assert.match(theme, /\.author-start-room-grid \{/);
+assert.match(theme, /\.author-start-room-pixel\.is-start \{/);
 assert.match(theme, /\.author-info-popover\.is-open/);
 assert.match(theme, /\.author-unsaved-modal \.publish-modal__dialog/);
 assert.match(theme, /\.author-unsaved-modal__save/);

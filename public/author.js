@@ -225,6 +225,7 @@
       : ["A"];
   const columnIndexByValue = new Map(worldColumns.map((letter, index) => [letter, index]));
   const rowIndexByValue = new Map(worldRows.map((letter, index) => [letter, index]));
+  let renderStartRoomGrid = () => {};
   const initialLevelCells = normalizeAuthoringCells(authorData.initialLevel.cells);
   const state = {
     cells: cloneCells(initialLevelCells),
@@ -3753,16 +3754,16 @@
           '" title="' +
           escapeHtml((exists || isActive ? "Edit room " : "Start room ") + coordinateLabel) +
           '">' +
-          (preview ? '<img class="author-level-pill__thumb" src="' + escapeHtml(preview) + '" alt="">' : "") +
-          '<span class="author-level-pill__label">' +
-          escapeHtml(coordinateLabel) +
-          "</span>" +
+          (preview
+            ? '<img class="author-level-pill__thumb" src="' + escapeHtml(preview) + '" alt="">'
+            : '<span class="author-level-pill__label">' + escapeHtml(coordinateLabel) + "</span>") +
           "</a>"
         );
       });
     });
 
     elements.existingLevels.innerHTML = tiles.join("");
+    renderStartRoomGrid();
   }
 
   function renderAll(options = {}) {
@@ -7012,30 +7013,49 @@
       });
     }
 
-    // Details: the starting room the world boots into. Saved immediately,
-    // like renames; the server validates the id against saved rooms.
-    const startSelect = document.getElementById("world-start-select");
-    if (meta && startSelect) {
-      const fillStartOptions = () => {
-        startSelect.innerHTML = "";
-        (authorData.existingLevels || []).forEach((level) => {
-          const option = document.createElement("option");
-          option.value = level.id;
-          option.textContent = level.label || level.id.replace("level_", "");
-          startSelect.append(option);
+    // Details: a compact pixel map chooses the room the world boots into.
+    // Saved rooms are interactive; the current default is the bright pixel.
+    const startGrid = document.getElementById("world-start-grid");
+    if (meta && startGrid) {
+      let startRoomSaving = false;
+      renderStartRoomGrid = () => {
+        const existingIds = new Set((authorData.existingLevels || []).map((level) => level.id));
+        startGrid.style.setProperty("--author-start-room-columns", String(worldColumns.length));
+        startGrid.replaceChildren();
+        worldRows.forEach((rowLetter) => {
+          worldColumns.forEach((columnLetter) => {
+            const levelId = "level_" + columnLetter + "x" + rowLetter;
+            const coordinateLabel = columnLetter + "x" + rowLetter;
+            const exists = existingIds.has(levelId) || (levelId === state.levelId && state.exists);
+            const isStart = levelId === meta.startLevelId;
+            const pixel = document.createElement("button");
+            pixel.type = "button";
+            pixel.className = "author-start-room-pixel" + (isStart ? " is-start" : "");
+            pixel.dataset.levelId = levelId;
+            pixel.disabled = !exists || startRoomSaving;
+            pixel.setAttribute("role", "gridcell");
+            pixel.setAttribute("aria-pressed", isStart ? "true" : "false");
+            pixel.setAttribute(
+              "aria-label",
+              isStart
+                ? coordinateLabel + " is the starting room"
+                : exists
+                  ? "Use " + coordinateLabel + " as the starting room"
+                  : coordinateLabel + " has not been saved"
+            );
+            pixel.title = pixel.getAttribute("aria-label");
+            startGrid.append(pixel);
+          });
         });
-        if (![...startSelect.options].some((option) => option.value === meta.startLevelId)) {
-          const option = document.createElement("option");
-          option.value = meta.startLevelId;
-          option.textContent = String(meta.startLevelId || "").replace("level_", "");
-          startSelect.prepend(option);
-        }
-        startSelect.value = meta.startLevelId || startSelect.options[0]?.value || "";
       };
-      fillStartOptions();
-      startSelect.addEventListener("change", async () => {
-        const startLevelId = startSelect.value;
-        startSelect.disabled = true;
+      renderStartRoomGrid();
+      startGrid.addEventListener("click", async (event) => {
+        const pixel = event.target.closest(".author-start-room-pixel[data-level-id]");
+        if (!pixel || pixel.disabled || startRoomSaving) return;
+        const startLevelId = pixel.dataset.levelId;
+        if (!startLevelId || startLevelId === meta.startLevelId) return;
+        startRoomSaving = true;
+        renderStartRoomGrid();
         try {
           const response = await fetch(meta.apiUrl, {
             body: JSON.stringify({ start_level_id: startLevelId }),
@@ -7050,10 +7070,10 @@
           meta.walkthroughVerified = payload.world?.walkthrough_verified === true;
           setStatus("Starting room set to " + meta.startLevelId.replace("level_", "") + ".", "success");
         } catch (error) {
-          startSelect.value = meta.startLevelId || "";
           setStatus(error instanceof Error ? error.message : "Could not set the starting room.", "error");
         } finally {
-          startSelect.disabled = false;
+          startRoomSaving = false;
+          renderStartRoomGrid();
         }
       });
     }
