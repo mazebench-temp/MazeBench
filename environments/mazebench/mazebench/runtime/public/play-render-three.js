@@ -324,11 +324,20 @@
     function perspectiveCameraFarPlane() {
       if (!app.isFlyoverMode) {
         if (isWorldViewPlayMode()) {
+          // The menu vista fits the entire world at a very small debug-camera
+          // zoom (currently 0.2). Camera distance grows inversely with that
+          // zoom, so the far plane must do the same or rooms on the far side
+          // are clipped while fully zoomed out and pop back during fly-in.
+          const zoomDistanceFactor = Math.max(
+            1,
+            1 / Math.max(0.1, Number(debugCameraZoom) || 1)
+          );
           return Math.max(
             24000,
             (surroundingLevelRadius() * 2 + 1) *
               Math.max(app.boardRect.width, app.boardRect.height) *
-              4
+              4 *
+              zoomDistanceFactor
           );
         }
 

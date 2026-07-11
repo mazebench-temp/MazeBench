@@ -45,6 +45,8 @@ assert.match(playScript, /const sourceWidth = Math\.max\(1, Number\(app\.boardRe
 assert.doesNotMatch(playScript, /function playWorldFitOptions/);
 assert.match(playRenderer, /app\.worldViewVistaMode !== true/);
 assert.match(playRenderer, /app\.homeVectorTheme !== true/);
+assert.match(playRenderer, /const zoomDistanceFactor = Math\.max\(/);
+assert.match(playRenderer, /4 \*\s*zoomDistanceFactor/);
 assert.match(playScript, /app\.homeVectorTheme = true/);
 assert.match(playScript, /app\.vectorGlowAmount = 1/);
 assert.match(pages, /data-action="world-map" aria-controls="world-map-overlay"/);
