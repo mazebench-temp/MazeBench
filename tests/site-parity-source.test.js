@@ -8,6 +8,7 @@ const buildScript = fs.readFileSync(path.join(root, "public", "build.js"), "utf8
 const buildTheme = fs.readFileSync(path.join(root, "public", "build-theme.css"), "utf8");
 const pageChrome = fs.readFileSync(path.join(root, "server", "page-chrome.js"), "utf8");
 const pages = fs.readFileSync(path.join(root, "server", "pages.js"), "utf8");
+const playCore = fs.readFileSync(path.join(root, "public", "play-core.js"), "utf8");
 const playRenderer = fs.readFileSync(path.join(root, "public", "play-render-three.js"), "utf8");
 const playScript = fs.readFileSync(path.join(root, "public", "play.js"), "utf8");
 const playTheme = fs.readFileSync(path.join(root, "public", "play-theme.css"), "utf8");
@@ -57,6 +58,8 @@ assert.match(pages, /play\.js\?v=\$\{PLAY_ASSET_VERSION\}/);
 assert.match(appSource, /STATIC_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"/);
 assert.match(playScript, /function renderPlayWorldMap\(\)/);
 assert.match(playScript, /async function switchPlayWorldLevel\(levelId\)/);
+assert.match(playCore, /hostOwnsWorldMapNavigation: playData\?\.hostOwnsWorldMapNavigation === true/);
+assert.match(playScript, /if \(app\.hostOwnsWorldMapNavigation === true\) return;/);
 assert.match(playScript, /function playWorldMapTransitionSnapshot\(\)/);
 assert.match(playScript, /const roomDistance = Math\.hypot\(dx, dy\)/);
 assert.match(playScript, /prewarmAdjacentLevelTransition\?\.\(transitionData, durationMs\)/);

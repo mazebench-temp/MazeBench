@@ -783,6 +783,11 @@
     worldMapOverlay?.addEventListener("click", (event) => {
       const levelButton = event.target.closest(".world-map-cell[data-level-id]");
       if (levelButton) {
+        // MazeJam installs its own save-aware world-map handler on this same
+        // overlay. Let that handler receive the click without first changing
+        // the canonical runtime room (which would erase its flight origin and
+        // temporarily remove ?save= from the URL).
+        if (app.hostOwnsWorldMapNavigation === true) return;
         switchPlayWorldLevel(levelButton.dataset.levelId).catch(() => {});
       } else if (event.target === worldMapOverlay || event.target.closest("[data-world-map-close]")) {
         setWorldMapOpen(false);
