@@ -1,0 +1,68 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = path.join(__dirname, "..");
+const appSource = fs.readFileSync(path.join(root, "server", "app.js"), "utf8");
+const buildScript = fs.readFileSync(path.join(root, "public", "build.js"), "utf8");
+const buildTheme = fs.readFileSync(path.join(root, "public", "build-theme.css"), "utf8");
+const pageChrome = fs.readFileSync(path.join(root, "server", "page-chrome.js"), "utf8");
+const pages = fs.readFileSync(path.join(root, "server", "pages.js"), "utf8");
+const playRenderer = fs.readFileSync(path.join(root, "public", "play-render-three.js"), "utf8");
+const playScript = fs.readFileSync(path.join(root, "public", "play.js"), "utf8");
+const playTheme = fs.readFileSync(path.join(root, "public", "play-theme.css"), "utf8");
+const router = fs.readFileSync(path.join(root, "server", "router.js"), "utf8");
+
+assert.match(buildScript, /world-card new-world-card/);
+assert.match(buildScript, /world-card world-card--draft/);
+assert.match(buildScript, /badge badge--updated/);
+assert.match(buildScript, /card-actions card-actions--draft/);
+assert.match(buildScript, /class="world-card__link" href="\$\{escapeText\(world\.author_url\)\}"/);
+assert.match(buildScript, />Edit<\/a>/);
+assert.match(buildScript, />Play<\/a>/);
+assert.match(buildScript, />Delete<\/button>/);
+assert.doesNotMatch(buildScript, />Publish<\/button>/);
+assert.match(buildTheme, /\.new-world-card__plus/);
+assert.match(buildTheme, /\.world-card--draft \.card-body/);
+assert.match(buildTheme, /\.world-card--draft \.card-actions/);
+assert.match(buildTheme, /\.build-modal\.open/);
+assert.match(pages, /Build and Play/);
+assert.doesNotMatch(pages, /modeCard\("\/play"/);
+assert.match(pages, /\["Edit", `\/author\/maze\//);
+assert.doesNotMatch(pages, /\["Edit Levels", `\/author\/maze\//);
+assert.doesNotMatch(pageChrome, /href="\/play">Play<\/a>/);
+assert.match(router, /if \(url\.pathname === "\/play"\) \{[\s\S]*?sendRedirect\(response, "\/build"\)/);
+
+assert.match(pages, /window\.__PLAY_WORLD_DATA__/);
+assert.match(pages, /maze-frame is-loading/);
+assert.match(pages, /maze-load-progress/);
+assert.match(playScript, /renderer\.primeHomeEdgeReveal/);
+assert.match(playScript, /renderer\.beginHomeEdgeReveal/);
+assert.match(playScript, /function diveIntoRoom/);
+assert.match(playScript, /playData\.hostFullBleedView = true/);
+assert.match(pages, /class="mazebench-controls"/);
+assert.match(playScript, /const sourceWidth = Math\.max\(1, Number\(app\.boardRect\?\.width\) \/ renderScale \|\| roomWidth\)/);
+assert.doesNotMatch(playScript, /function playWorldFitOptions/);
+assert.match(playRenderer, /app\.worldViewVistaMode !== true/);
+assert.match(playRenderer, /app\.homeVectorTheme !== true/);
+assert.match(playScript, /app\.homeVectorTheme = true/);
+assert.match(playScript, /app\.vectorGlowAmount = 1/);
+assert.match(pages, /data-action="world-map" aria-controls="world-map-overlay"/);
+assert.match(pages, /id="world-map-overlay" class="world-map-overlay"/);
+assert.match(pages, /id="world-map-grid" class="world-map-grid"/);
+assert.match(pages, /play-theme\.css\?v=\$\{PLAY_ASSET_VERSION\}/);
+assert.match(pages, /play\.js\?v=\$\{PLAY_ASSET_VERSION\}/);
+assert.match(appSource, /STATIC_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"/);
+assert.match(playScript, /function renderPlayWorldMap\(\)/);
+assert.match(playScript, /async function switchPlayWorldLevel\(levelId\)/);
+assert.match(playTheme, /#world-map-overlay \.world-map-grid \{[\s\S]*?grid-auto-rows: var\(--world-map-tile-size/);
+assert.ok(
+  playScript.indexOf("let worldMapSwitching = false;") < playScript.indexOf("installPlayControls();"),
+  "Play overlay state must initialize before controls synchronize it"
+);
+assert.match(playScript, /const cameraYawDurationMs = 400/);
+assert.match(playScript, /const cameraTiltAcceleration = Math\.PI \* 3\.4/);
+assert.match(playScript, /enableCameraControls: false/);
+assert.doesNotMatch(playScript, /new KeyboardEvent/);
+
+console.log("site-parity-source: OK — MazeJam cards and blue-edge opening motion are canonical locally.");

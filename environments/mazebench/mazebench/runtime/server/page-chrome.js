@@ -76,7 +76,6 @@ function topbar({ rightHtml = "", extraNavHtml = "", extraHtml = "" } = {}) {
   return `<header class="topbar">
       <a class="brand-link" href="/"><span class="brand-mark" aria-hidden="true">${BRAND_MARK_SVG}</span>Maze Bench</a>
       <nav class="topbar-nav" aria-label="Site">
-        <a class="nav-link play-nav-link" href="/play">Play</a>
         <a class="nav-link" href="/build">Build</a>
         <a class="nav-link" href="/agent">Agent</a>
         <a class="nav-link" href="/train">Train</a>
@@ -93,7 +92,6 @@ function topbar({ rightHtml = "", extraNavHtml = "", extraHtml = "" } = {}) {
 function siteFooter() {
   return `<footer class="site-footer">
       <span>Maze Bench (local)</span>
-      <a class="text-link" href="/play">Play</a>
       <a class="text-link" href="/build">Build</a>
       <a class="text-link" href="/agent">Agent</a>
       <a class="text-link" href="/train">Train</a>

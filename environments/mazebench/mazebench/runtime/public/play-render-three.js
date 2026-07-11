@@ -48,6 +48,8 @@
     let editorHoverRenderFrameId = 0;
     let editorHighlightMaterial = null;
     let editorPickMaterial = null;
+    let solverGhostCells = [];
+    let solverGhostVersion = 0;
     let debugCameraTiltHoldFrameId = 0;
     let debugCameraTiltHoldLastMs = 0;
     const debugCameraTiltHoldKeys = new Set();
@@ -4373,7 +4375,13 @@
       // distance — flyover, neighbor rooms, and the room a camera flight is
       // zooming toward — must show only their edges, never the grid.
       const role = activeRenderContext?.role;
-      return !app.isFlyoverMode && role !== "neighbor" && role !== "camera-flight";
+      return (
+        !app.isFlyoverMode &&
+        app.worldViewVistaMode !== true &&
+        app.homeVectorTheme !== true &&
+        role !== "neighbor" &&
+        role !== "camera-flight"
+      );
     }
 
     function shouldRenderTileTopDetails() {
@@ -5591,6 +5599,74 @@
         topY,
         type
       };
+    }
+
+    function addSolverGhostPath(now = performance.now()) {
+      if (!isEditorRenderMode() || solverGhostCells.length === 0 || !THREE) return;
+
+      const points = solverGhostCells
+        .map((cell) => {
+          const x = Math.floor(Number(cell.x));
+          const y = Math.floor(Number(cell.y));
+          if (!renderIsInsideBoard(x, y)) return null;
+          const center = cellCenter(x, y);
+          const descriptor = terrainDescriptorAt(x, y, now);
+          const elevationTop = Math.max(0, Number(cell.elevation) || 0) * elevationUnit;
+          return new THREE.Vector3(
+            center.x,
+            Math.max(elevationTop, Number(descriptor?.topY) || 0) + unit * 0.2,
+            center.z
+          );
+        })
+        .filter(Boolean);
+
+      if (points.length === 0) return;
+
+      if (points.length > 1) {
+        const pathGeometry = new THREE.BufferGeometry().setFromPoints(points);
+        const pathLine = new THREE.Line(pathGeometry, lineMaterial("#54f0ff", 0.58));
+        pathLine.renderOrder = 14;
+        scene.add(pathLine);
+      }
+
+      const uniquePoints = [];
+      const seen = new Set();
+      points.forEach((point) => {
+        const key = [
+          Math.round(point.x * 100),
+          Math.round(point.y * 100),
+          Math.round(point.z * 100)
+        ].join(":");
+        if (seen.has(key)) return;
+        seen.add(key);
+        uniquePoints.push(point);
+      });
+
+      const geometryKey = `solver-ghost-sphere:${Math.round(unit * 100)}`;
+      const geometry = geometryCache.get(geometryKey) || cacheGeometry(
+        geometryKey,
+        new THREE.SphereGeometry(unit * 0.16, 12, 9)
+      );
+      const ghosts = new THREE.InstancedMesh(
+        geometry,
+        material("#54f0ff", 0.34, { depthWrite: false }),
+        uniquePoints.length
+      );
+      const matrix = new THREE.Matrix4();
+      uniquePoints.forEach((point, index) => {
+        const scale = index === 0 || index === uniquePoints.length - 1 ? 1.3 : 1;
+        matrix.compose(
+          point,
+          new THREE.Quaternion(),
+          new THREE.Vector3(scale, scale, scale)
+        );
+        ghosts.setMatrixAt(index, matrix);
+      });
+      ghosts.instanceMatrix.needsUpdate = true;
+      ghosts.castShadow = false;
+      ghosts.receiveShadow = false;
+      ghosts.renderOrder = 15;
+      scene.add(ghosts);
     }
 
     function terrainPieceDescriptorKey(descriptor, x, y) {
@@ -8241,7 +8317,8 @@
           : "no-flyover-current",
         `neighbors:${surroundingViews
           .map((view) => `${view.dx},${view.dy},${view.levelId},${Math.round(view.brightness * 1000)}`)
-          .join("|")}`
+          .join("|")}`,
+        `solver-ghost:${solverGhostVersion}`
       ];
 
       surroundingViews.forEach((view) => {
@@ -11087,8 +11164,18 @@
 
     function transitionIncomingOffset(outgoingState, incomingState, dx, dy) {
       return {
-        x: dx < 0 ? -incomingState.width * unit : dx > 0 ? outgoingState.width * unit : 0,
-        z: dy < 0 ? -incomingState.height * unit : dy > 0 ? outgoingState.height * unit : 0
+        x:
+          dx < 0
+            ? dx * incomingState.width * unit
+            : dx > 0
+              ? dx * outgoingState.width * unit
+              : 0,
+        z:
+          dy < 0
+            ? dy * incomingState.height * unit
+            : dy > 0
+              ? dy * outgoingState.height * unit
+              : 0
       };
     }
 
@@ -12018,6 +12105,7 @@
         } else {
           addTerrainRegions(now);
           renderActorsForCurrentContext(now);
+          addSolverGhostPath(now);
         }
         fitCameraToScene(editorSurroundingFitOptions() || cameraFlightFitOptions() || flyoverFitOptions(surroundingViews) || {});
       }
@@ -12156,6 +12244,21 @@
       pickFlyoverLevel,
       isDebugCameraAnimating,
       setEditorHoverTarget,
+      setSolverGhostCells(cells) {
+        solverGhostCells = Array.isArray(cells)
+          ? cells
+              .map((cell) => ({
+                elevation: Number(cell?.elevation) || 0,
+                x: Number(cell?.x),
+                y: Number(cell?.y)
+              }))
+              .filter((cell) => Number.isFinite(cell.x) && Number.isFinite(cell.y))
+          : [];
+        solverGhostVersion += 1;
+        invalidateSceneCache();
+        if (typeof app.renderOncePerFrame === "function") app.renderOncePerFrame();
+        else if (typeof app.render === "function") app.render();
+      },
       setDebugCameraView,
       getDebugCameraYaw: () => debugCameraTargetYaw,
       getDebugCameraTilt: () => debugCameraTargetTilt,

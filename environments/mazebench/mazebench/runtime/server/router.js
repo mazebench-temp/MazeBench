@@ -29,7 +29,6 @@ function createRequestRouter({
   renderGamePage,
   renderHomePage,
   renderNotFound,
-  renderPlayModePage,
   renderPlayPage,
   renderTrainPage,
   renderWorldMapEditorPage,
@@ -80,7 +79,7 @@ function createRequestRouter({
     }
 
     if (url.pathname === "/play") {
-      sendHtml(response, 200, renderPlayModePage());
+      sendRedirect(response, "/build");
       return;
     }
 
@@ -437,17 +436,39 @@ function createRequestRouter({
 
       if (segments.length === 4 && request.method === "PATCH") {
         const payload = await readJsonBody(request);
-        const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+        const patch = {};
+        const messages = [];
 
-        if (!title) {
-          sendJson(response, 400, { error: "A non-empty title is required." });
+        if (Object.prototype.hasOwnProperty.call(payload || {}, "title")) {
+          const title = typeof payload.title === "string" ? payload.title.trim() : "";
+          if (!title) {
+            sendJson(response, 400, { error: "A non-empty title is required." });
+            return;
+          }
+          patch.title = title;
+          messages.push(`Renamed to ${title}.`);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(payload || {}, "start_level_id")) {
+          const startLevelId = String(payload.start_level_id || "");
+          const game = getGame(worldGameId);
+          if (!game || !game.worldMap?.byPosition?.has(startLevelId)) {
+            sendJson(response, 400, { error: "Choose a saved room as the starting room." });
+            return;
+          }
+          patch.default_level_id = startLevelId;
+          messages.push(`Starting room set to ${startLevelId.replace(/^level_/, "")}.`);
+        }
+
+        if (Object.keys(patch).length === 0) {
+          sendJson(response, 400, { error: "No supported world changes were provided." });
           return;
         }
 
-        buildWorlds.updateDraftMeta(worldGameId, { title });
+        buildWorlds.updateDraftMeta(worldGameId, patch);
         sendJson(response, 200, {
           world: buildWorlds.describeLocalWorld(worldGameId),
-          message: `Renamed to ${title}.`
+          message: messages.join(" ")
         });
         return;
       }

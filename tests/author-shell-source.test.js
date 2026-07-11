@@ -1,0 +1,64 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = path.join(__dirname, "..");
+const shell = fs.readFileSync(path.join(root, "public", "author-shell.js"), "utf8");
+const theme = fs.readFileSync(path.join(root, "public", "author-theme.css"), "utf8");
+const site = fs.readFileSync(path.join(root, "public", "site.css"), "utf8");
+const pages = fs.readFileSync(path.join(root, "server", "pages.js"), "utf8");
+
+for (const id of [
+  "author-sidebar",
+  "author-sidebar-toggle",
+  "author-world-map-toggle",
+  "author-world-map-overlay",
+  "author-world-map-close",
+  "author-grid",
+  "author-canvas",
+  "author-cam-pad",
+  "author-hotbar",
+  "author-inventory",
+  "solver-max-states",
+  "solver-mode-picker",
+  "solver-mode-place",
+  "solver-mode-reach",
+  "solve-level",
+  "world-details-panel",
+  "author-info-popover",
+  "existing-levels"
+]) {
+  assert.match(shell, new RegExp(`id=["']${id}["']`), `canonical editor shell is missing #${id}`);
+}
+
+assert.match(shell, /mazebench:author-shell-ready/);
+assert.match(shell, /__MAZEBENCH_AUTHOR_MARK_READY__/);
+assert.match(shell, /function installChromeInteractionShield/);
+assert.match(shell, /function setSidebarCollapsed/);
+assert.match(shell, /function syncAuthorAppViewport/);
+assert.match(shell, /requestAnimationFrame\(announceResize\)/);
+assert.match(shell, /app\.hostFullBleedView = true/);
+assert.match(shell, /window\.setTimeout\(reveal, 8000\)/);
+assert.match(shell, /author-hotbar__shortcut/);
+assert.match(shell, /data-panel-info-description=/);
+assert.doesNotMatch(shell, /author-panel__note/);
+assert.doesNotMatch(shell, /author-disclosure--world/);
+assert.match(shell, /The solver uses the A\* search algorithm/);
+assert.match(shell, /Reach Gem becomes available when this room contains a gem/);
+assert.doesNotMatch(shell, /id=["']solver-algorithm["']/);
+assert.doesNotMatch(shell, /id=["']hill-climb["']/);
+assert.doesNotMatch(shell, /id=["']play-solution["']/);
+assert.match(theme, /Canonical MazeBench world-editor skin/);
+assert.match(theme, /rgba\(var\(--cyan-rgb\), 0\.95\)/);
+assert.match(theme, /\.author-layout\.is-sidebar-collapsed/);
+assert.match(theme, /\.author-inventory__democanvas \{/);
+assert.match(theme, /\.author-tool-icon--eraser \{/);
+assert.match(theme, /\.author-world-map-overlay\.is-open/);
+assert.match(theme, /\.author-info-popover\.is-open/);
+assert.match(site, /grid-template-columns: minmax\(0, 1fr\) auto minmax\(0, 1fr\)/);
+assert.match(pages, /<div id="author-shell-root"><\/div>/);
+assert.match(pages, /<script src="\/author-shell\.js" defer><\/script>/);
+assert.match(pages, /includeRuntimeStyles: false/);
+assert.doesNotMatch(pages, /<aside id="author-sidebar" class="author-sidebar">/);
+
+console.log("author-shell-source: OK — MazeBench owns the complete editor shell and skin.");

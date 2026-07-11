@@ -710,12 +710,19 @@ function createMazeLevelService({
       defaultWallToken: wallToken,
       existingLevels: game.levels
         .filter((candidate) => worldMaps.isMazeWorldLevelId(game.id, candidate.id))
-        .map((candidate) => ({
-          authorUrl: `/author/${encodeURIComponent(game.id)}/${encodeURIComponent(candidate.id)}`,
-          id: candidate.id,
-          label: candidate.label,
-          playUrl: `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(candidate.id)}`
-        })),
+        .map((candidate) => {
+          const editorLevel = getLevelEditorState(game, candidate);
+          return {
+            authorUrl: `/author/${encodeURIComponent(game.id)}/${encodeURIComponent(candidate.id)}`,
+            cells: editorLevel.cells,
+            height: editorLevel.height,
+            id: candidate.id,
+            label: candidate.label,
+            playUrl: `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(candidate.id)}`,
+            previewUrl: candidate.previewUrl || editorLevel.previewUrl || null,
+            width: editorLevel.width
+          };
+        }),
       game: {
         id: game.id,
         name: game.name

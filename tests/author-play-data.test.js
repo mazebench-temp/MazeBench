@@ -57,6 +57,7 @@ const authorData = {
     { direction: "up", imageUrl: null, label: "Puncher Up", name: "puncher", token: "pu", type: "puncher" },
     { direction: "down", imageUrl: null, label: "Puncher Down", name: "puncher", token: "pd", type: "puncher" },
     { imageUrl: null, label: "Player", name: "player", token: "P" },
+    { imageUrl: null, label: "Circle Player", name: "circle_player", token: "CP" },
     { imageUrl: null, label: "Clone 0", name: "clone", token: "c0", type: "clone" },
     { imageUrl: null, label: "Clone 1", name: "clone", token: "c1", type: "clone" },
     { imageUrl: null, label: "Clone 2", name: "clone", token: "c2", type: "clone" },
@@ -166,6 +167,9 @@ assert.equal(adapter.appendCellToken("W", "B"), "W+B");
 assert.equal(adapter.appendCellToken(".+W", "i"), "i+W");
 assert.equal(adapter.normalizeAuthoringCellValue(".+W+i"), "i+W");
 assert.equal(adapter.normalizeAuthoringCellValue("W"), "W");
+assert.equal(adapter.normalizeAuthoringCellValue("P"), ".+P");
+assert.equal(adapter.normalizeAuthoringCellValue("CP"), ".+CP");
+assert.equal(adapter.normalizeAuthoringCellValue("+P"), "+P");
 assert.equal(adapter.setCellElevationToken("", "W", 3), "++++W");
 assert.equal(adapter.placeCellElevationTokenIfVacant(".", "W", 0), ".+W");
 assert.equal(adapter.placeCellElevationTokenIfVacant(".+G", "W", 0), ".+G");
@@ -195,6 +199,11 @@ assert.equal(adapter.eraseCellElevationValue(".+W+g+W", 1), ".+W++W");
 assert.equal(adapter.eraseCellElevationValue(".+l", 0), ".");
 assert.equal(adapter.eraseCellElevationValue("W+l", 1), "W");
 assert.equal(adapter.eraseCellElevationValue(".+L", 0), ".");
+assert.equal(adapter.eraseCellElevationValue("P", 0), ".");
+assert.equal(adapter.eraseCellElevationValue("CP", 0), ".");
+assert.equal(adapter.eraseCellElevationValue(".+P", 0), ".");
+assert.equal(adapter.eraseCellElevationValue("+P", 0), "+");
+assert.equal(adapter.eraseCellElevationValue("W+P", 1), ".+W");
 
 const loweredLiftPlayData = adapter.buildPlayData({
   cells: [["l"]],

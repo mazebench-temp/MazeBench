@@ -71,6 +71,10 @@
 
   const edgeToggle = ensureEdgeToggle();
   const resetProgressButton = ensureResetProgressButton();
+  // MazeJam's play shell is full-bleed. Keep the canonical local player on
+  // that same layout path so the HUD and d-pads frame the room instead of
+  // shrinking the game into the legacy square canvas.
+  playData.hostFullBleedView = true;
   const app = modules.createPlayCore({
     playData,
     canvas,
@@ -82,7 +86,7 @@
     edgeToggle,
     cameraModeToggle: document.getElementById("camera-mode-toggle"),
     resetProgressButton,
-    enableCameraControls: true
+    enableCameraControls: false
   });
 
   if (!app) {
@@ -107,6 +111,817 @@
 
   modules.registerRenderFunctions(app);
   modules.registerGameplayFunctions(app);
+  const playWorldData = window.__PLAY_WORLD_DATA__;
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+  const shouldRunWorldBoot =
+    !reducedMotion &&
+    Array.isArray(playWorldData?.existingLevels) &&
+    playWorldData.existingLevels.length > 0 &&
+    typeof window.AuthorPlayData?.createAdapter === "function";
+  let playBootComplete = !shouldRunWorldBoot;
+  let inputBound = false;
+  let worldMapCloseTimer = 0;
+  let worldMapSwitching = false;
+
+  // The controls synchronize overlay/input state immediately, so every piece
+  // of state they read must exist before installation begins.
+  installPlayControls();
+
+  if (shouldRunWorldBoot) {
+    // Match MazeJam's opening vista before any visible frame: near-black
+    // blocks, blue vector edges, the entire world detached from the room,
+    // then a dive into normal play colors.
+    app.deferNeighborLoadRenders = true;
+    app.homeVectorTheme = true;
+    app.vectorGlowAmount = 1;
+    app.worldViewConsolidate = true;
+    app.worldViewUniformBrightness = true;
+    app.worldViewVistaMode = true;
+    app.worldViewDetachedVista = true;
+    app.worldViewSynchronousBuild = true;
+    document.getElementById("game-root")?.classList.add("is-overview");
+  }
+
+  function sleepMs(duration) {
+    return new Promise((resolve) => window.setTimeout(resolve, duration));
+  }
+
+  function revealPlayFrame() {
+    document.getElementById("game-root")?.classList.remove("is-loading");
+    app.mazeFrame?.classList.remove("is-loading");
+  }
+
+  function bindInput() {
+    if (inputBound) return;
+    inputBound = true;
+    window.addEventListener("keydown", app.handleKeydown);
+    window.addEventListener("wheel", app.preventScroll, { passive: false });
+  }
+
+  function syncPlayHud() {
+    const roomTarget = document.getElementById("play-hud-room");
+    const gemTarget = document.getElementById("play-hud-gems");
+    const roomMatch = String(app.currentLevelId || playData.levelId || "").match(/^level_([^x]+)x(.+)$/);
+
+    if (roomTarget) {
+      roomTarget.textContent = `Room ${roomMatch ? `${roomMatch[1]}x${roomMatch[2]}` : "--"}`;
+    }
+    if (gemTarget) {
+      gemTarget.textContent = `Gems ${app.collectedGemIds instanceof Set ? app.collectedGemIds.size : 0}`;
+    }
+  }
+
+  function setControlsOverlayOpen(open) {
+    const overlay = document.getElementById("controls-settings-overlay");
+    if (!overlay) return;
+
+    if (open) {
+      overlay.hidden = false;
+      window.requestAnimationFrame(() => overlay.classList.add("is-open"));
+      syncPlayOverlayInputLock();
+      return;
+    }
+
+    overlay.classList.remove("is-open");
+    overlay.classList.add("is-closing");
+    window.setTimeout(() => {
+      overlay.classList.remove("is-closing");
+      overlay.hidden = true;
+      syncPlayOverlayInputLock();
+    }, 180);
+    syncPlayOverlayInputLock();
+  }
+
+  function runMoveControl(direction) {
+    const vectors = {
+      up: [0, -1],
+      down: [0, 1],
+      left: [-1, 0],
+      right: [1, 0]
+    };
+    const raw = vectors[direction];
+    if (!raw || typeof app.movePlayers !== "function") return;
+    const mapped = typeof app.mapCameraRelativeDirection === "function"
+      ? app.mapCameraRelativeDirection(raw[0], raw[1])
+      : raw;
+    app.movePlayers(mapped[0], mapped[1]);
+  }
+
+  let playCameraYaw = 0;
+  let playCameraTilt = 0.22;
+  let cameraTiltDirection = 0;
+  let cameraTiltVelocity = 0;
+  let cameraMotionFrame = 0;
+  let cameraMotionLastMs = 0;
+  let cameraYawAnimation = null;
+  const heldCameraKeys = new Map();
+  const cameraTiltMaxSpeed = Math.PI * 0.72;
+  const cameraTiltAcceleration = Math.PI * 3.4;
+  const cameraTiltDeceleration = Math.PI * 4.2;
+  const cameraYawDurationMs = 400;
+
+  function cameraInputLocked() {
+    return (
+      !playBootComplete ||
+      document.getElementById("world-map-overlay")?.hidden === false ||
+      document.getElementById("controls-settings-overlay")?.hidden === false
+    );
+  }
+
+  function clampCameraTilt(value) {
+    return Math.max(0, Math.min(Math.PI / 2, value));
+  }
+
+  function easeToward(current, target, maxDelta) {
+    if (current < target) return Math.min(target, current + maxDelta);
+    if (current > target) return Math.max(target, current - maxDelta);
+    return current;
+  }
+
+  function easeInOutQuad(progress) {
+    const value = Math.max(0, Math.min(1, progress));
+    return value < 0.5
+      ? 2 * value * value
+      : 1 - Math.pow(-2 * value + 2, 2) / 2;
+  }
+
+  function syncPlayCameraFromRenderer() {
+    const renderer = app.threeRenderer;
+    if (!renderer) return;
+    if (!cameraYawAnimation && typeof renderer.getDebugCameraYaw === "function") {
+      const yaw = renderer.getDebugCameraYaw();
+      if (Number.isFinite(yaw)) playCameraYaw = yaw;
+    }
+    if (!cameraTiltDirection && typeof renderer.getDebugCameraTilt === "function") {
+      const tilt = renderer.getDebugCameraTilt();
+      if (Number.isFinite(tilt)) playCameraTilt = tilt;
+    }
+  }
+
+  function applyPlayCameraView() {
+    const renderer = app.threeRenderer;
+    if (!renderer || typeof renderer.setDebugCameraView !== "function") return false;
+    renderer.setDebugCameraView({ yaw: playCameraYaw, tilt: playCameraTilt });
+    return true;
+  }
+
+  function scheduleCameraMotionFrame() {
+    if (cameraMotionFrame) return;
+    cameraMotionFrame = window.requestAnimationFrame(stepCameraMotion);
+  }
+
+  function stepCameraMotion(now) {
+    cameraMotionFrame = 0;
+    const deltaSeconds = cameraMotionLastMs
+      ? Math.min(0.05, Math.max(0, (now - cameraMotionLastMs) / 1000))
+      : 1 / 60;
+    cameraMotionLastMs = now;
+    let changed = false;
+    let shouldContinue = false;
+
+    if (cameraYawAnimation) {
+      const progress = Math.max(
+        0,
+        Math.min(1, (now - cameraYawAnimation.startMs) / cameraYawAnimation.durationMs)
+      );
+      const eased = easeInOutQuad(progress);
+      playCameraYaw =
+        cameraYawAnimation.startYaw +
+        (cameraYawAnimation.targetYaw - cameraYawAnimation.startYaw) * eased;
+      changed = true;
+      if (progress >= 1) {
+        playCameraYaw = cameraYawAnimation.targetYaw;
+        cameraYawAnimation = null;
+      } else {
+        shouldContinue = true;
+      }
+    }
+
+    if (cameraTiltDirection || cameraTiltVelocity) {
+      const targetVelocity = cameraTiltDirection * cameraTiltMaxSpeed;
+      const acceleration = cameraTiltDirection ? cameraTiltAcceleration : cameraTiltDeceleration;
+      cameraTiltVelocity = easeToward(
+        cameraTiltVelocity,
+        targetVelocity,
+        acceleration * deltaSeconds
+      );
+      if (!cameraTiltDirection && Math.abs(cameraTiltVelocity) < 0.002) {
+        cameraTiltVelocity = 0;
+      }
+      const previousTilt = playCameraTilt;
+      playCameraTilt = clampCameraTilt(playCameraTilt + cameraTiltVelocity * deltaSeconds);
+      if (playCameraTilt === previousTilt && cameraTiltVelocity !== 0) {
+        cameraTiltVelocity = 0;
+      }
+      changed = true;
+      shouldContinue = shouldContinue || Boolean(cameraTiltDirection || cameraTiltVelocity);
+    }
+
+    if (changed) applyPlayCameraView();
+    if (shouldContinue) scheduleCameraMotionFrame();
+    else cameraMotionLastMs = 0;
+  }
+
+  function startCameraTiltHold(direction) {
+    const nextDirection = direction === "up" ? -1 : direction === "down" ? 1 : 0;
+    if (!nextDirection || cameraInputLocked()) return;
+    syncPlayCameraFromRenderer();
+    cameraTiltDirection = nextDirection;
+    cameraMotionLastMs = 0;
+    scheduleCameraMotionFrame();
+  }
+
+  function stopCameraTiltHold() {
+    cameraTiltDirection = 0;
+    if (cameraTiltVelocity) scheduleCameraMotionFrame();
+  }
+
+  function runCameraControl(direction) {
+    if (cameraInputLocked()) return;
+    if (direction === "up" || direction === "down") {
+      startCameraTiltHold(direction);
+      return;
+    }
+    syncPlayCameraFromRenderer();
+    const targetYaw = cameraYawAnimation?.targetYaw ?? playCameraYaw;
+    const yawStep = Math.PI / 2;
+    cameraYawAnimation = {
+      durationMs: cameraYawDurationMs,
+      startMs: performance.now(),
+      startYaw: playCameraYaw,
+      targetYaw: targetYaw + (direction === "left" ? -yawStep : direction === "right" ? yawStep : 0)
+    };
+    if (cameraYawAnimation.targetYaw === targetYaw) {
+      cameraYawAnimation = null;
+      return;
+    }
+    scheduleCameraMotionFrame();
+  }
+
+  function syncPlayOverlayInputLock() {
+    window.__MAZEBENCH_INPUT_LOCKED__ =
+      worldMapSwitching ||
+      document.getElementById("world-map-overlay")?.hidden === false ||
+      document.getElementById("controls-settings-overlay")?.hidden === false;
+  }
+
+  function worldMapCells() {
+    const columns = Array.isArray(playWorldData?.worldColumns) ? playWorldData.worldColumns : [];
+    const rows = Array.isArray(playWorldData?.worldRows) ? playWorldData.worldRows : [];
+
+    return (playWorldData?.existingLevels || [])
+      .map((level) => {
+        const match = String(level.id || "").match(/^level_(.+)x(.+)$/);
+        if (!match) return null;
+        const columnIndex = columns.indexOf(match[1]);
+        const rowIndex = rows.indexOf(match[2]);
+        if (columnIndex < 0 || rowIndex < 0) return null;
+        return { ...level, columnIndex, rowIndex };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.rowIndex - right.rowIndex || left.columnIndex - right.columnIndex);
+  }
+
+  function fittedWorldMapTileSize(columnCount, rowCount) {
+    const overlay = document.getElementById("world-map-overlay");
+    const panel = overlay?.querySelector(".world-map-panel");
+    const bar = overlay?.querySelector(".world-map-bar");
+    const stage = overlay?.querySelector(".world-map-stage");
+    const overlayRect = overlay?.getBoundingClientRect();
+    const overlayStyle = overlay ? window.getComputedStyle(overlay) : null;
+    const panelStyle = panel ? window.getComputedStyle(panel) : null;
+    const stageStyle = stage ? window.getComputedStyle(stage) : null;
+    const horizontalOverlayPadding =
+      (parseFloat(overlayStyle?.paddingLeft) || 0) + (parseFloat(overlayStyle?.paddingRight) || 0);
+    const verticalOverlayPadding =
+      (parseFloat(overlayStyle?.paddingTop) || 0) + (parseFloat(overlayStyle?.paddingBottom) || 0);
+    const horizontalStagePadding =
+      (parseFloat(stageStyle?.paddingLeft) || 0) + (parseFloat(stageStyle?.paddingRight) || 0);
+    const verticalStagePadding =
+      (parseFloat(stageStyle?.paddingTop) || 0) + (parseFloat(stageStyle?.paddingBottom) || 0);
+    const panelGap = parseFloat(panelStyle?.rowGap) || 0;
+    const viewportWidth = overlayRect?.width || window.innerWidth || document.documentElement.clientWidth || 820;
+    const viewportHeight = overlayRect?.height || window.innerHeight || document.documentElement.clientHeight || 700;
+    const availableWidth = Math.max(0, Math.min(820, viewportWidth - horizontalOverlayPadding) - horizontalStagePadding);
+    const availableHeight = Math.max(
+      0,
+      viewportHeight - verticalOverlayPadding - (bar?.getBoundingClientRect().height || 44) - panelGap - verticalStagePadding
+    );
+
+    return Math.max(
+      1,
+      Math.floor(Math.min(82, availableWidth / Math.max(1, columnCount), availableHeight / Math.max(1, rowCount))) || 1
+    );
+  }
+
+  function worldMapOutlinePath(occupied, tileSize) {
+    const edges = new Map();
+    const addEdge = (fromX, fromY, toX, toY) => {
+      const key = fromX + "," + fromY;
+      if (!edges.has(key)) edges.set(key, []);
+      edges.get(key).push([toX, toY]);
+    };
+
+    for (const key of occupied) {
+      const [column, row] = key.split(",").map(Number);
+      if (!occupied.has(column + "," + (row - 1))) addEdge(column + 1, row, column, row);
+      if (!occupied.has(column + "," + (row + 1))) addEdge(column, row + 1, column + 1, row + 1);
+      if (!occupied.has(column - 1 + "," + row)) addEdge(column, row, column, row + 1);
+      if (!occupied.has(column + 1 + "," + row)) addEdge(column + 1, row + 1, column + 1, row);
+    }
+
+    const parts = [];
+    for (const [startKey, targets] of edges) {
+      while (targets.length) {
+        const [startX, startY] = startKey.split(",").map(Number);
+        let [x, y] = targets.pop();
+        let previousX = startX;
+        let previousY = startY;
+        const points = [[startX, startY], [x, y]];
+
+        while (x !== startX || y !== startY) {
+          const nextTargets = edges.get(x + "," + y);
+          if (!nextTargets?.length) break;
+          let targetIndex = 0;
+          if (nextTargets.length > 1) {
+            const dx = x - previousX;
+            const dy = y - previousY;
+            let bestTurn = Infinity;
+            nextTargets.forEach(([nextX, nextY], index) => {
+              const turn = dx * (nextY - y) - dy * (nextX - x);
+              if (turn < bestTurn) {
+                bestTurn = turn;
+                targetIndex = index;
+              }
+            });
+          }
+          const [nextX, nextY] = nextTargets.splice(targetIndex, 1)[0];
+          previousX = x;
+          previousY = y;
+          x = nextX;
+          y = nextY;
+          points.push([x, y]);
+        }
+
+        points.pop();
+        const corners = points.filter((point, index) => {
+          const before = points[(index + points.length - 1) % points.length];
+          const after = points[(index + 1) % points.length];
+          return (before[0] === point[0]) !== (point[0] === after[0]);
+        });
+        if (corners.length >= 4) {
+          parts.push(
+            "M" +
+              corners.map(([cornerX, cornerY]) => cornerX * tileSize + " " + cornerY * tileSize).join(" L") +
+              " Z"
+          );
+        }
+      }
+    }
+    return parts.join(" ");
+  }
+
+  function renderPlayWorldMap() {
+    const grid = document.getElementById("world-map-grid");
+    const backdrop = document.getElementById("world-map-backdrop");
+    const cells = worldMapCells();
+    if (!grid || !backdrop || cells.length === 0) return;
+    const minColumn = Math.min(...cells.map((cell) => cell.columnIndex));
+    const maxColumn = Math.max(...cells.map((cell) => cell.columnIndex));
+    const minRow = Math.min(...cells.map((cell) => cell.rowIndex));
+    const maxRow = Math.max(...cells.map((cell) => cell.rowIndex));
+    const columnCount = maxColumn - minColumn + 1;
+    const rowCount = maxRow - minRow + 1;
+    const tileSize = fittedWorldMapTileSize(columnCount, rowCount);
+    const occupied = new Set(
+      cells.map((cell) => cell.columnIndex - minColumn + "," + (cell.rowIndex - minRow))
+    );
+
+    grid.style.setProperty("--world-map-columns", String(columnCount));
+    grid.style.setProperty("--world-map-tile-size", tileSize + "px");
+    grid.replaceChildren();
+    backdrop.setAttribute("viewBox", "0 0 " + columnCount * tileSize + " " + rowCount * tileSize);
+    backdrop.setAttribute("width", String(columnCount * tileSize));
+    backdrop.setAttribute("height", String(rowCount * tileSize));
+    backdrop.innerHTML = '<path fill-rule="evenodd" d="' + worldMapOutlinePath(occupied, tileSize) + '"></path>';
+
+    cells.forEach((cell) => {
+      const button = document.createElement("button");
+      button.className = "world-map-cell";
+      button.type = "button";
+      button.dataset.levelId = cell.id;
+      button.style.gridColumn = String(cell.columnIndex - minColumn + 1);
+      button.style.gridRow = String(cell.rowIndex - minRow + 1);
+      button.title = cell.label || cell.id.replace("level_", "");
+      button.setAttribute("aria-label", button.title);
+      if (cell.previewUrl) {
+        const image = document.createElement("img");
+        image.alt = "";
+        image.className = "world-map-thumb";
+        image.decoding = "async";
+        image.loading = "lazy";
+        image.src = cell.previewUrl;
+        image.addEventListener("error", () => {
+          image.remove();
+          const label = document.createElement("span");
+          label.className = "world-map-cell-label";
+          label.textContent = cell.label || cell.id.replace("level_", "");
+          button.append(label);
+        }, { once: true });
+        button.append(image);
+      } else {
+        const label = document.createElement("span");
+        label.className = "world-map-cell-label";
+        label.textContent = cell.label || cell.id.replace("level_", "");
+        button.append(label);
+      }
+      if (cell.id === app.currentLevelId) button.classList.add("is-current");
+      grid.append(button);
+    });
+  }
+
+  function setWorldMapOpen(open) {
+    const overlay = document.getElementById("world-map-overlay");
+    const button = document.querySelector('[data-action="world-map"]');
+    if (!overlay) return;
+    window.clearTimeout(worldMapCloseTimer);
+    if (open) {
+      overlay.hidden = false;
+      // Measure only after the overlay participates in layout so the entire
+      // world can be fitted to the real viewport, including compact screens.
+      renderPlayWorldMap();
+      button?.setAttribute("aria-expanded", "true");
+      window.requestAnimationFrame(() => {
+        overlay.classList.remove("is-closing");
+        overlay.classList.add("is-open");
+        overlay.querySelector("[data-world-map-close]")?.focus({ preventScroll: true });
+      });
+      syncPlayOverlayInputLock();
+      return;
+    }
+    overlay.classList.remove("is-open");
+    overlay.classList.add("is-closing");
+    button?.setAttribute("aria-expanded", "false");
+    worldMapCloseTimer = window.setTimeout(() => {
+      overlay.hidden = true;
+      overlay.classList.remove("is-closing");
+      syncPlayOverlayInputLock();
+    }, 180);
+    button?.focus({ preventScroll: true });
+    syncPlayOverlayInputLock();
+  }
+
+  async function switchPlayWorldLevel(levelId) {
+    if (!levelId || worldMapSwitching) return;
+    if (levelId === app.currentLevelId) {
+      setWorldMapOpen(false);
+      return;
+    }
+    worldMapSwitching = true;
+    setWorldMapOpen(false);
+    syncPlayOverlayInputLock();
+    try {
+      const levelState = await app.loadLevelState(levelId);
+      app.applyLevelState(levelState, {
+        immediateCamera: true,
+        resetHistory: true,
+        resetLevelEntry: true,
+        updateUrl: true
+      });
+      const editLink = document.querySelector("[data-play-author-link]");
+      if (editLink && playWorldData?.game?.id) {
+        editLink.href =
+          "/author/" + encodeURIComponent(playWorldData.game.id) + "/" + encodeURIComponent(levelId);
+      }
+      syncPlayHud();
+    } catch {
+      if (playWorldData?.game?.id) {
+        window.location.assign(
+          "/play/" + encodeURIComponent(playWorldData.game.id) + "/" + encodeURIComponent(levelId)
+        );
+      }
+    } finally {
+      worldMapSwitching = false;
+      syncPlayOverlayInputLock();
+    }
+  }
+
+  function installPlayControls() {
+    const controls = document.querySelector(".mazebench-controls");
+    const controlsOverlay = document.getElementById("controls-settings-overlay");
+    const worldMapOverlay = document.getElementById("world-map-overlay");
+    let cameraPointerId = null;
+    let cameraPointerButton = null;
+    if (!controls) return;
+
+    controls.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      event.preventDefault();
+      if (button.dataset.move) {
+        runMoveControl(button.dataset.move);
+      } else if (button.dataset.camera) {
+        if (event.detail === 0) {
+          runCameraControl(button.dataset.camera);
+          if (button.dataset.camera === "up" || button.dataset.camera === "down") {
+            window.setTimeout(stopCameraTiltHold, 150);
+          }
+        }
+      } else if (button.dataset.action === "undo") {
+        app.undoMove?.();
+      } else if (button.dataset.action === "reset") {
+        app.resetPositions?.();
+      } else if (button.dataset.action === "controls") {
+        setControlsOverlayOpen(true);
+      } else if (button.dataset.action === "world-map") {
+        setWorldMapOpen(true);
+      }
+      button.blur?.();
+    });
+
+    controls.addEventListener("pointerdown", (event) => {
+      const button = event.target.closest("button[data-camera]");
+      if (!button || cameraInputLocked()) return;
+      event.preventDefault();
+      cameraPointerId = event.pointerId;
+      cameraPointerButton = button;
+      button.classList.add("is-active");
+      controls.setPointerCapture?.(event.pointerId);
+      runCameraControl(button.dataset.camera);
+    });
+
+    function releaseCameraPointer(event) {
+      if (cameraPointerId === null || (event && event.pointerId !== cameraPointerId)) return;
+      const direction = cameraPointerButton?.dataset.camera;
+      if (direction === "up" || direction === "down") stopCameraTiltHold();
+      cameraPointerButton?.classList.remove("is-active");
+      if (controls.hasPointerCapture?.(cameraPointerId)) {
+        controls.releasePointerCapture?.(cameraPointerId);
+      }
+      cameraPointerButton?.blur?.();
+      cameraPointerButton = null;
+      cameraPointerId = null;
+    }
+
+    ["pointerup", "pointercancel", "pointerleave"].forEach((type) => {
+      controls.addEventListener(type, releaseCameraPointer);
+    });
+
+    controlsOverlay?.addEventListener("click", (event) => {
+      if (event.target === controlsOverlay || event.target.closest("[data-controls-close]")) {
+        setControlsOverlayOpen(false);
+      }
+    });
+
+    worldMapOverlay?.addEventListener("click", (event) => {
+      const levelButton = event.target.closest(".world-map-cell[data-level-id]");
+      if (levelButton) {
+        switchPlayWorldLevel(levelButton.dataset.levelId).catch(() => {});
+      } else if (event.target === worldMapOverlay || event.target.closest("[data-world-map-close]")) {
+        setWorldMapOpen(false);
+      }
+    });
+
+    function cameraDirectionForKey(event) {
+      if (event.code === "KeyW") return "up";
+      if (event.code === "KeyS") return "down";
+      if (event.code === "KeyA") return "left";
+      if (event.code === "KeyD") return "right";
+      return "";
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && controlsOverlay?.hidden === false) {
+        event.preventDefault();
+        setControlsOverlayOpen(false);
+        return;
+      }
+      if (event.key === "Escape" && worldMapOverlay?.hidden === false) {
+        event.preventDefault();
+        setWorldMapOpen(false);
+        return;
+      }
+      const direction = cameraDirectionForKey(event);
+      if (
+        !direction ||
+        cameraInputLocked() ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.target?.closest?.("input, textarea, select, [contenteditable='true']")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (heldCameraKeys.has(event.code)) return;
+      heldCameraKeys.set(event.code, direction);
+      controls.querySelector(`button[data-camera="${direction}"]`)?.classList.add("is-active");
+      runCameraControl(direction);
+    }, true);
+
+    window.addEventListener("keyup", (event) => {
+      const direction = heldCameraKeys.get(event.code);
+      if (!direction) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      heldCameraKeys.delete(event.code);
+      if (![...heldCameraKeys.values()].includes(direction)) {
+        controls.querySelector(`button[data-camera="${direction}"]`)?.classList.remove("is-active");
+      }
+      if (direction === "up" || direction === "down") {
+        const remainingTilt = [...heldCameraKeys.values()].reverse().find(
+          (value) => value === "up" || value === "down"
+        );
+        if (remainingTilt) startCameraTiltHold(remainingTilt);
+        else stopCameraTiltHold();
+      }
+    }, true);
+
+    window.addEventListener("blur", () => {
+      heldCameraKeys.clear();
+      controls.querySelectorAll("button[data-camera].is-active").forEach((button) =>
+        button.classList.remove("is-active")
+      );
+      releaseCameraPointer();
+      stopCameraTiltHold();
+    });
+    window.addEventListener("resize", () => {
+      if (worldMapOverlay?.hidden === false) renderPlayWorldMap();
+    });
+    syncPlayOverlayInputLock();
+    syncPlayHud();
+    window.setInterval(syncPlayHud, 200);
+  }
+
+  function primeWorldStates() {
+    if (!shouldRunWorldBoot || typeof app.rememberHorizontalNeighborLevelState !== "function") {
+      return [];
+    }
+    const adapter = window.AuthorPlayData.createAdapter(playWorldData);
+    return playWorldData.existingLevels.flatMap((level) => {
+      if (!Array.isArray(level.cells) || !level.cells.length) return [];
+      const width = Number(level.width) || level.cells[0]?.length || 16;
+      const height = Number(level.height) || level.cells.length || 16;
+      const state = adapter.buildPlayData({
+        cameraView: { width, height },
+        cells: level.cells,
+        gameId: playData.gameId,
+        height,
+        includeGems: true,
+        levelId: level.id,
+        levelLabel: level.label || level.id,
+        playApiBaseUrl: playWorldData.playApiBaseUrl,
+        width,
+        worldColumns: playWorldData.worldColumns,
+        worldRows: playWorldData.worldRows
+      });
+      app.rememberHorizontalNeighborLevelState(state);
+      return [state];
+    });
+  }
+
+  function finishWorldBoot(renderer) {
+    app.cameraFlightFitOptions = null;
+    app.deferNeighborLoadRenders = false;
+    app.homeVectorTheme = false;
+    app.vectorGlowAmount = 0;
+    app.worldViewConsolidate = false;
+    app.worldViewDetachedVista = false;
+    app.worldViewSynchronousBuild = false;
+    app.worldViewUniformBrightness = false;
+    app.worldViewVistaMode = false;
+    document.getElementById("game-root")?.classList.remove("is-overview");
+    renderer?.setDebugCameraView?.({
+      yaw: 0,
+      tilt: 0.22,
+      zoom: 1,
+      mode: "perspective",
+      skipRender: true
+    });
+    renderer?.invalidateSceneCache?.();
+    playBootComplete = true;
+    app.render();
+    revealPlayFrame();
+    bindInput();
+  }
+
+  function diveIntoRoom(renderer, onDone) {
+    const unit = app.TILE_SIZE || 64;
+    const roomWidth = Math.max(1, Number(playData.width) || 16) * unit;
+    const roomHeight = Math.max(1, Number(playData.height) || 16) * unit;
+    const renderScale = Math.max(1, Number(app.renderPixelScale) || 1);
+    const sourceWidth = Math.max(1, Number(app.boardRect?.width) / renderScale || roomWidth);
+    const sourceHeight = Math.max(1, Number(app.boardRect?.height) / renderScale || roomHeight);
+    const sourceFit = {
+      centerX: sourceWidth / 2,
+      centerZ: sourceHeight / 2,
+      maxX: sourceWidth,
+      maxZ: sourceHeight,
+      minX: 0,
+      minZ: 0
+    };
+    const roomFit = {
+      centerX: roomWidth / 2,
+      centerZ: roomHeight / 2,
+      maxX: roomWidth,
+      maxZ: roomHeight,
+      minX: 0,
+      minZ: 0
+    };
+    const durationMs = 900;
+    const startTilt = 1.3;
+    const endTilt = 0.22;
+    const lnStartZoom = Math.log(0.2);
+    const lnEndZoom = Math.log(1);
+    let animationElapsedMs = 0;
+    let previousStepMs = 0;
+    app.worldShadowFadeMs = 900;
+    app.worldViewUniformBrightness = false;
+    document.getElementById("game-root")?.classList.remove("is-overview");
+    app.worldViewSynchronousBuild = false;
+    app.worldViewConsolidate = false;
+    app.deferNeighborLoadRenders = false;
+    app.homeVectorTheme = false;
+    renderer.cancelHomeEdgeReveal?.();
+
+    app.cameraFlightFitOptions = sourceFit;
+    renderer.invalidateSceneCache?.();
+    app.render(performance.now());
+
+    const step = (now) => {
+      const deltaMs = previousStepMs > 0 ? Math.max(0, now - previousStepMs) : 0;
+      previousStepMs = now;
+      animationElapsedMs += Math.min(deltaMs, 50);
+      const progress = Math.max(0, Math.min(1, animationElapsedMs / durationMs));
+      const eased = 0.5 - Math.cos(Math.PI * progress) / 2;
+      app.cameraFlightFitOptions = {
+        centerX: sourceFit.centerX + (roomFit.centerX - sourceFit.centerX) * eased,
+        centerZ: sourceFit.centerZ + (roomFit.centerZ - sourceFit.centerZ) * eased,
+        maxX: sourceFit.maxX + (roomFit.maxX - sourceFit.maxX) * eased,
+        maxZ: sourceFit.maxZ + (roomFit.maxZ - sourceFit.maxZ) * eased,
+        minX: sourceFit.minX + (roomFit.minX - sourceFit.minX) * eased,
+        minZ: sourceFit.minZ + (roomFit.minZ - sourceFit.minZ) * eased
+      };
+      renderer.setDebugCameraView({
+        yaw: 0,
+        tilt: startTilt + (endTilt - startTilt) * eased,
+        zoom: Math.exp(lnStartZoom + (lnEndZoom - lnStartZoom) * eased),
+        mode: "perspective",
+        skipRender: true
+      });
+      app.vectorGlowAmount = 1 - eased;
+      renderer.invalidateSceneCache?.();
+      app.render(now);
+      if (progress < 1) {
+        window.requestAnimationFrame(step);
+      } else {
+        finishWorldBoot(renderer);
+        onDone?.();
+      }
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(step));
+  }
+
+  async function runWorldBoot() {
+    try {
+      if (app.threeRendererReady && typeof app.threeRendererReady.then === "function") {
+        await app.threeRendererReady;
+      }
+      const renderer = app.threeRenderer;
+      if (!renderer || typeof renderer.beginHomeEdgeReveal !== "function") {
+        finishWorldBoot(renderer);
+        return;
+      }
+      const primedStates = primeWorldStates();
+      if (typeof renderer.whenLevelStateModelsReady === "function") {
+        await Promise.race([
+          Promise.all(
+            primedStates.map((levelState) =>
+              renderer.whenLevelStateModelsReady(levelState).catch(() => null)
+            )
+          ),
+          sleepMs(6000)
+        ]);
+      }
+      renderer.setDebugCameraView({
+        yaw: 0,
+        tilt: 1.3,
+        zoom: 0.2,
+        mode: "perspective",
+        skipRender: true
+      });
+      renderer.primeHomeEdgeReveal?.();
+      renderer.invalidateSceneCache?.();
+      app.render();
+      revealPlayFrame();
+      renderer.beginHomeEdgeReveal({
+        onComplete: () => diveIntoRoom(renderer)
+      });
+    } catch {
+      finishWorldBoot(app.threeRenderer);
+    }
+  }
 
   if (app.gl) {
     app.canvas.addEventListener("webglcontextlost", function (event) {
@@ -186,13 +1001,23 @@
   app.syncResetProgressButton();
   app.syncNoiseTicker();
   app.syncFloatingFloorTicker();
-  app.preloadImages().finally(app.render);
-  window.addEventListener("keydown", app.handleKeydown);
-  window.addEventListener("wheel", app.preventScroll, { passive: false });
+  app.preloadImages().finally(function () {
+    if (shouldRunWorldBoot) {
+      runWorldBoot();
+    } else {
+      app.render();
+      revealPlayFrame();
+      bindInput();
+    }
+  });
   window.addEventListener("resize", function () {
     app.syncPlayLayout();
     app.setupCanvas();
-    app.syncCameraTarget(true);
+    if (playBootComplete) {
+      app.syncCameraTarget(true);
+    } else {
+      app.threeRenderer?.invalidateSceneCache?.();
+    }
     app.render();
   });
 })();

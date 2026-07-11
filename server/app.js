@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { createAgentRunService, enrichedPathEnv } = require("./agent-runs");
 const { createTrainingService } = require("./training");
@@ -44,6 +45,7 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/maze-solver.js",
     "/author-play-data.js",
     "/author-solver-worker.js",
+    "/author-shell.js",
     "/author.js",
     "/world-map.js",
     "/level-preview.js",
@@ -176,6 +178,38 @@ const {
   sanitizeEditorPayload
 } = mazeLevelService;
 
+function buildGameWorldBundle(gameId = "maze") {
+  const game = getGame(gameId);
+
+  if (!game?.worldMap) {
+    throw new Error(`"${gameId}" is not a world game.`);
+  }
+
+  const defaultLevelId = defaultLevelIdForGame(game);
+  const levels = game.worldMap.levels.map((level) => ({
+    column: level.column,
+    fileName: level.fileName,
+    id: level.id,
+    label: level.label,
+    row: level.row
+  }));
+  const levelStates = Object.fromEntries(
+    game.worldMap.levels.map((level) => [level.id, getLevelState(game, level)])
+  );
+  const worldRevision = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ defaultLevelId, levels, levelStates }))
+    .digest("hex");
+
+  return {
+    defaultLevelId,
+    game: { id: game.id, name: game.name },
+    levels,
+    levelStates,
+    worldRevision
+  };
+}
+
 const buildWorlds = createLocalBuildWorldService({
   gamesDir: GAMES_DIR,
   getGame,
@@ -271,7 +305,10 @@ const NO_CACHE_HEADERS = {
   "Cache-Control": "no-store, max-age=0",
   Pragma: "no-cache"
 };
-const STATIC_CACHE_CONTROL = "max-age=300";
+// This is a local authoring/runtime server. Always revalidate editable assets
+// so restarting it can never leave the browser on an older CSS or JS bundle.
+// ETags still make unchanged responses cheap 304s.
+const STATIC_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate";
 
 function readRequestBody(request, options = {}) {
   return new Promise((resolve, reject) => {
@@ -406,7 +443,6 @@ const {
   renderGamePage,
   renderHomePage,
   renderNotFound,
-  renderPlayModePage,
   renderPlayPage,
   renderTrainPage,
   renderWorldMapEditorPage
@@ -447,7 +483,6 @@ const { handleRequest } = createRequestRouter({
   renderGamePage,
   renderHomePage,
   renderNotFound,
-  renderPlayModePage,
   renderPlayPage,
   renderTrainPage,
   renderWorldMapEditorPage,
@@ -497,6 +532,7 @@ function createRequestHandler() {
 module.exports = {
   HOST,
   PORT,
+  buildGameWorldBundle,
   createRequestHandler,
   defaultLevelIdForGame,
   getGame,

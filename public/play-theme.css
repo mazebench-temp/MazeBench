@@ -1352,7 +1352,7 @@ a.save-button:focus-visible {
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
-.world-map-grid {
+#world-map-overlay .world-map-grid {
   background: transparent; /* styles.css paints the editor grid black */
   border: 0;
   display: grid;

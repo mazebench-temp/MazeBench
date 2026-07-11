@@ -5,7 +5,7 @@ const { accountActionsHtml, pageHead, siteFooter, topbar } = require("./page-chr
 // https://lucide.dev/
 const HOME_MODE_ICONS = Object.freeze({
   play: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><line x1="6" x2="10" y1="11" y2="11"></line><line x1="8" x2="8" y1="9" y2="13"></line><line x1="15" x2="15.01" y1="12" y2="12"></line><line x1="18" x2="18.01" y1="10" y2="10"></line><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"></path></svg>`,
-  build: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"></path><rect x="14" y="2" width="8" height="8" rx="1"></rect></svg>`,
+  build: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><line x1="6" x2="10" y1="11" y2="11"></line><line x1="8" x2="8" y1="9" y2="13"></line><line x1="15" x2="15.01" y1="12" y2="12"></line><line x1="18" x2="18.01" y1="10" y2="10"></line><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"></path></svg>`,
   agent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>`,
   train: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"></path><path d="M9 13a4.5 4.5 0 0 0 3-4"></path><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"></path><path d="M3.477 10.896a4 4 0 0 1 .585-.396"></path><path d="M6 18a4 4 0 0 1-1.967-.516"></path><path d="M12 13h4"></path><path d="M12 18h6a2 2 0 0 1 2 2v1"></path><path d="M12 8h8"></path><path d="M16 8V5a2 2 0 0 1 2-2"></path><circle cx="16" cy="13" r=".5"></circle><circle cx="18" cy="3" r=".5"></circle><circle cx="20" cy="21" r=".5"></circle><circle cx="20" cy="8" r=".5"></circle></svg>`
 });
@@ -16,6 +16,7 @@ const TRASH_ICON = `<svg class="trash-icon" viewBox="0 0 24 24" fill="none" stro
 
 // Folder Closed from Lucide Icons (ISC License).
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path><path d="M2 10h20"></path></svg>`;
+const PLAY_ASSET_VERSION = "20260711-world-map-fit-2";
 
 const TRAIN_REWARD_ICONS = Object.freeze({
   gems: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12l4 6-10 12L2 9Z"></path><path d="m11 3-3 6 4 12 4-12-3-6"></path><path d="M2 9h20"></path></svg>`,
@@ -23,13 +24,13 @@ const TRAIN_REWARD_ICONS = Object.freeze({
   blocks: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12.89 1.45 8 4A2 2 0 0 1 22 7.24v9.52a2 2 0 0 1-1.11 1.79l-8 4a2 2 0 0 1-1.78 0l-8-4A2 2 0 0 1 2 16.76V7.24a2 2 0 0 1 1.11-1.79l8-4a2 2 0 0 1 1.78 0Z"></path><path d="m2.32 6.16 9.68 4.84 9.68-4.84"></path><path d="M12 22.76V11"></path></svg>`
 });
 
-// Page renderers. The chrome (topbar, footer, fonts, site.css) is ported from
-// the MazeJam repo so the local site looks exactly like the hosted one:
+// Page renderers. Shared chrome and the complete world-editor frontend are
+// canonical in this repo; Maze Jam consumes them during its build:
 //   - site pages load /site.css + /build-theme.css + /local-site.css
 //   - the play/flyover pages load the game runtime /styles.css first, then
 //     /site.css and /play-theme.css (MazeJam's play page layer)
 //   - the author/world-map editors load /styles.css as a structural base and
-//     /author-theme.css (MazeJam's editor skin) on top
+//     the canonical /author-theme.css on top
 function createPageRenderer({
   agentEnvironment,
   buildAuthorPageData,
@@ -68,7 +69,7 @@ function createPageRenderer({
     ${pageHead({
       title,
       description,
-      extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css">
+      extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css?v=20260710-card-parity-1">
     <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">
     ${extraHeadHtml}`
     })}
@@ -84,18 +85,38 @@ function createPageRenderer({
   }
 
   function worldCardMosaic(game) {
-    const previews = (game?.worldMap?.levels || [])
-      .map((level) => level.previewUrl)
-      .filter(Boolean)
-      .slice(0, 4);
+    const levels = game?.worldMap?.levels || [];
+    const previews = new Map(
+      levels.filter((level) => level.previewUrl).map((level) => [level.id, level.previewUrl])
+    );
 
-    if (!previews.length) {
-      return `<div class="screen-nosignal"><span class="glyph">▦</span></div>`;
+    if (!previews.size) {
+      return `<div class="screen-nosignal"><span class="glyph">◇</span><span>No signal</span></div>`;
     }
 
-    return `<div class="screen-mosaic" data-count="${previews.length}">${previews
-      .map((url) => `<img class="mosaic-cell" src="${escapeHtml(url)}" alt="" loading="lazy">`)
-      .join("")}</div>`;
+    const columns = Math.max(1, ...levels.map((level) => Number(level.column) + 1 || 1));
+    const rows = Math.max(1, ...levels.map((level) => Number(level.row) + 1 || 1));
+
+    if (columns > 5 || rows > 5) {
+      const firstUrl = previews.get(defaultLevelIdForGame(game)) || previews.values().next().value;
+      return `<div class="screen-mosaic" style="grid-template-columns:1fr;aspect-ratio:1/1;height:84%"><img class="mosaic-cell" src="${escapeHtml(firstUrl)}" alt="" loading="lazy" decoding="async"></div>`;
+    }
+
+    const cells = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const levelId = `level_${String.fromCharCode(65 + column)}x${String.fromCharCode(65 + row)}`;
+        const previewUrl = previews.get(levelId);
+        cells.push(
+          previewUrl
+            ? `<img class="mosaic-cell" src="${escapeHtml(previewUrl)}" alt="" loading="lazy" decoding="async">`
+            : '<div class="mosaic-cell"></div>'
+        );
+      }
+    }
+
+    const fitStyle = columns / rows >= 1.6 ? "width:86%" : "height:84%";
+    return `<div class="screen-mosaic" style="grid-template-columns:repeat(${columns},1fr);grid-template-rows:repeat(${rows},1fr);aspect-ratio:${columns}/${rows};${fitStyle}">${cells.join("")}</div>`;
   }
 
   function worldCard({ game, title, subtitle, badges = [], tags = [], stats = [], actions = [], playUrl }) {
@@ -157,73 +178,11 @@ function createPageRenderer({
     return renderSitePage({
       title: "Maze Bench",
       main: `<div class="world-grid home-mode-grid">
-          ${modeCard("/play", "play", "Play", "Play the official Maze Bench environment or your local drafts.")}
-          ${modeCard("/build", "build", "Build", "Create and save worlds locally, edit the official Maze Bench environment, or download published worlds from mazebench.com.")}
+          ${modeCard("/build", "build", "Build and Play", "Create, edit, and play the official Maze Bench environment or your local drafts.")}
           ${modeCard("/agent", "agent", "Agent", "Run Codex, Claude Code, or Prime Verifiers on any world and watch live.")}
           ${modeCard("/train", "train", "Train", "Train models on Maze Bench with Prime Verifiers.")}
         </div>
         ${otherGamesSection}`
-    });
-  }
-
-  function renderPlayModePage() {
-    const masterGame = getGame("maze");
-    const cards = [];
-
-    if (masterGame) {
-      const masterLevel = defaultLevelIdForGame(masterGame);
-      cards.push(
-        worldCard({
-          game: masterGame,
-          title: masterGame.name,
-          subtitle: "The world agents are benchmarked on",
-          badges: ["ENVIRONMENT"],
-          stats: [[String(masterGame.worldMap?.levels?.length || 0), "levels"]],
-          playUrl: `/play/maze/${encodeURIComponent(masterLevel)}`,
-          actions: [
-            ["Play", `/play/maze/${encodeURIComponent(masterLevel)}`],
-            ["Flyover", `/flyover/maze/${encodeURIComponent(masterLevel)}`]
-          ]
-        })
-      );
-    }
-
-    buildWorlds.listLocalWorlds().forEach((world) => {
-      const game = getGame(world.id);
-
-      if (!game || !game.worldMap) {
-        return;
-      }
-
-      cards.push(
-        worldCard({
-          game,
-          title: world.title,
-          subtitle: world.kind === "online" ? "Downloaded from mazebench.com" : "Local draft world",
-          badges: [`SIZE ${world.world_width}x${world.world_height}`],
-          tags: [world.kind === "online" ? "ONLINE COPY" : "DRAFT", ...(world.remote_id ? ["SYNCED"] : [])],
-          stats: [[String(world.level_count), world.level_count === 1 ? "level" : "levels"]],
-          playUrl: world.play_url,
-          actions: [
-            ["Play", world.play_url],
-            ["Flyover", world.flyover_url]
-          ]
-        })
-      );
-    });
-
-    return renderSitePage({
-      title: "Play — Maze Bench",
-      main: `<div class="page-head">
-          <h1>Play</h1>
-          <p class="page-sub">Pick a world. Drafts you make in Build Mode show up here automatically.</p>
-        </div>
-        <div class="world-grid">${cards.join("")}</div>
-        ${
-          cards.length <= 1
-            ? `<div class="empty-state"><span class="glyph">▦</span><p>No local worlds yet — create one in <a class="text-link" href="/build">Build Mode</a>.</p></div>`
-            : ""
-        }`
     });
   }
 
@@ -273,31 +232,36 @@ function createPageRenderer({
     <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
-    <link rel="stylesheet" href="/play-theme.css">
+    <link rel="stylesheet" href="/play-theme.css?v=${PLAY_ASSET_VERSION}">
     <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">`;
   }
 
   function renderPlayPage(game, level) {
     const levelState = getLevelState(game, level);
+    const authorData = game.worldMap ? buildAuthorPageData(game, level) : null;
+    const playWorldData = authorData
+      ? {
+          blockAdder: authorData.blockAdder,
+          defaultFloorToken: authorData.defaultFloorToken,
+          existingLevels: authorData.existingLevels,
+          game: authorData.game,
+          palette: authorData.palette,
+          playApiBaseUrl: `/api/play/${encodeURIComponent(game.id)}`,
+          worldColumns: authorData.worldColumns,
+          worldRows: authorData.worldRows
+        }
+      : null;
     const hasBoard = levelState.width > 0 && levelState.height > 0;
-    const controlsMarkup = hasBoard
-      ? `<div class="play-header">
-          <div class="play-header-meta">
-            <a class="back-link" data-play-author-link href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Edit</a>
-            <a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">Map</a>
-            <p>${escapeHtml(level.label)}</p>
-            <button id="reset-progress" class="progress-reset-button" type="button" title="Reset collected gems">Reset</button>
-            <button id="camera-mode-toggle" class="camera-mode-toggle" type="button" aria-pressed="true" title="Switch camera projection">Perspective</button>
-            <button id="edge-toggle" class="effect-toggle is-active" type="button" aria-pressed="true" aria-label="Black edges" title="Black edges">Edges</button>
-            <button id="fuzzy-toggle" class="effect-toggle is-active" type="button" aria-pressed="true" aria-label="Fuzzy noise" title="Fuzzy">Fuzzy</button>
-          </div>
-        </div>`
-      : "";
     const boardMarkup = hasBoard
-      ? `<main id="game-root" class="is-fullbleed">
+      ? `<main id="game-root" class="is-fullbleed is-loading">
         <div class="play-shell">
+          <div class="play-header" aria-hidden="true"></div>
+          <div class="mazebench-runtime-toggles" aria-hidden="true">
+            <button id="fuzzy-toggle" type="button" aria-pressed="true"></button>
+            <button id="edge-toggle" type="button" aria-pressed="true"></button>
+          </div>
           <section class="play-stage" aria-label="${escapeHtml(game.name)} board">
-            <div class="maze-frame">
+            <div class="maze-frame is-loading">
               <canvas
                 id="maze-canvas"
                 class="maze-canvas"
@@ -305,16 +269,79 @@ function createPageRenderer({
                 height="${levelState.height * 64}"
                 aria-label="${escapeHtml(game.name)} board"
               ></canvas>
+              <div class="maze-load-art" aria-hidden="true"><span class="maze-load-progress"><span></span></span></div>
+            </div>
+          </section>
+          <nav class="mazebench-controls" aria-label="Game controls">
+            <div class="top-play-controls">
+              <div class="top-play-actions">
+                ${authorData ? '<button class="control-button play-icon-button world-map-button" type="button" data-action="world-map" aria-controls="world-map-overlay" aria-expanded="false" aria-label="World map" title="World map"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4.5 6.5 9 4l6 3 4.5-2.5v13L15 20l-6-3-4.5 2.5v-13Z"></path><path d="M9 4v13"></path><path d="M15 7v13"></path></svg></button>' : ""}
+                <a class="control-button" data-play-author-link href="/author/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Edit</a>
+              </div>
+              <div id="play-hud" class="play-hud" aria-live="polite">
+                <span id="play-hud-room">Room --</span>
+                <span id="play-hud-gems">Gems 0</span>
+              </div>
+              <div class="top-play-right">
+                <div class="top-play-actions">
+                  <button class="control-button play-icon-button" type="button" data-action="undo" aria-label="Undo" title="Undo"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 14 4 9l5-5"></path><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"></path></svg></button>
+                  <button class="control-button" type="button" data-action="reset" aria-label="Reset level">Reset</button>
+                  <button class="control-button play-icon-button" type="button" data-action="controls" aria-label="Controls settings" title="Controls"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h9"></path><circle cx="16" cy="7" r="2.5"></circle><path d="M18.5 7H20"></path><path d="M4 17h2.5"></path><circle cx="9.5" cy="17" r="2.5"></circle><path d="M12 17h8"></path></svg></button>
+                </div>
+              </div>
+            </div>
+            <div class="control-pad" aria-label="Move controls">
+              <button class="control-button dpad-button" type="button" data-move="up" aria-label="Move up" tabindex="-1"></button>
+              <button class="control-button dpad-button" type="button" data-move="left" aria-label="Move left" tabindex="-1"></button>
+              <span class="dpad-center" aria-hidden="true">MOVE</span>
+              <button class="control-button dpad-button" type="button" data-move="right" aria-label="Move right" tabindex="-1"></button>
+              <button class="control-button dpad-button" type="button" data-move="down" aria-label="Move down" tabindex="-1"></button>
+            </div>
+            <div class="camera-pad control-pad" aria-label="Camera controls">
+              <button class="control-button dpad-button" type="button" data-camera="up" aria-label="Camera up" tabindex="-1"></button>
+              <button class="control-button dpad-button" type="button" data-camera="left" aria-label="Rotate camera left" tabindex="-1"></button>
+              <span class="dpad-center" aria-hidden="true">CAM</span>
+              <button class="control-button dpad-button" type="button" data-camera="right" aria-label="Rotate camera right" tabindex="-1"></button>
+              <button class="control-button dpad-button" type="button" data-camera="down" aria-label="Camera down" tabindex="-1"></button>
+            </div>
+          </nav>
+          ${authorData ? `<section id="world-map-overlay" class="world-map-overlay" aria-label="World map" hidden>
+            <div class="world-map-panel">
+              <div class="world-map-bar">
+                <div class="world-map-title-box"><h2 class="world-map-title">World Map</h2></div>
+                <button class="control-button world-map-close-button" type="button" data-world-map-close aria-label="Close world map" title="Close"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m7 7 10 10"></path><path d="m17 7-10 10"></path></svg></button>
+              </div>
+              <div class="world-map-stage">
+                <svg id="world-map-backdrop" class="world-map-backdrop" aria-hidden="true"></svg>
+                <div id="world-map-grid" class="world-map-grid"></div>
+              </div>
+            </div>
+          </section>` : ""}
+          <section id="controls-settings-overlay" class="world-map-overlay controls-overlay" aria-label="Controls settings" hidden>
+            <div class="controls-panel">
+              <div class="controls-panel-bar">
+                <h2 class="world-map-title">Controls</h2>
+                <button class="control-button" type="button" data-controls-close>Close</button>
+              </div>
+              <section class="controls-section" aria-label="Keyboard controls">
+                <h3>Keyboard</h3>
+                <p class="controls-note">Arrow keys move · A / D rotate · W / S tilt · Z or U undo · R reset</p>
+              </section>
+              <section class="controls-section" aria-label="Controller options">
+                <h3>Controller</h3>
+                <p class="controls-note">Bluetooth and USB game controllers use the same movement and camera actions.</p>
+              </section>
             </div>
           </section>
         </div>
       </main>
       <script>window.__PLAY_DATA__ = ${serializeForScript(levelState)};</script>
+      ${playWorldData ? `<script>window.__PLAY_WORLD_DATA__ = ${serializeForScript(playWorldData)};</script><script src="/author-play-data.js" defer></script>` : ""}
       ${RUNTIME_SCRIPTS}
       <script src="/play-movement.js" defer></script>
       <script src="/play-world-transitions.js" defer></script>
       <script src="/play-gameplay.js" defer></script>
-      <script src="/play.js" defer></script>`
+      <script src="/play.js?v=${PLAY_ASSET_VERSION}" defer></script>`
       : `<main class="page-shell"><section class="panel"><p>This level is empty.</p></section></main>`;
 
     return `<!DOCTYPE html>
@@ -323,7 +350,7 @@ function createPageRenderer({
     ${playChromeHead(`${game.name} ${level.label} — Maze Bench`)}
   </head>
   <body class="play-body play-mode">
-    ${topbar({ rightHtml: accountActionsHtml(remoteStatusSafe()), extraHtml: controlsMarkup })}
+    ${topbar({ rightHtml: accountActionsHtml(remoteStatusSafe()) })}
     ${boardMarkup}
   </body>
 </html>`;
@@ -373,7 +400,10 @@ function createPageRenderer({
 </html>`;
   }
 
-  function editorChromeHead(title) {
+  function editorChromeHead(
+    title,
+    { includeLocalSite = true, includeRuntimeStyles = true } = {}
+  ) {
     return `<meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(title)}</title>
@@ -383,221 +413,86 @@ function createPageRenderer({
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
-    <link rel="stylesheet" href="/styles.css">
+    ${includeRuntimeStyles ? '<link rel="stylesheet" href="/styles.css">' : ""}
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">`;
+    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">' : ""}`;
   }
 
   function renderAuthorPage(game, level) {
     const authorData = buildAuthorPageData(game, level);
-    const worldConfig = worldMaps.worldConfigForGame(game.id);
-    const backUrl = buildWorlds.isLocalWorldGameId(game.id) ? "/build" : "/build";
+    const localWorld = buildWorlds.isLocalWorldGameId(game.id)
+      ? buildWorlds.describeLocalWorld(game.id)
+      : null;
+    const playUrl = `/play/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}`;
+
+    if (localWorld) {
+      const gemsByLevel = {};
+      (authorData.existingLevels || []).forEach((entry) => {
+        let count = 0;
+        (entry.cells || []).forEach((row) => {
+          (row || []).forEach((cell) => {
+            String(cell || "")
+              .split("+")
+              .forEach((token) => {
+                if (token.trim() === "G") count += 1;
+              });
+          });
+        });
+        gemsByLevel[entry.id] = count;
+      });
+      authorData.worldMeta = {
+        apiUrl: `/api/build/worlds/${encodeURIComponent(game.id)}`,
+        gemsByLevel,
+        height: localWorld.world_height,
+        reviewStatus: "local",
+        startLevelId: localWorld.default_level_id,
+        status: "draft",
+        title: localWorld.title,
+        updatedAt: localWorld.updated_at,
+        width: localWorld.world_width
+      };
+    }
+
+    const shellConfig = {
+      capabilities: {
+        publish: false,
+        worldDetails: Boolean(authorData.worldMeta)
+      },
+      mobileNavigation: [
+        { href: playUrl, label: "Play" },
+        { href: "/build", label: "Back to Build" }
+      ],
+      navigation: [
+        { href: "/build", label: "Build" },
+        { href: playUrl, label: "Play", testLink: true }
+      ],
+      title: game.name
+    };
 
     return `<!DOCTYPE html>
 <html lang="en">
   <head>
-    ${editorChromeHead(`${game.name} — Maze Bench Editor`)}
+    ${editorChromeHead(`${game.name} — Maze Bench Editor`, {
+      includeLocalSite: false,
+      includeRuntimeStyles: false
+    })}
   </head>
   <body class="author-body">
-    <div class="build-mobile-blocker">
-      <div class="build-mobile-blocker__panel">
-        <h1>Maze Bench Editor</h1>
-        <p>The world editor needs a desktop-sized screen and a mouse or trackpad.</p>
-        <p><a class="back-link" href="/build">Back to Build</a></p>
-      </div>
-    </div>
-    <main class="author-shell">
-      <header class="author-header">
-        <div class="author-topbar">
-          <h1>${escapeHtml(game.name)}</h1>
-          <nav class="page-nav author-nav" aria-label="Author navigation">
-            <a class="back-link" href="${backUrl}">Build</a>
-            <a class="back-link" id="author-play-link" href="/play/${encodeURIComponent(game.id)}/${encodeURIComponent(level.id)}">Play</a>
-            <a class="back-link" href="/world-map/${encodeURIComponent(game.id)}">World Map</a>
-          </nav>
-          <button id="undo-level" class="tool-button author-undo-button" type="button" disabled>Undo</button>
-          <button id="save-level" class="tool-button tool-button--primary author-save-button" type="button">Save</button>
-          <p id="author-status" class="author-status" role="status" aria-live="polite"></p>
-          <div id="solver-progress" class="solver-progress" hidden>
-            <div
-              id="solver-progress-track"
-              class="solver-progress__track"
-              role="progressbar"
-              aria-label="Solver search progress"
-              aria-valuemin="0"
-              aria-valuemax="100"
-              aria-valuenow="0"
-            >
-              <div id="solver-progress-bar" class="solver-progress__bar"></div>
-            </div>
-            <span id="solver-progress-text" class="solver-progress__text">0 / 1,000,000 states</span>
-          </div>
-        </div>
-      </header>
-      <div class="author-layout">
-        <aside class="author-sidebar">
-          <details class="author-panel author-disclosure author-disclosure--world">
-            <summary class="author-disclosure__summary">
-              <span>World Slot</span>
-            </summary>
-            <div class="author-disclosure__body">
-              <div id="level-neighbors" class="author-neighbors" aria-label="Neighbor levels">
-                <button class="tool-button author-neighbors__button author-neighbors__button--up" type="button" data-dx="0" data-dy="-1"><span aria-hidden="true">&#8593;</span></button>
-                <button class="tool-button author-neighbors__button author-neighbors__button--left" type="button" data-dx="-1" data-dy="0"><span aria-hidden="true">&#8592;</span></button>
-                <button class="tool-button author-neighbors__button author-neighbors__button--right" type="button" data-dx="1" data-dy="0"><span aria-hidden="true">&#8594;</span></button>
-                <button class="tool-button author-neighbors__button author-neighbors__button--down" type="button" data-dx="0" data-dy="1"><span aria-hidden="true">&#8595;</span></button>
-              </div>
-            </div>
-          </details>
-          <details class="author-panel author-disclosure author-panel--palette">
-            <summary class="author-disclosure__summary">
-              <span>Paint</span>
-              <span id="selected-tool-label" class="author-panel__badge"></span>
-            </summary>
-            <div class="author-disclosure__body">
-              <div id="palette" class="palette"></div>
-            </div>
-          </details>
-          <details class="author-panel author-disclosure">
-            <summary class="author-disclosure__summary">
-              <span>Board</span>
-            </summary>
-            <div class="author-disclosure__body">
-              <div class="author-control-row">
-                <label class="field field--compact">
-                  <span>Width</span>
-                  <input id="board-width" type="number" min="1" max="${worldConfig.gridWidth}" inputmode="numeric">
-                </label>
-                <label class="field field--compact">
-                  <span>Height</span>
-                  <input id="board-height" type="number" min="1" max="${worldConfig.gridHeight}" inputmode="numeric">
-                </label>
-                <button id="resize-level" class="tool-button" type="button">Resize</button>
-              </div>
-              <div class="author-control-row">
-                <button id="clear-level" class="tool-button tool-button--danger" type="button">
-                  <span class="tool-button__icon" aria-hidden="true">&#10005;</span>
-                  <span>Clear</span>
-                </button>
-                <button id="frame-level" class="tool-button" type="button">
-                  <span class="tool-button__icon" aria-hidden="true">&#9633;</span>
-                  <span>Frame</span>
-                </button>
-              </div>
-            </div>
-          </details>
-          <details class="author-panel author-disclosure">
-            <summary class="author-disclosure__summary">
-              <span>Transformer</span>
-            </summary>
-            <div class="author-disclosure__body">
-              <div class="author-control-row">
-                <button id="rotate-left" class="tool-button" type="button" title="Rotate level left">
-                  <span class="tool-button__icon" aria-hidden="true">&#8634;</span>
-                  <span>Rotate Left</span>
-                </button>
-                <button id="rotate-right" class="tool-button" type="button" title="Rotate level right">
-                  <span class="tool-button__icon" aria-hidden="true">&#8635;</span>
-                  <span>Rotate Right</span>
-                </button>
-                <button id="flip-horizontal" class="tool-button" type="button" title="Mirror level left to right">
-                  <span class="tool-button__icon" aria-hidden="true">&#8596;</span>
-                  <span>Flip H</span>
-                </button>
-                <button id="flip-vertical" class="tool-button" type="button" title="Mirror level top to bottom">
-                  <span class="tool-button__icon" aria-hidden="true">&#8597;</span>
-                  <span>Flip V</span>
-                </button>
-              </div>
-            </div>
-          </details>
-          <details class="author-panel author-disclosure">
-            <summary class="author-disclosure__summary">
-              <span>Solver</span>
-            </summary>
-            <div class="author-disclosure__body">
-              <div class="author-control-row">
-                <label class="field">
-                  <span>Search states</span>
-                  <input id="solver-max-states" type="number" min="1" step="1" value="1000000" inputmode="numeric" aria-label="Solver search state limit">
-                </label>
-                <label class="field">
-                  <span>Algorithm</span>
-                  <select id="solver-algorithm" aria-label="Solver algorithm">
-                    <option value="astar" selected>A*</option>
-                    <option value="weighted_astar">Weighted A*</option>
-                    <option value="bfs">BFS</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>Hill-Climb</span>
-                  <select id="hill-climb-mode" aria-label="Hill-Climb mode">
-                    <option value="place_gem" selected>Place Gem</option>
-                    <option value="fixed_gem">Fixed Gem</option>
-                  </select>
-                </label>
-              </div>
-              <div class="author-control-row">
-                <button id="place-gem" class="tool-button" type="button">Place Gem</button>
-                <button id="hill-climb" class="tool-button" type="button">Hill-Climb</button>
-                <button id="solver-cancel" class="tool-button" type="button" disabled>Cancel</button>
-                <button id="solve-level" class="tool-button" type="button">Solver</button>
-                <button id="play-solution" class="tool-button" type="button">
-                  <span class="tool-button__icon" aria-hidden="true">&#9654;</span>
-                  <span>Play Solution</span>
-                </button>
-              </div>
-              <div class="author-control-row">
-                <button id="hill-climb-prev" class="tool-button" type="button" disabled>Prev Result</button>
-                <button id="hill-climb-next" class="tool-button" type="button" disabled>Next Result</button>
-                <span id="hill-climb-result-label" class="author-panel__copy"></span>
-              </div>
-            </div>
-          </details>
-          <details class="author-panel author-disclosure">
-            <summary class="author-disclosure__summary">
-              <span>Cell</span>
-            </summary>
-            <div class="author-disclosure__body">
-              <p id="selected-cell-label" class="author-panel__copy"></p>
-              <label class="field">
-                <span>Raw value</span>
-                <input id="cell-value" type="text" spellcheck="false" aria-label="Selected cell raw value">
-              </label>
-              <button id="apply-cell-value" class="tool-button" type="button">Apply Cell</button>
-            </div>
-          </details>
-          <details class="author-panel author-disclosure author-output-panel">
-            <summary class="author-disclosure__summary">
-              <span>Text Output</span>
-            </summary>
-            <div class="author-disclosure__body">
-              <textarea id="raw-output" class="raw-output" readonly spellcheck="false"></textarea>
-            </div>
-          </details>
-        </aside>
-        <section class="author-workspace">
-          <section class="author-stage" aria-label="Level canvas">
-            <section class="author-grid-shell">
-              <div id="author-grid" class="author-grid" aria-label="Maze author grid">
-                <canvas id="author-canvas" class="author-grid__canvas"></canvas>
-                <div id="author-hit-grid" class="author-grid__hit-grid"></div>
-              </div>
-            </section>
-          </section>
-        </section>
-      </div>
-      <script>window.__AUTHOR_DATA__ = ${serializeForScript(authorData)};</script>
-      ${RUNTIME_SCRIPTS}
-      <script src="/play-movement.js" defer></script>
-      <script src="/play-world-transitions.js" defer></script>
-      <script src="/play-gameplay.js" defer></script>
-      <script src="/level-preview.js" defer></script>
-      <script src="/author-play-data.js" defer></script>
-      <script src="/maze-solver.js" defer></script>
-      <script src="/author.js" defer></script>
-    </main>
+    <div id="author-shell-root"></div>
+    <script>
+      window.__AUTHOR_DATA__ = ${serializeForScript(authorData)};
+      window.__AUTHOR_SHELL__ = ${serializeForScript(shellConfig)};
+    </script>
+    <script src="/author-shell.js" defer></script>
+    ${RUNTIME_SCRIPTS}
+    <script src="/play-movement.js" defer></script>
+    <script src="/play-world-transitions.js" defer></script>
+    <script src="/play-gameplay.js" defer></script>
+    <script src="/level-preview.js" defer></script>
+    <script src="/author-play-data.js" defer></script>
+    <script src="/maze-solver.js" defer></script>
+    <script src="/author.js" defer></script>
   </body>
 </html>`;
   }
@@ -672,8 +567,7 @@ function createPageRenderer({
             stats: [[String(masterGame.worldMap?.levels?.length || 0), "levels"]],
             playUrl: `/play/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}`,
             actions: [
-              ["Edit Levels", `/author/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}`],
-              ["World Map", "/world-map/maze"],
+              ["Edit", `/author/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}`],
               ["Play", `/play/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}`],
               ["Flyover", `/flyover/maze/${encodeURIComponent(defaultLevelIdForGame(masterGame))}`]
             ]
@@ -682,9 +576,9 @@ function createPageRenderer({
       : "";
 
     return renderSitePage({
-      title: "Build — Maze Bench",
+      title: "Build and Play — Maze Bench",
       main: `<div class="page-head">
-          <h1>Build</h1>
+          <h1>Build and Play</h1>
           <p class="page-sub">Worlds live in this repo under <span class="mono">games/</span> and never publish anywhere unless you push them.</p>
           <p id="build-status" class="author-status" role="status" aria-live="polite"></p>
         </div>
@@ -693,14 +587,8 @@ function createPageRenderer({
           <h2>My Worlds</h2>
           <div id="build-worlds" class="world-grid"></div>
         </section>
-        <section class="panel" aria-label="New world">
-          <h2>New World</h2>
-          <div class="form-grid">
-            <label class="field"><span>Title</span><input id="new-world-title" type="text" placeholder="My World"></label>
-            <label class="field"><span>Columns</span><input id="new-world-width" type="number" min="1" max="26" value="3" inputmode="numeric"></label>
-            <label class="field"><span>Rows</span><input id="new-world-height" type="number" min="1" max="26" value="3" inputmode="numeric"></label>
-            <button id="create-world" class="button--primary" type="button">Create World</button>
-          </div>
+        <section class="panel build-import-panel" aria-label="Bring in a world">
+          <h2>Bring In A World</h2>
           <div class="card-actions" style="margin-top: 12px">
             <button id="copy-master" type="button">Duplicate Maze Bench Environment</button>
             <button id="import-world" type="button">Import World JSON</button>
@@ -713,6 +601,33 @@ function createPageRenderer({
             <button id="download-world" type="button">Download &amp; Edit</button>
           </div>
         </section>
+        <div id="create-world-modal" class="build-modal create-world-modal" role="dialog" aria-modal="true" aria-labelledby="create-world-title" hidden>
+          <div class="build-modal__dialog">
+            <h2 id="create-world-title">New World</h2>
+            <form id="create-world-form" class="form">
+              <label class="field"><span>World name</span><input id="new-world-title" maxlength="80" required value="Untitled World"></label>
+              <div class="form-row">
+                <label class="field"><span>Width (levels)</span><input id="new-world-width" type="number" min="1" max="26" value="3" inputmode="numeric"></label>
+                <label class="field"><span>Height (levels)</span><input id="new-world-height" type="number" min="1" max="26" value="3" inputmode="numeric"></label>
+              </div>
+              <p id="create-world-status" class="author-status" role="status" aria-live="polite"></p>
+              <div class="build-modal__actions">
+                <button id="cancel-create-world" type="button" class="button--quiet">Cancel</button>
+                <button id="create-world" class="button--primary" type="submit">Create</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div id="delete-world-modal" class="build-modal delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-world-title" hidden>
+          <div class="build-modal__dialog">
+            <h2 id="delete-world-title">You sure you want to delete?</h2>
+            <p id="delete-world-message" class="delete-confirm__message">This cannot be undone.</p>
+            <div class="build-modal__actions">
+              <button id="cancel-world-delete" type="button" class="button--quiet">Cancel</button>
+              <button id="confirm-world-delete" type="button" class="delete-confirm__danger">Delete</button>
+            </div>
+          </div>
+        </div>
         <script>window.__BUILD_DATA__ = ${serializeForScript(buildData)};</script>
         <script src="/build.js" defer></script>`
     });
@@ -1213,7 +1128,6 @@ function createPageRenderer({
     renderGamePage,
     renderHomePage,
     renderNotFound,
-    renderPlayModePage,
     renderPlayPage,
     renderTrainPage,
     renderWorldMapEditorPage

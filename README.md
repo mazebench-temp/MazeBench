@@ -28,7 +28,7 @@ publishing) whenever a GitHub Release is created; see
 
 `npm run dev` (or `mazebench launch`) serves the full site at
 `http://localhost:3000` with three modes on the home page (the frontend design
-matches mazebench.com — the chrome is ported from the MazeJam repo):
+matches mazebench.com):
 
 - **Play Mode** (`/play`) — play the master world (the 256-room world agents
   are benchmarked on), any local draft world, or downloaded online worlds.
@@ -46,6 +46,16 @@ matches mazebench.com — the chrome is ported from the MazeJam repo):
   gems, the ASCII board, the agent's reasoning, the runner log, and the replay
   video when the run finishes. Run artifacts land under
   `outputs/maze-local/site/<run-id>/`.
+
+### World editor source of truth
+
+MazeBench owns the complete world-editor frontend and shared site design
+tokens. The canonical pieces are `public/site.css`, `public/author-shell.js`,
+`public/author-theme.css`, `public/author.js`, and the shared play/render
+runtime they load. The Maze Jam hosted app copies these
+assets during its build and supplies only hosted configuration, persistence,
+accounts, and publishing behavior. Do not add a separate editor DOM or skin in
+Maze Jam; editor changes made here flow there through its asset-sync build.
 
 ### Sync drafts with mazebench.com
 

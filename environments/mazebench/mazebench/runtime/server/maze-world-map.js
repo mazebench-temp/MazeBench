@@ -435,6 +435,11 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
 
   function defaultLevelIdForGame(game) {
     if (game?.worldMap || isMazeFamilyGameId(game?.id)) {
+      const configuredLevelId = game?.draft?.default_level_id;
+      if (configuredLevelId && game.worldMap?.byPosition?.has(configuredLevelId)) {
+        return configuredLevelId;
+      }
+
       if (game.worldMap?.byPosition?.has(MAZE_DEFAULT_LEVEL_ID)) {
         return MAZE_DEFAULT_LEVEL_ID;
       }

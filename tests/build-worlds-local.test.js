@@ -74,9 +74,18 @@ const buildWorlds = createLocalBuildWorldService({
 const blank = buildWorlds.createLocalWorld({ title: "Blank World", worldWidth: 2, worldHeight: 2 });
 assert.ok(blank.worldMap, "blank draft loads as a maze-family game");
 assert.equal(blank.name, "Blank World");
-assert.equal(blank.worldMap.levels.length, 1);
+assert.equal(blank.worldMap.levels.length, 4);
 assert.equal(blank.worldMap.levels[0].id, "level_AxA");
 assert.ok(fs.existsSync(path.join(gamesDir, blank.id, "levels", "level_AxA.txt")));
+assert.ok(fs.existsSync(path.join(gamesDir, blank.id, "levels", "level_BxB.txt")));
+const blankAxA = levelService.getLevelEditorState(
+  blank,
+  blank.worldMap.byPosition.get("level_AxA")
+);
+assert.deepEqual(blankAxA.cells[0], Array(16).fill(".+#"));
+assert.deepEqual(blankAxA.cells.slice(6, 10).map((row) => row[15]), Array(4).fill("."));
+assert.deepEqual(blankAxA.cells[15].slice(6, 10), Array(4).fill("."));
+assert.equal(blankAxA.cells[7][7], ".+p");
 
 // --- editor_state import + export roundtrip ---
 const editorState = {
@@ -144,6 +153,12 @@ assert.deepEqual(
 
 // --- gem counting ---
 assert.equal(buildWorlds.countWorldGems(imported), 2);
+
+// --- local drafts persist the same configurable starting-room choice as hosted worlds ---
+buildWorlds.updateDraftMeta(imported.id, { default_level_id: "level_CxB" });
+const importedWithStartRoom = levelService.getGame(imported.id);
+assert.equal(worldMaps.defaultLevelIdForGame(importedWithStartRoom), "level_CxB");
+assert.equal(buildWorlds.describeLocalWorld(imported.id).default_level_id, "level_CxB");
 
 // --- copy an existing world ---
 const copy = buildWorlds.createLocalWorldFromGame(imported.id, "The Copy");

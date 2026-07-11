@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { defaultEditorState } = require("../shared/default-world-template");
 
 // Local Build Mode: each draft world is a full maze-family game directory
 // under games/ (gitignored), so play/author/world-map/flyover and the agent
@@ -108,24 +109,6 @@ function createLocalBuildWorldService({
       columnIndex: WORLD_AXIS_LETTERS.indexOf(match[1]),
       rowIndex: WORLD_AXIS_LETTERS.indexOf(match[2])
     };
-  }
-
-  function defaultStarterCells(width, height) {
-    const cells = Array.from({ length: height }, (_, y) =>
-      Array.from({ length: width }, (_, x) =>
-        y === 0 || x === 0 || y === height - 1 || x === width - 1 ? "#" : "."
-      )
-    );
-    const centerY = Math.floor(height / 2);
-    const centerX = Math.floor(width / 2);
-
-    cells[centerY][centerX] = ".+p";
-
-    if (centerX + 2 < width - 1) {
-      cells[centerY][centerX + 2] = ".+G";
-    }
-
-    return cells;
   }
 
   function ensureSharedAssetLinks(gameId) {
@@ -285,14 +268,18 @@ function createLocalBuildWorldService({
   }
 
   function createLocalWorld({ title, worldWidth, worldHeight, editorState = null, prefix = "draft", remote = null }) {
-    const normalized = editorState
-      ? normalizeEditorState(editorState)
-      : {
-          title: typeof title === "string" && title.trim() ? title.trim() : "Untitled World",
-          worldWidth: clampWorldDimension(worldWidth, 3),
-          worldHeight: clampWorldDimension(worldHeight, 3),
-          levels: null
-        };
+    const fallbackTitle =
+      typeof title === "string" && title.trim() ? title.trim() : "Untitled World";
+    const fallbackWidth = clampWorldDimension(worldWidth, 3);
+    const fallbackHeight = clampWorldDimension(worldHeight, 3);
+    const normalized = normalizeEditorState(
+      editorState ||
+        defaultEditorState({
+          height: fallbackHeight,
+          title: fallbackTitle,
+          width: fallbackWidth
+        })
+    );
     const gameId = generateLocalWorldGameId(prefix);
 
     try {
@@ -304,19 +291,7 @@ function createLocalBuildWorldService({
         remote
       });
 
-      if (normalized.levels) {
-        applyEditorStateLevels(gameId, normalized.levels);
-      } else {
-        const config = worldMaps.worldConfigForGame(gameId);
-        applyEditorStateLevels(gameId, [
-          {
-            id: levelIdForPosition(0, 0),
-            column: WORLD_AXIS_LETTERS[0],
-            row: WORLD_AXIS_LETTERS[0],
-            cells: defaultStarterCells(config.gridWidth, config.gridHeight)
-          }
-        ]);
-      }
+      applyEditorStateLevels(gameId, normalized.levels);
     } catch (error) {
       fs.rmSync(path.join(gamesDir, gameId), { recursive: true, force: true });
       throw error;
@@ -428,6 +403,11 @@ function createLocalBuildWorldService({
 
     const config = worldMaps.worldConfigForGame(gameId);
     const defaultLevelId = worldMaps.defaultLevelIdForGame(game);
+    const levelPreviews = Object.fromEntries(
+      (game.worldMap?.levels || [])
+        .filter((level) => level.previewUrl)
+        .map((level) => [level.id, level.previewUrl])
+    );
 
     return {
       id: gameId,
@@ -437,6 +417,7 @@ function createLocalBuildWorldService({
         .map((level) => level.previewUrl)
         .filter(Boolean)
         .slice(0, 4),
+      level_previews: levelPreviews,
       world_width: config.worldSize.width,
       world_height: config.worldSize.height,
       level_count: game.worldMap.levels.length,
@@ -446,6 +427,7 @@ function createLocalBuildWorldService({
       remote_updated_at: meta.remote_updated_at || null,
       remote_status: meta.remote_status || null,
       default_level_id: defaultLevelId,
+      first_level_id: defaultLevelId,
       play_url: `/play/${encodeURIComponent(gameId)}/${encodeURIComponent(defaultLevelId)}`,
       author_url: `/author/${encodeURIComponent(gameId)}/${encodeURIComponent(defaultLevelId)}`,
       world_map_url: `/world-map/${encodeURIComponent(gameId)}`,

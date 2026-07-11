@@ -12,6 +12,23 @@ const rendererSource = fs.readFileSync(
   "utf8"
 );
 
+assert.match(authorSource, /function openAuthorInfoPopover\(button\)/);
+assert.match(authorSource, /function closeAuthorInfoPopover\(options = \{\}\)/);
+assert.match(authorSource, /document\.addEventListener\("pointerdown"/);
+assert.match(authorSource, /event\.key === "Escape"/);
+assert.doesNotMatch(authorSource, /const showNote = note\.hidden/);
+assert.match(authorSource, /Playback Solution/);
+assert.match(authorSource, /function solverGhostCellsForPath\(path\)/);
+assert.match(authorSource, /engine\.moveForSearch\(engineState, direction\.dx, direction\.dy\)/);
+assert.match(authorSource, /function setSolverGhostVisible\(visible\)/);
+assert.match(authorSource, /setSolverGhostCells/);
+assert.match(authorSource, /function positionSolverDock\(\)/);
+assert.match(authorSource, /toggleRect\.left - mapRect\.right - 24/);
+assert.match(authorSource, /new window\.ResizeObserver\(positionSolverDock\)/);
+assert.match(rendererSource, /function addSolverGhostPath\(now = performance\.now\(\)\)/);
+assert.match(rendererSource, /new THREE\.InstancedMesh/);
+assert.match(rendererSource, /`solver-ghost:\$\{solverGhostVersion\}`/);
+
 function sourceSection(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start + startMarker.length);
@@ -327,6 +344,16 @@ const switchSection = sourceSection(
 );
 assert.match(switchSection, /cancelScheduledPointerMove\(\)/);
 assert.match(switchSection, /finishPainting\(/);
+assert.doesNotMatch(
+  switchSection,
+  /Math\.sign\(resolvedTarget\.(?:dx|dy)\)/,
+  "far-room world-map flights must preserve their full room delta"
+);
+assert.match(
+  switchSection,
+  /const roomDistance = Math\.hypot\(dx, dy\)/,
+  "far-room camera duration should scale with world distance"
+);
 assertBefore(
   switchSection,
   "cancelScheduledPointerMove()",
@@ -355,6 +382,24 @@ assert.ok(
   commitPayload > onComplete,
   "the incoming editor payload must not become editable until the transition completes"
 );
+
+const incomingOffsetSection = sourceSection(
+  rendererSource,
+  "function transitionIncomingOffset",
+  "function renderLevelStateAt"
+);
+assert.match(incomingOffsetSection, /dx \* incomingState\.width \* unit/);
+assert.match(incomingOffsetSection, /dx \* outgoingState\.width \* unit/);
+assert.match(incomingOffsetSection, /dy \* incomingState\.height \* unit/);
+assert.match(incomingOffsetSection, /dy \* outgoingState\.height \* unit/);
+
+const worldMapClickSection = sourceSection(
+  authorSource,
+  'if (elements.existingLevels) {',
+  'window.addEventListener("beforeunload"'
+);
+assert.match(worldMapClickSection, /switchToLevelId\(nextLevelId\)/);
+assert.doesNotMatch(worldMapClickSection, /loadLevel\(nextLevelId\)/);
 assert.equal(
   switchSection
     .slice(transitionStart, onComplete)

@@ -35,7 +35,7 @@ const demoDataSection = sourceSection("function demoPlayData", "function demoSce
 assert.match(demoDataSection, /levelId: "__toolbox_demo_"/);
 assert.doesNotMatch(demoDataSection, /levelId: "level_AxA"/);
 
-const demoRunSection = sourceSection("async function runDemoScene", "Local world-map thumbnails");
+const demoRunSection = sourceSection("async function runDemoScene", "Canonical world-map thumbnails");
 assert.match(demoRunSection, /!app\.isAnimating/);
 assert.match(demoRunSection, /if \(scene\.ambient\)/);
 assert.doesNotMatch(demoRunSection, /scene\.orbit/);
@@ -47,6 +47,15 @@ const thumbnailSection = sourceSection(
   "function scheduleCurrentLevelThumbRefresh"
 );
 assert.match(thumbnailSection, /levelId: "__author_thumbnail_"/);
+assert.match(thumbnailSection, /options\.persist === true/);
+assert.match(thumbnailSection, /await persistLevelThumb\(levelId, url\)/);
+
+const thumbnailUploadSection = sourceSection(
+  "async function persistLevelThumb",
+  "async function renderLevelThumbFromCells"
+);
+assert.match(thumbnailUploadSection, /authorData\.previewApiBaseUrl/);
+assert.match(thumbnailUploadSection, /method: "POST"/);
 
 const previewSection = sourceSection(
   "function createPalettePreviewPlayData",
