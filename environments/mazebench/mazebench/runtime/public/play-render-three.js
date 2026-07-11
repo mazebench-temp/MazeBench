@@ -12026,6 +12026,11 @@
         syncActorTransforms(now)
       ) {
         app.threeFastAnimationFrameCount = (app.threeFastAnimationFrameCount || 0) + 1;
+        // The fast movement path updates actor objects without rebuilding the
+        // scene. Camera yaw/tilt is independent state, so reapply its live
+        // transform here as well; otherwise it remains visually frozen until
+        // movement ends and then snaps to the accumulated target.
+        fitCameraToScene(cameraFlightFitOptions() || {});
         renderSceneToComposite(true);
         lastSceneSignature = "";
         lastSceneContentSignature = "";

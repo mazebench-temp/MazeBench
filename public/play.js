@@ -300,9 +300,9 @@
       skipRender: true,
       skipResize: true
     });
-    // renderOncePerFrame deduplicates camera and movement rAF callbacks that
-    // share this timestamp, keeping both animations live without double work.
-    (app.renderOncePerFrame || app.render)?.(now);
+    // Camera and movement use separate render channels so one animation can
+    // never suppress the other's update during the same display frame.
+    (app.renderOncePerFrame || app.render)?.(now, "camera");
     return true;
   }
 

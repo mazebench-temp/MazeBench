@@ -1127,16 +1127,23 @@
     }
 
     let renderedFrameTimestamp = -1;
+    const renderedFrameChannels = new Set();
 
-    function renderOncePerFrame(now) {
-      // All rAF callbacks scheduled for the same display frame receive the
-      // identical timestamp, so this dedupes the render pipeline to one run
-      // per frame no matter how many animation tickers are active.
-      if (now === renderedFrameTimestamp) {
+    function renderOncePerFrame(now = performance.now(), channel = "scene") {
+      // Movement and camera controls have independent animation clocks. They
+      // may both update during one display frame, so dedupe within each
+      // channel rather than allowing the first callback to suppress the
+      // other channel's freshly-updated state.
+      if (now !== renderedFrameTimestamp) {
+        renderedFrameTimestamp = now;
+        renderedFrameChannels.clear();
+      }
+
+      if (renderedFrameChannels.has(channel)) {
         return;
       }
 
-      renderedFrameTimestamp = now;
+      renderedFrameChannels.add(channel);
       app.render(now);
     }
 
