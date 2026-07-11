@@ -149,6 +149,7 @@
       // host-only route state (such as MazeJam save ids) and run a custom
       // camera flight before committing the destination room.
       hostOwnsWorldMapNavigation: playData?.hostOwnsWorldMapNavigation === true,
+      autoUndoPlayerFalls: playData?.autoUndoPlayerFalls === true,
       flyoverRadius: Math.max(1, Math.min(6, Number(playData?.flyoverRadius) || 3)),
       canvas,
       enableCameraControls:

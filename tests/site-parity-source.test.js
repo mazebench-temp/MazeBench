@@ -60,6 +60,7 @@ assert.match(appSource, /STATIC_CACHE_CONTROL = "no-cache, max-age=0, must-reval
 assert.match(playScript, /function renderPlayWorldMap\(\)/);
 assert.match(playScript, /async function switchPlayWorldLevel\(levelId\)/);
 assert.match(playCore, /hostOwnsWorldMapNavigation: playData\?\.hostOwnsWorldMapNavigation === true/);
+assert.match(playCore, /autoUndoPlayerFalls: playData\?\.autoUndoPlayerFalls === true/);
 assert.match(playCore, /new window\.CustomEvent\("mazebench:level-state-applied"/);
 assert.match(playScript, /if \(app\.hostOwnsWorldMapNavigation === true\) return;/);
 assert.match(playScript, /function playWorldMapTransitionSnapshot\(\)/);
@@ -74,6 +75,10 @@ assert.ok(
   "Play overlay state must initialize before controls synchronize it"
 );
 assert.match(playScript, /const cameraYawDurationMs = 400/);
+assert.match(playScript, /skipRender: true/);
+assert.match(playScript, /const moveRepeatIntervalMs = 100/);
+assert.match(playScript, /app\.cancelQueuedAction\?\.\(inputSource\)/);
+assert.match(playScript, /playData\.autoUndoPlayerFalls = true/);
 assert.match(playScript, /const cameraTiltAcceleration = Math\.PI \* 3\.4/);
 assert.match(playScript, /enableCameraControls: false/);
 assert.doesNotMatch(playScript, /new KeyboardEvent/);

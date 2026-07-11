@@ -11,6 +11,10 @@ const rendererSource = fs.readFileSync(
   path.join(__dirname, "..", "public", "play-render-three.js"),
   "utf8"
 );
+const gameplaySource = fs.readFileSync(
+  path.join(__dirname, "..", "public", "play-gameplay.js"),
+  "utf8"
+);
 
 assert.match(authorSource, /function openAuthorInfoPopover\(button\)/);
 assert.match(authorSource, /function closeAuthorInfoPopover\(options = \{\}\)/);
@@ -31,6 +35,10 @@ assert.match(authorSource, /toggleRect\.left - mapRect\.right - 24/);
 assert.match(authorSource, /new window\.ResizeObserver\(positionSolverDock\)/);
 assert.match(rendererSource, /function addSolverGhostPath\(now = performance\.now\(\)\)/);
 assert.match(rendererSource, /new THREE\.InstancedMesh/);
+assert.match(gameplaySource, /const LATE_INPUT_WINDOW_MS = 200/);
+assert.match(gameplaySource, /app\.queuedAction = action/);
+assert.match(gameplaySource, /app\.onPlayerPitAutoUndo\?\.\(\)/);
+assert.match(gameplaySource, /undoMove\(\{ blinkRevivedPlayer: true \}\)/);
 assert.match(rendererSource, /`solver-ghost:\$\{solverGhostVersion\}`/);
 
 function sourceSection(source, startMarker, endMarker) {

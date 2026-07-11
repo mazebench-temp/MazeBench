@@ -31,7 +31,28 @@
     const HOLE_FADE_START_PROGRESS = 0.42;
     const HOLE_PRE_FADE_SINK_DISTANCE = Math.max(HOLE_SINK_DISTANCE * 0.62, app.TILE_SIZE * 2);
     const HOLE_FADE_SINK_DISTANCE = Math.max(HOLE_SINK_DISTANCE * 0.72, app.TILE_SIZE * 2);
+    const LATE_INPUT_WINDOW_MS = 200;
     let nextUndoGroupId = 1;
+
+    function canQueueLateAction(now = performance.now()) {
+      const actionEndsAtMs = Number(app.inputActionEndsAtMs || 0);
+      const remainingMs = actionEndsAtMs - now;
+      return remainingMs >= 0 && remainingMs <= LATE_INPUT_WINDOW_MS;
+    }
+
+    function queueLateAction(action) {
+      if (!action || !canQueueLateAction()) return false;
+      // One slot only. A later input replaces the earlier buffered choice,
+      // preventing a burst of taps from becoming a long action backlog.
+      app.queuedAction = action;
+      return true;
+    }
+
+    function cancelQueuedAction(inputSource) {
+      if (!inputSource || app.queuedAction?.inputSource !== inputSource) return false;
+      app.queuedAction = null;
+      return true;
+    }
 
     function createAnimationElapsedTracker() {
       const replayFrameStepMs = Number(app.replayAnimationFrameStepMs);
@@ -674,16 +695,33 @@
 
     function finishAnimation(moves, options = {}) {
       const onFinish = typeof options.onFinish === "function" ? options.onFinish : null;
+      const mainPlayerFell =
+        app.autoUndoPlayerFalls === true &&
+        moves.some(
+          (move) =>
+            move?.visualOnly !== true &&
+            move?.fromRemoved !== true &&
+            move?.toRemoved === true &&
+            app.isMainPlayerActor?.(move.actor)
+        );
       movement.applyMoveFinalState(moves);
       app.gateRenderOverride = null;
       app.orangeWallRenderOverride = null;
       app.isAnimating = false;
+      app.inputActionEndsAtMs = 0;
       app.animationFrameId = null;
       syncFloatingFloorTicker();
       app.render();
 
       if (onFinish) {
         onFinish();
+        return;
+      }
+
+      if (mainPlayerFell) {
+        app.queuedAction = null;
+        app.onPlayerPitAutoUndo?.();
+        undoMove({ blinkRevivedPlayer: true });
         return;
       }
 
@@ -767,6 +805,22 @@
               ? punchSequenceTimings.totalDuration
               : punchPhaseOneDuration + punchPhaseTwoDuration + punchRetractDuration
             : Math.max(MOVE_DURATION_MS, ...moves.map(moveDurationFor));
+      const liftPhaseDuration = (activeMoves) =>
+        activeMoves.reduce((duration, move) => {
+          const fromElevation = liftPhaseStartElevationForMove(move);
+          const toElevation = move.toElevation ?? fromElevation;
+          const moveLiftDuration =
+            toElevation > fromElevation
+              ? PLAYER_LIFT_RISE_DURATION_MS
+              : PLAYER_LIFT_FALL_DURATION_MS;
+          return Math.max(duration, moveLiftDuration);
+        }, 0);
+      app.inputActionEndsAtMs =
+        performance.now() +
+        moveDuration +
+        liftPhaseDuration(preTerrainLiftStateMoves) +
+        liftPhaseDuration(postTerrainLiftStateMoves) +
+        (holeStateMoves.length > 0 ? HOLE_FALL_DURATION_MS : 0);
       const useIceSlideTiming = typeof durationMs !== "number";
       const completedLiftMoves = new Set();
       const logicalMoveByActor = new Map();
@@ -3001,6 +3055,7 @@
         timeline
       };
       app.isAnimating = true;
+      app.inputActionEndsAtMs = performance.now() + durationMs;
       moveHistory.push({
         levelSnapshot: plan.startLevelState,
         levelEntrySnapshot: plan.startEntrySnapshot,
@@ -3010,6 +3065,7 @@
       function finish() {
         app.worldActionAnimation = null;
         app.isAnimating = false;
+        app.inputActionEndsAtMs = 0;
         app.animationFrameId = null;
         applyLevelState(plan.finalLevelState, {
           immediateCamera: true,
@@ -3017,6 +3073,12 @@
           updateUrl: true
         });
         finishMoveUndoGroup();
+        if (plan.terminalPlayerRemoved === true && app.autoUndoPlayerFalls === true) {
+          app.queuedAction = null;
+          app.onPlayerPitAutoUndo?.();
+          undoMove({ blinkRevivedPlayer: true });
+          return;
+        }
         runQueuedAction();
       }
 
@@ -3217,7 +3279,7 @@
         app.isAnimating ||
         (app.isTransitioningLevel && !allowDuringTransition)
       ) {
-        app.queuedAction = { type: "move", dx, dy };
+        queueLateAction({ type: "move", dx, dy, inputSource: options.inputSource || "" });
         return;
       }
 
@@ -3375,9 +3437,9 @@
       });
     }
 
-    function undoMove() {
+    function undoMove(options = {}) {
       if (app.isAnimating || app.isTransitioningLevel) {
-        app.queuedAction = { type: "undo" };
+        queueLateAction({ type: "undo", inputSource: options.inputSource || "" });
         return;
       }
 
@@ -3435,6 +3497,14 @@
           return liftFromElevation !== (move.toElevation ?? liftFromElevation);
         }
       );
+      const finishUndo = options.blinkRevivedPlayer === true
+        ? () => {
+            const players = state.actors.filter(
+              (actor) => app.isMainPlayerActor?.(actor) && !actor.removed
+            );
+            app.blinkRevivedPlayer?.(players);
+          }
+        : null;
 
       if (moves.length > 0) {
         if (hasLiftReversal) {
@@ -3446,7 +3516,8 @@
               restoreTerrainState(previousState.terrain);
               app.gateRenderOverride = null;
               app.orangeWallRenderOverride = null;
-            }
+            },
+            onFinish: finishUndo
           });
           return;
         }
@@ -3454,7 +3525,7 @@
         restoreTerrainState(previousState.terrain);
         app.gateRenderOverride = raisedPlayerGates;
         app.orangeWallRenderOverride = raisedOrangeWalls;
-        animateMoves(moves);
+        animateMoves(moves, null, { onFinish: finishUndo });
         return;
       }
 
@@ -3467,7 +3538,7 @@
 
     function resetPositions() {
       if (app.isAnimating || app.isTransitioningLevel) {
-        app.queuedAction = { type: "reset" };
+        queueLateAction({ type: "reset" });
         return;
       }
 
@@ -3496,12 +3567,12 @@
       }
 
       if (action.type === "move") {
-        movePlayers(action.dx, action.dy);
+        movePlayers(action.dx, action.dy, { inputSource: action.inputSource || "" });
         return;
       }
 
       if (action.type === "undo") {
-        undoMove();
+        undoMove({ inputSource: action.inputSource || "" });
         return;
       }
 
@@ -3543,7 +3614,7 @@
           typeof app.mapCameraRelativeDirection === "function"
             ? app.mapCameraRelativeDirection(rawDx, rawDy)
             : [rawDx, rawDy];
-        movePlayers(dx, dy);
+        movePlayers(dx, dy, { inputSource: `key:${event.code}` });
         return;
       }
 
@@ -3557,6 +3628,10 @@
         event.preventDefault();
         resetPositions();
       }
+    }
+
+    function handleKeyup(event) {
+      cancelQueuedAction(`key:${event.code}`);
     }
 
     function preventScroll(event) {
@@ -3574,7 +3649,11 @@
       runQueuedAction,
       finishMoveUndoGroup,
       runAction,
+      canQueueLateAction,
+      queueLateAction,
+      cancelQueuedAction,
       handleKeydown,
+      handleKeyup,
       preventScroll
     });
 

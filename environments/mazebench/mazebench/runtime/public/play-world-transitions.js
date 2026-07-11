@@ -1182,7 +1182,8 @@
       edgeTransitionForPlayerMove,
       prepareAdjacentLevelTransfer,
       warmAdjacentLevelTransition,
-      transitionToAdjacentLevel
+      transitionToAdjacentLevel,
+      blinkRevivedPlayer
     });
   };
 })();

@@ -199,6 +199,7 @@
         const onComplete = app.levelTransition?.onComplete;
         app.levelTransition = null;
         app.isTransitioningLevel = false;
+        app.inputActionEndsAtMs = 0;
 
         if (onComplete && onComplete() === false) {
           return;

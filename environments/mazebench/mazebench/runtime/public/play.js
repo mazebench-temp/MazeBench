@@ -75,6 +75,7 @@
   // that same layout path so the HUD and d-pads frame the room instead of
   // shrinking the game into the legacy square canvas.
   playData.hostFullBleedView = true;
+  playData.autoUndoPlayerFalls = true;
   const app = modules.createPlayCore({
     playData,
     canvas,
@@ -185,6 +186,7 @@
     if (inputBound) return;
     inputBound = true;
     window.addEventListener("keydown", app.handleKeydown);
+    window.addEventListener("keyup", app.handleKeyup);
     window.addEventListener("wheel", app.preventScroll, { passive: false });
   }
 
@@ -222,7 +224,7 @@
     syncPlayOverlayInputLock();
   }
 
-  function runMoveControl(direction) {
+  function runMoveControl(direction, inputSource = "") {
     const vectors = {
       up: [0, -1],
       down: [0, 1],
@@ -234,7 +236,7 @@
     const mapped = typeof app.mapCameraRelativeDirection === "function"
       ? app.mapCameraRelativeDirection(raw[0], raw[1])
       : raw;
-    app.movePlayers(mapped[0], mapped[1]);
+    app.movePlayers(mapped[0], mapped[1], { inputSource });
   }
 
   let playCameraYaw = 0;
@@ -291,7 +293,17 @@
   function applyPlayCameraView() {
     const renderer = app.threeRenderer;
     if (!renderer || typeof renderer.setDebugCameraView !== "function") return false;
-    renderer.setDebugCameraView({ yaw: playCameraYaw, tilt: playCameraTilt });
+    renderer.setDebugCameraView({
+      yaw: playCameraYaw,
+      tilt: playCameraTilt,
+      skipRender: true
+    });
+    // Movement and room-transition loops already render once per frame. Let
+    // them consume the new camera angle so simultaneous input never causes a
+    // second competing render; camera-only input still renders immediately.
+    if (!app.isAnimating && !app.isTransitioningLevel && !app.levelTransition) {
+      (app.renderOncePerFrame || app.render)?.(performance.now());
+    }
     return true;
   }
 
@@ -719,6 +731,12 @@
     const worldMapOverlay = document.getElementById("world-map-overlay");
     let cameraPointerId = null;
     let cameraPointerButton = null;
+    let movePointerId = null;
+    let movePointerButton = null;
+    let moveRepeatFrame = 0;
+    let moveRepeatNextAtMs = 0;
+    const moveRepeatDelayMs = 300;
+    const moveRepeatIntervalMs = 100;
     if (!controls) return;
 
     controls.addEventListener("click", (event) => {
@@ -726,7 +744,7 @@
       if (!button) return;
       event.preventDefault();
       if (button.dataset.move) {
-        runMoveControl(button.dataset.move);
+        if (event.detail === 0) runMoveControl(button.dataset.move, "keyboard-button");
       } else if (button.dataset.camera) {
         if (event.detail === 0) {
           runCameraControl(button.dataset.camera);
@@ -747,8 +765,22 @@
     });
 
     controls.addEventListener("pointerdown", (event) => {
+      const moveButton = event.target.closest("button[data-move]");
+      if (moveButton) {
+        if (movePointerId !== null || cameraInputLocked()) return;
+        event.preventDefault();
+        movePointerId = event.pointerId;
+        movePointerButton = moveButton;
+        moveButton.classList.add("is-active");
+        controls.setPointerCapture?.(event.pointerId);
+        runMoveControl(moveButton.dataset.move, `pointer:${event.pointerId}`);
+        moveRepeatNextAtMs = performance.now() + moveRepeatDelayMs;
+        scheduleMoveRepeatFrame();
+        return;
+      }
+
       const button = event.target.closest("button[data-camera]");
-      if (!button || cameraInputLocked()) return;
+      if (!button || cameraInputLocked() || cameraPointerId !== null) return;
       event.preventDefault();
       cameraPointerId = event.pointerId;
       cameraPointerButton = button;
@@ -756,6 +788,37 @@
       controls.setPointerCapture?.(event.pointerId);
       runCameraControl(button.dataset.camera);
     });
+
+    function scheduleMoveRepeatFrame() {
+      if (moveRepeatFrame) return;
+      moveRepeatFrame = window.requestAnimationFrame(stepMoveRepeat);
+    }
+
+    function stepMoveRepeat(now) {
+      moveRepeatFrame = 0;
+      if (movePointerId === null || !movePointerButton) return;
+      if (now >= moveRepeatNextAtMs) {
+        runMoveControl(movePointerButton.dataset.move, `pointer:${movePointerId}`);
+        moveRepeatNextAtMs = now + moveRepeatIntervalMs;
+      }
+      scheduleMoveRepeatFrame();
+    }
+
+    function releaseMovePointer(event) {
+      if (movePointerId === null || (event && event.pointerId !== movePointerId)) return;
+      const inputSource = `pointer:${movePointerId}`;
+      if (moveRepeatFrame) window.cancelAnimationFrame(moveRepeatFrame);
+      moveRepeatFrame = 0;
+      app.cancelQueuedAction?.(inputSource);
+      movePointerButton?.classList.remove("is-active");
+      if (controls.hasPointerCapture?.(movePointerId)) {
+        controls.releasePointerCapture?.(movePointerId);
+      }
+      movePointerButton?.blur?.();
+      movePointerButton = null;
+      movePointerId = null;
+      moveRepeatNextAtMs = 0;
+    }
 
     function releaseCameraPointer(event) {
       if (cameraPointerId === null || (event && event.pointerId !== cameraPointerId)) return;
@@ -771,7 +834,16 @@
     }
 
     ["pointerup", "pointercancel", "pointerleave"].forEach((type) => {
-      controls.addEventListener(type, releaseCameraPointer);
+      controls.addEventListener(type, (event) => {
+        releaseMovePointer(event);
+        releaseCameraPointer(event);
+      });
+    });
+    ["pointerup", "pointercancel"].forEach((type) => {
+      window.addEventListener(type, (event) => {
+        releaseMovePointer(event);
+        releaseCameraPointer(event);
+      });
     });
 
     controlsOverlay?.addEventListener("click", (event) => {

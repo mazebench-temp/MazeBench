@@ -389,6 +389,7 @@
         transitionData: options.transitionData || null,
         onComplete: typeof options.onComplete === "function" ? options.onComplete : null
       };
+      app.inputActionEndsAtMs = app.levelTransition.startMs + app.levelTransition.durationMs;
       app.isTransitioningLevel = true;
       startLevelTransitionLoop();
 
