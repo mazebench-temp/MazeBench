@@ -70,18 +70,21 @@ assert.match(
   /edgeGeometry: descriptor\.isLoweredOrangeSurface\s*\? componentTopPlaneEdgeGeometry\(cells, descriptor, now\)/
 );
 assert.match(playRenderer, /function hasOrangeSurfaceAtLevel\(x, y, level, now\)/);
-assert.match(playRenderer, /topContacts\.keys\.has\(variableSolidSegmentKey\(entry\.from, entry\.to\)\)/);
+assert.match(playRenderer, /topContacts\.keys\.has\(segmentKey\)/);
 assert.match(playRenderer, /function orangePolycubeTopContacts\(voxels, now\)/);
 assert.match(
   playRenderer,
   /suppressOrangePolycubeTopContacts\(suppressedEdges, orangeTopContacts\)/
 );
 assert.match(playRenderer, /function loweredOrangeWrapsForWallVoxels\(voxels, now\)/);
+assert.match(playRenderer, /function orangeWallCoversElevationPlane\(x, y, elevation, now\)/);
 assert.match(
   playRenderer,
   /suppressWallTopEdgesWrappedByLoweredOrange\(suppressedEdges, loweredOrangeWraps\)/
 );
-assert.match(playRenderer, /const coversTop = loweredOrangeSurfaceAtElevation\(/);
+assert.match(playRenderer, /const coversTop = orangeWallCoversElevationPlane\(/);
+assert.match(playRenderer, /function variableSolidStepContactEdges\(boxes\)/);
+assert.match(playRenderer, /stepContacts\.keys\.has\(segmentKey\)/);
 assert.match(playRenderer, /:\s*isLoweredOrangeSurface\s*\?\s*topHeight/);
 assert.match(playRenderer, /const overlaysSupportingSurface =\s*descriptor\.isLoweredOrangeSurface/);
 assert.match(playCore, /liveSurfaceActorCodes = null;\s*liveSurfaceActorState = null;\s*invalidateTerrainFeatureIndex\(\)/);

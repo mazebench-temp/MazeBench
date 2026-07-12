@@ -3728,6 +3728,17 @@
       );
     }
 
+    function orangeWallCoversElevationPlane(x, y, elevation, now) {
+      const planeY = elevation * elevationUnit;
+
+      return terrainPieceDescriptorsAtGridOrNeighbor(x, y, now).some(
+        (descriptor) =>
+          descriptor.type === "orange_wall" &&
+          descriptor.bottomY <= planeY + 0.001 &&
+          descriptor.topY >= planeY - 0.001
+      );
+    }
+
     function loweredOrangeWrapsForWallVoxels(voxels, now) {
       const voxelKeys = new Set(voxels.map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z)));
       const wraps = [];
@@ -3749,7 +3760,7 @@
         const south = hasOrange(0, 1);
         const west = hasOrange(-1, 0);
         const corners = [];
-        const coversTop = loweredOrangeSurfaceAtElevation(
+        const coversTop = orangeWallCoversElevationPlane(
           voxel.x,
           voxel.y,
           voxel.z + 1,
@@ -4329,13 +4340,54 @@
       return { keys, signature: sortedSignature };
     }
 
+    function variableSolidStepContactEdges(boxes) {
+      const boxMap = new Map(boxes.map((box) => [`${box.x},${box.y}`, box]));
+      const keys = new Set();
+      const signature = [];
+
+      boxes.forEach((box) => {
+        [
+          { dx: 1, dy: 0, name: "e" },
+          { dx: 0, dy: 1, name: "s" }
+        ].forEach((side) => {
+          const neighbor = boxMap.get(`${box.x + side.dx},${box.y + side.dy}`);
+
+          if (
+            !neighbor ||
+            Math.abs(box.topY - neighbor.topY) > 0.001 ||
+            Math.abs(box.bottomY - neighbor.bottomY) <= 0.001
+          ) {
+            return;
+          }
+
+          const contactY = Math.round(Math.max(box.bottomY, neighbor.bottomY) * 1000) / 1000;
+          const x0 = box.x * unit + renderOffsetX();
+          const x1 = (box.x + 1) * unit + renderOffsetX();
+          const z0 = box.y * unit + renderOffsetZ();
+          const z1 = (box.y + 1) * unit + renderOffsetZ();
+          const edge = side.name === "e"
+            ? [[x1, contactY, z0], [x1, contactY, z1]]
+            : [[x0, contactY, z1], [x1, contactY, z1]];
+
+          keys.add(variableSolidSegmentKey(...edge));
+          signature.push(
+            `${box.x},${box.y}:${side.name}:${Math.round(contactY * 1000)}`
+          );
+        });
+      });
+
+      return { keys, signature: signature.sort().join("|") };
+    }
+
     function variableSolidEdgeGeometry(boxes, now) {
       const topContacts = variableSolidTopContactEdges(boxes, now);
+      const stepContacts = variableSolidStepContactEdges(boxes);
       const cacheKey = [
         "variable-solid-edges",
         Math.round(renderOffsetX() * 100),
         Math.round(renderOffsetZ() * 100),
         topContacts.signature,
+        stepContacts.signature,
         variableSolidBoxSignature(boxes)
       ].join(":");
 
@@ -4372,7 +4424,9 @@
           return;
         }
 
-        if (topContacts.keys.has(variableSolidSegmentKey(entry.from, entry.to))) {
+        const segmentKey = variableSolidSegmentKey(entry.from, entry.to);
+
+        if (topContacts.keys.has(segmentKey) || stepContacts.keys.has(segmentKey)) {
           return;
         }
 
