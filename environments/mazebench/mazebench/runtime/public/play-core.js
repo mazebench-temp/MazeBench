@@ -163,6 +163,7 @@
       edgeToggle,
       cameraModeToggle,
       resetProgressButton,
+      canonicalLevelPlayerStarts: new Map(),
       TILE_SIZE: 64,
       FUZZY_AMOUNT: 0.1,
       NOISE_FPS: 8,
@@ -399,6 +400,7 @@
           }
 
           const levelState = await response.json();
+          rememberCanonicalLevelPlayerStart(levelState);
 
           // A bulk priming (e.g. the world bundle) may have landed while this
           // request was in flight; keep the already-prepared state so room
@@ -829,6 +831,24 @@
       });
 
       return runtimeActor;
+    }
+
+    function rememberCanonicalLevelPlayerStart(levelState) {
+      const levelId = String(levelState?.levelId || "");
+      if (!levelId || app.canonicalLevelPlayerStarts.has(levelId)) return;
+      const player = (levelState?.actors || []).find((actor) => isMainPlayerActor(actor) && !actor.removed);
+      if (!player) return;
+      app.canonicalLevelPlayerStarts.set(levelId, Object.freeze({
+        elevation: Number(player.elevation || 0),
+        levelId,
+        x: Number(player.x),
+        y: Number(player.y)
+      }));
+    }
+
+    function canonicalLevelPlayerStart(levelId = app.currentLevelId) {
+      const start = app.canonicalLevelPlayerStarts.get(String(levelId || ""));
+      return start ? { ...start } : null;
     }
 
     function registerImageUrl(url) {
@@ -1564,8 +1584,17 @@
 
       if (updateUrl && app.currentLevelId) {
         const routePrefix = app.playRoutePrefix || "play";
-        const nextUrl = `/${encodeURIComponent(routePrefix)}/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(app.currentLevelId)}`;
-        window.history.replaceState({ levelId: app.currentLevelId }, "", nextUrl);
+        const nextPath = `/${encodeURIComponent(routePrefix)}/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(app.currentLevelId)}`;
+        // Hosts attach the active run identity in the query string (for
+        // example ?save=... or ?world=...). A room transition changes only
+        // the level path; dropping that identity detaches the live game from
+        // its save before the host can checkpoint the transition.
+        const nextUrl = `${nextPath}${window.location.search || ""}${window.location.hash || ""}`;
+        window.history.replaceState(
+          { ...(window.history.state || {}), levelId: app.currentLevelId },
+          "",
+          nextUrl
+        );
       }
 
       if (!deferRender) {
@@ -1591,6 +1620,7 @@
       }
 
       const levelState = await response.json();
+      rememberCanonicalLevelPlayerStart(levelState);
       rememberHorizontalNeighborLevelState(levelState);
       await preloadImagesForLevelState(levelState);
       return levelState;
@@ -3205,6 +3235,8 @@
       queueHorizontalNeighborLevelState,
       syncHorizontalNeighborLevelStates,
       createRuntimeActor,
+      rememberCanonicalLevelPlayerStart,
+      canonicalLevelPlayerStart,
       gemCollectionId,
       applyCollectedGemVisual,
       hideCollectedGemVisual,
@@ -3314,6 +3346,7 @@
       preloadImages
     });
 
+    rememberCanonicalLevelPlayerStart(playData);
     initializeActorElevations();
     syncDocumentLevelState();
     rememberHorizontalNeighborLevelState(playData);

@@ -103,6 +103,8 @@ assert.match(playCore, /hostOwnsWorldMapNavigation: playData\?\.hostOwnsWorldMap
 assert.match(playCore, /if \(!app\.isEditorRenderApp && areOrangeButtonsPressed\(actors\)\)/);
 assert.match(playCore, /autoUndoPlayerFalls: playData\?\.autoUndoPlayerFalls === true/);
 assert.match(playCore, /new window\.CustomEvent\("mazebench:level-state-applied"/);
+assert.match(playCore, /`\$\{nextPath\}\$\{window\.location\.search \|\| ""\}\$\{window\.location\.hash \|\| ""\}`/);
+assert.match(playCore, /\{ \.\.\.\(window\.history\.state \|\| \{\}\), levelId: app\.currentLevelId \}/);
 assert.match(playScript, /if \(app\.hostOwnsWorldMapNavigation === true\) return;/);
 assert.match(playScript, /function playWorldMapTransitionSnapshot\(\)/);
 assert.match(playScript, /const roomDistance = Math\.hypot\(dx, dy\)/);
