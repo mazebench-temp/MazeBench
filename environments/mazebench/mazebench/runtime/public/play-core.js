@@ -339,6 +339,7 @@
     }
 
     function rememberHorizontalNeighborLevelState(levelState) {
+      rememberCanonicalLevelPlayerStart(levelState);
       const storedLevelState = prepareLevelRenderState(levelState);
 
       if (!storedLevelState) {
