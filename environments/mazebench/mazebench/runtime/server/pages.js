@@ -246,6 +246,7 @@ function createPageRenderer({
           existingLevels: authorData.existingLevels,
           game: authorData.game,
           palette: authorData.palette,
+          toolboxCatalog: authorData.toolboxCatalog,
           playApiBaseUrl: `/api/play/${encodeURIComponent(game.id)}`,
           worldColumns: authorData.worldColumns,
           worldRows: authorData.worldRows

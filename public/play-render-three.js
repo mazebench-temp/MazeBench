@@ -3719,6 +3719,94 @@
       return suppressedEdges;
     }
 
+    function loweredOrangeSurfaceAtElevation(x, y, elevation, now) {
+      return terrainPieceDescriptorsAtGridOrNeighbor(x, y, now).some(
+        (descriptor) =>
+          descriptor.type === "orange_wall" &&
+          descriptor.isLoweredOrangeSurface === true &&
+          nearlyEqual(descriptor.elevation ?? 0, elevation)
+      );
+    }
+
+    function loweredOrangeWrapsForWallVoxels(voxels, now) {
+      const voxelKeys = new Set(voxels.map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z)));
+      const wraps = [];
+
+      voxels.forEach((voxel) => {
+        if (voxelKeys.has(polycubeVoxelKey(voxel.x, voxel.y, voxel.z + 1))) {
+          return;
+        }
+
+        const hasOrange = (dx, dy) =>
+          loweredOrangeSurfaceAtElevation(
+            voxel.x + dx,
+            voxel.y + dy,
+            voxel.z,
+            now
+          );
+        const north = hasOrange(0, -1);
+        const east = hasOrange(1, 0);
+        const south = hasOrange(0, 1);
+        const west = hasOrange(-1, 0);
+        const corners = [];
+        const coversTop = loweredOrangeSurfaceAtElevation(
+          voxel.x,
+          voxel.y,
+          voxel.z + 1,
+          now
+        );
+
+        if (north && east && hasOrange(1, -1)) corners.push("ne");
+        if (north && west && hasOrange(-1, -1)) corners.push("nw");
+        if (south && east && hasOrange(1, 1)) corners.push("se");
+        if (south && west && hasOrange(-1, 1)) corners.push("sw");
+
+        if (coversTop || corners.length > 0) {
+          wraps.push({ corners, coversTop, voxel });
+        }
+      });
+
+      return wraps;
+    }
+
+    function loweredOrangeWrapSignature(wraps) {
+      return wraps
+        .map(({ corners, coversTop, voxel }) =>
+          `${voxel.x},${voxel.y},${voxel.z}:${coversTop ? "cover;" : ""}${corners.join(",")}`
+        )
+        .sort()
+        .join("|");
+    }
+
+    function suppressWallTopEdgesWrappedByLoweredOrange(suppressedEdges, wraps) {
+      const point = (x, y, z) => [
+        x * unit + renderOffsetX(),
+        z * elevationUnit + actorVisualLift,
+        y * unit + renderOffsetZ()
+      ];
+
+      wraps.forEach(({ corners, coversTop, voxel }) => {
+        const top = voxel.z + 1;
+        const north = [point(voxel.x, voxel.y, top), point(voxel.x + 1, voxel.y, top)];
+        const east = [point(voxel.x + 1, voxel.y, top), point(voxel.x + 1, voxel.y + 1, top)];
+        const south = [point(voxel.x + 1, voxel.y + 1, top), point(voxel.x, voxel.y + 1, top)];
+        const west = [point(voxel.x, voxel.y + 1, top), point(voxel.x, voxel.y, top)];
+
+        if (coversTop) {
+          [north, east, south, west].forEach((edge) =>
+            addPolycubeSuppressedEdge(suppressedEdges, ...edge)
+          );
+        }
+
+        corners.forEach((corner) => {
+          if (corner.includes("n")) addPolycubeSuppressedEdge(suppressedEdges, ...north);
+          if (corner.includes("e")) addPolycubeSuppressedEdge(suppressedEdges, ...east);
+          if (corner.includes("s")) addPolycubeSuppressedEdge(suppressedEdges, ...south);
+          if (corner.includes("w")) addPolycubeSuppressedEdge(suppressedEdges, ...west);
+        });
+      });
+    }
+
     function polycubeComponents(voxels) {
       const voxelMap = new Map();
       const visited = new Set();
@@ -3913,6 +4001,51 @@
       return has;
     }
 
+    function orangePolycubeTopContacts(voxels, now) {
+      const voxelKeys = new Set(voxels.map((voxel) => polycubeVoxelKey(voxel.x, voxel.y, voxel.z)));
+      const edges = [];
+      const signature = [];
+
+      voxels.forEach((voxel) => {
+        if (voxelKeys.has(polycubeVoxelKey(voxel.x, voxel.y, voxel.z + 1))) {
+          return;
+        }
+
+        const level = voxel.z + 1;
+        const x0 = voxel.x * unit + renderOffsetX();
+        const x1 = (voxel.x + 1) * unit + renderOffsetX();
+        const z0 = voxel.y * unit + renderOffsetZ();
+        const z1 = (voxel.y + 1) * unit + renderOffsetZ();
+        const topY = level * elevationUnit + actorVisualLift;
+        const sides = [
+          { dx: 0, dy: -1, name: "n", from: [x0, topY, z0], to: [x1, topY, z0] },
+          { dx: 1, dy: 0, name: "e", from: [x1, topY, z0], to: [x1, topY, z1] },
+          { dx: 0, dy: 1, name: "s", from: [x1, topY, z1], to: [x0, topY, z1] },
+          { dx: -1, dy: 0, name: "w", from: [x0, topY, z1], to: [x0, topY, z0] }
+        ];
+
+        sides.forEach((side) => {
+          if (
+            voxelKeys.has(polycubeVoxelKey(voxel.x + side.dx, voxel.y + side.dy, voxel.z)) ||
+            !hasOrangeSurfaceAtLevel(voxel.x + side.dx, voxel.y + side.dy, level, now)
+          ) {
+            return;
+          }
+
+          edges.push([side.from, side.to]);
+          signature.push(`${voxel.x},${voxel.y},${level}:${side.name}`);
+        });
+      });
+
+      return { edges, signature: signature.sort().join("|") };
+    }
+
+    function suppressOrangePolycubeTopContacts(suppressedEdges, contacts) {
+      contacts.edges.forEach(([from, to]) => {
+        addPolycubeSuppressedEdge(suppressedEdges, from, to);
+      });
+    }
+
     function polycubeEdgeGeometry(voxels, options = {}) {
       const wantsIceSideContacts = options?.suppressIceSlopeContacts === true;
       const wantsIceTopContacts = options?.suppressIceSlopeTopContacts === true;
@@ -3933,6 +4066,12 @@
             includeTopContacts: suppressIceSlopeTopContacts
           })
         : "";
+      const loweredOrangeWraps = options?.descriptor?.type === "wall"
+        ? loweredOrangeWrapsForWallVoxels(voxels, options.now)
+        : [];
+      const orangeTopContacts = options?.descriptor?.type === "orange_wall"
+        ? orangePolycubeTopContacts(voxels, options.now)
+        : { edges: [], signature: "" };
       const cacheKey = [
         "polycube-edges",
         Math.round(renderOffsetX() * 100),
@@ -3944,6 +4083,8 @@
           ? `shared:${boundaryNeighborStatesToken(activeRenderContext?.state?.levelId || app.currentLevelId)}`
           : "normal",
         iceSlopeContactSignature,
+        loweredOrangeWrapSignature(loweredOrangeWraps),
+        orangeTopContacts.signature,
         options?.descriptor?.key || "",
         activeRenderContext?.state?.levelId || "",
         polycubeVoxelSignature(voxels)
@@ -3966,6 +4107,9 @@
           includeTopContacts: suppressIceSlopeTopContacts
         });
       }
+
+      suppressWallTopEdgesWrappedByLoweredOrange(suppressedEdges, loweredOrangeWraps);
+      suppressOrangePolycubeTopContacts(suppressedEdges, orangeTopContacts);
 
       collectPolycubeFaceCells(voxels).forEach((faceGroup) => {
         addPolycubeFaceBoundaryEdges(positions, seenSegments, faceGroup, suppressedEdges, {
@@ -4142,11 +4286,56 @@
       return geometry;
     }
 
-    function variableSolidEdgeGeometry(boxes) {
+    function orangeSurfaceLevel(descriptor) {
+      return Math.round((Number(descriptor?.topY) || 0) / elevationUnit);
+    }
+
+    function hasOrangeSurfaceAtLevel(x, y, level, now) {
+      return terrainPieceDescriptorsAtGridOrNeighbor(x, y, now).some(
+        (descriptor) =>
+          descriptor.type === "orange_wall" &&
+          orangeSurfaceLevel(descriptor) === level
+      );
+    }
+
+    function variableSolidTopContactEdges(boxes, now) {
+      const keys = new Set();
+      const signature = [];
+
+      boxes.forEach((box) => {
+        const level = Math.round(box.topY / elevationUnit);
+        const x0 = box.x * unit + renderOffsetX();
+        const x1 = (box.x + 1) * unit + renderOffsetX();
+        const z0 = box.y * unit + renderOffsetZ();
+        const z1 = (box.y + 1) * unit + renderOffsetZ();
+        const sides = [
+          { dx: 0, dy: -1, edge: [[x0, box.topY, z0], [x1, box.topY, z0]], name: "n" },
+          { dx: 1, dy: 0, edge: [[x1, box.topY, z0], [x1, box.topY, z1]], name: "e" },
+          { dx: 0, dy: 1, edge: [[x1, box.topY, z1], [x0, box.topY, z1]], name: "s" },
+          { dx: -1, dy: 0, edge: [[x0, box.topY, z1], [x0, box.topY, z0]], name: "w" }
+        ];
+
+        sides.forEach((side) => {
+          if (!hasOrangeSurfaceAtLevel(box.x + side.dx, box.y + side.dy, level, now)) {
+            return;
+          }
+
+          keys.add(variableSolidSegmentKey(...side.edge));
+          signature.push(`${box.x},${box.y},${level}:${side.name}`);
+        });
+      });
+
+      const sortedSignature = signature.sort().join("|");
+      return { keys, signature: sortedSignature };
+    }
+
+    function variableSolidEdgeGeometry(boxes, now) {
+      const topContacts = variableSolidTopContactEdges(boxes, now);
       const cacheKey = [
         "variable-solid-edges",
         Math.round(renderOffsetX() * 100),
         Math.round(renderOffsetZ() * 100),
+        topContacts.signature,
         variableSolidBoxSignature(boxes)
       ].join(":");
 
@@ -4180,6 +4369,10 @@
 
       edgeMap.forEach((entry) => {
         if (entry.normals.size === 1 && entry.total > 1) {
+          return;
+        }
+
+        if (topContacts.keys.has(variableSolidSegmentKey(entry.from, entry.to))) {
           return;
         }
 
@@ -4301,6 +4494,69 @@
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
       cacheGeometry(key, geometry);
+      return geometry;
+    }
+
+    function componentTopPlaneEdgeGeometry(cells, descriptor, now) {
+      const level = orangeSurfaceLevel(descriptor);
+      const cellSet = new Set(cells.map((cell) => `${cell.gridX},${cell.gridY}`));
+      const key = [
+        "component-top-plane-edges",
+        level,
+        cells
+          .map((cell) => `${cell.gridX},${cell.gridY}`)
+          .sort()
+          .join("|"),
+        cells
+          .flatMap((cell) => [
+            ["n", 0, -1],
+            ["e", 1, 0],
+            ["s", 0, 1],
+            ["w", -1, 0]
+          ].flatMap(([name, dx, dy]) =>
+            hasOrangeSurfaceAtLevel(cell.gridX + dx, cell.gridY + dy, level, now)
+              ? [`${cell.gridX},${cell.gridY}:${name}`]
+              : []
+          ))
+          .sort()
+          .join("|")
+      ].join(":");
+      if (edgeGeometryCache.has(key)) {
+        return edgeGeometryCache.get(key);
+      }
+
+      const positions = [];
+
+      cells.forEach((cell) => {
+        const sides = [
+          { dx: 0, dy: -1, from: [cell.left, 0, cell.top], to: [cell.right, 0, cell.top] },
+          { dx: 1, dy: 0, from: [cell.right, 0, cell.top], to: [cell.right, 0, cell.bottom] },
+          { dx: 0, dy: 1, from: [cell.right, 0, cell.bottom], to: [cell.left, 0, cell.bottom] },
+          { dx: -1, dy: 0, from: [cell.left, 0, cell.bottom], to: [cell.left, 0, cell.top] }
+        ];
+
+        sides.forEach((side) => {
+          const neighborKey = `${cell.gridX + side.dx},${cell.gridY + side.dy}`;
+
+          if (
+            cellSet.has(neighborKey) ||
+            hasOrangeSurfaceAtLevel(
+              cell.gridX + side.dx,
+              cell.gridY + side.dy,
+              level,
+              now
+            )
+          ) {
+            return;
+          }
+
+          positions.push(...side.from, ...side.to);
+        });
+      });
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      cacheEdgeGeometry(key, geometry);
       return geometry;
     }
 
@@ -5769,8 +6025,10 @@
       const isSunkenFloor = !isRaisedPiece && terrainHeight === 0 && isSunkenFloorType(type);
       const topY = isLoweredPlayerLift
         ? topHeight + playerLiftPlateOffset()
-        : isLoweredOrangeSurface || isSurfacePlayerGate
+        : isSurfacePlayerGate
           ? topHeight + playerLiftPlateOffset()
+          : isLoweredOrangeSurface
+            ? topHeight
           : isRaisedPiece || isStackedFloorCube
             ? topHeight
             : topHeight - (isSunkenFloor ? floorDrop : 0);
@@ -6024,7 +6282,7 @@
       );
     }
 
-    function addAnimatedOrangeSolidRegion(entries) {
+    function addAnimatedOrangeSolidRegion(entries, now) {
       if (entries.length === 0) {
         return;
       }
@@ -6074,7 +6332,7 @@
         terrainColor("orange_wall"),
         { x: 0, y: 0, z: 0 },
         {
-          edgeGeometry: variableSolidEdgeGeometry(boxes),
+          edgeGeometry: variableSolidEdgeGeometry(boxes, now),
           edgeThreshold: 18,
           opacity: visibility,
           castShadow: renderContextCastsShadows(),
@@ -6487,19 +6745,25 @@
       }
 
       if (descriptor.isLoweredPlayerLift || descriptor.isLoweredOrangeSurface || descriptor.isSurfacePlayerGate) {
+        const overlaysSupportingSurface =
+          descriptor.isLoweredOrangeSurface || descriptor.isSurfacePlayerGate;
         addOutlinedMesh(
           componentTopPlaneGeometry(cells),
           terrainColor(descriptor.type),
           { x: renderOffsetX(), y: descriptor.topY, z: renderOffsetZ() },
           {
+            edgeGeometry: descriptor.isLoweredOrangeSurface
+              ? componentTopPlaneEdgeGeometry(cells, descriptor, now)
+              : null,
             edgeThreshold: 18,
             opacity: visibility,
-            polygonOffset: descriptor.isSurfacePlayerGate,
+            polygonOffset: overlaysSupportingSurface,
             polygonOffsetFactor: -6,
             polygonOffsetUnits: -6,
-            renderOrder: descriptor.isSurfacePlayerGate ? 20 : 0,
+            renderOrder: overlaysSupportingSurface ? 20 : 0,
             castShadow: false,
-            receiveShadow: !descriptor.isLoweredPlayerLift,
+            receiveShadow:
+              !descriptor.isLoweredPlayerLift && !descriptor.isLoweredOrangeSurface,
             editorPick: {
               kind: "terrain",
               cells: cells.map((cell) => ({
@@ -6658,7 +6922,7 @@
       }
 
       addTerrainPolycubeRegions(polycubePieceEntries, now);
-      addAnimatedOrangeSolidRegion(animatedOrangeEntries);
+      addAnimatedOrangeSolidRegion(animatedOrangeEntries, now);
 
       const visitedPieces = new Set();
       const pieceVisitKey = (x, y, key) => `${x},${y}:${key}`;

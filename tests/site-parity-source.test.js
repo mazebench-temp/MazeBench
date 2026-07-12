@@ -65,6 +65,26 @@ assert.doesNotMatch(playScript, /function playWorldFitOptions/);
 assert.match(playRenderer, /app\.worldViewVistaMode !== true/);
 assert.match(playRenderer, /app\.homeVectorTheme !== true/);
 assert.match(playRenderer, /const zoomDistanceFactor = Math\.max\(/);
+assert.match(
+  playRenderer,
+  /edgeGeometry: descriptor\.isLoweredOrangeSurface\s*\? componentTopPlaneEdgeGeometry\(cells, descriptor, now\)/
+);
+assert.match(playRenderer, /function hasOrangeSurfaceAtLevel\(x, y, level, now\)/);
+assert.match(playRenderer, /topContacts\.keys\.has\(variableSolidSegmentKey\(entry\.from, entry\.to\)\)/);
+assert.match(playRenderer, /function orangePolycubeTopContacts\(voxels, now\)/);
+assert.match(
+  playRenderer,
+  /suppressOrangePolycubeTopContacts\(suppressedEdges, orangeTopContacts\)/
+);
+assert.match(playRenderer, /function loweredOrangeWrapsForWallVoxels\(voxels, now\)/);
+assert.match(
+  playRenderer,
+  /suppressWallTopEdgesWrappedByLoweredOrange\(suppressedEdges, loweredOrangeWraps\)/
+);
+assert.match(playRenderer, /const coversTop = loweredOrangeSurfaceAtElevation\(/);
+assert.match(playRenderer, /:\s*isLoweredOrangeSurface\s*\?\s*topHeight/);
+assert.match(playRenderer, /const overlaysSupportingSurface =\s*descriptor\.isLoweredOrangeSurface/);
+assert.match(playCore, /liveSurfaceActorCodes = null;\s*liveSurfaceActorState = null;\s*invalidateTerrainFeatureIndex\(\)/);
 assert.match(playRenderer, /4 \*\s*zoomDistanceFactor/);
 assert.match(playScript, /app\.homeVectorTheme = true/);
 assert.match(playScript, /app\.vectorGlowAmount = 1/);
@@ -77,6 +97,7 @@ assert.match(appSource, /STATIC_CACHE_CONTROL = "no-cache, max-age=0, must-reval
 assert.match(playScript, /function renderPlayWorldMap\(\)/);
 assert.match(playScript, /async function switchPlayWorldLevel\(levelId\)/);
 assert.match(playCore, /hostOwnsWorldMapNavigation: playData\?\.hostOwnsWorldMapNavigation === true/);
+assert.match(playCore, /if \(!app\.isEditorRenderApp && areOrangeButtonsPressed\(actors\)\)/);
 assert.match(playCore, /autoUndoPlayerFalls: playData\?\.autoUndoPlayerFalls === true/);
 assert.match(playCore, /new window\.CustomEvent\("mazebench:level-state-applied"/);
 assert.match(playScript, /if \(app\.hostOwnsWorldMapNavigation === true\) return;/);

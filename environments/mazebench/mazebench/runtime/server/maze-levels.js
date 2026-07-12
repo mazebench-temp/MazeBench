@@ -17,6 +17,13 @@ function createMazeLevelService({
   titleCase,
   worldMaps
 }) {
+  const toolboxCatalog =
+    loadJson(path.join(gamesDir, "maze", "toolbox.json"), { format: 1, tools: {} }) || {};
+  const toolboxTools =
+    toolboxCatalog.tools && typeof toolboxCatalog.tools === "object"
+      ? toolboxCatalog.tools
+      : {};
+
   function isMazeFamilyGame(game) {
     return Boolean(game?.worldMap) || worldMaps.isMazeFamilyGameId(game?.id);
   }
@@ -664,10 +671,18 @@ function createMazeLevelService({
       const definition = definitions.byName.get(name);
 
       definition.tokenEntries.forEach((entry) => {
+        const toolboxTool = toolboxTools[entry.token] || {};
         palette.push({
+          demo:
+            toolboxTool.demo && typeof toolboxTool.demo === "object"
+              ? toolboxTool.demo
+              : null,
+          description:
+            typeof toolboxTool.description === "string" ? toolboxTool.description : null,
           imageUrl: definition?.imageUrl || null,
           modelUrl: definition?.modelUrl || null,
           label:
+            (typeof toolboxTool.name === "string" && toolboxTool.name) ||
             entry.label ||
             (definition.tokenEntries.length > 1
               ? `${definition?.label || titleCase(name)} ${entry.token}`
@@ -734,6 +749,7 @@ function createMazeLevelService({
       maxBoardHeight: config.gridHeight,
       maxBoardWidth: config.gridWidth,
       palette: buildAuthorPalette(game),
+      toolboxCatalog,
       separator:
         typeof game.parser?.rules?.separator === "string" && game.parser.rules.separator.length > 0
           ? game.parser.rules.separator

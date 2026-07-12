@@ -1526,6 +1526,11 @@
       app.state.actors = (levelState.actors || []).map((actor, index) =>
         createRuntimeActor(actor, index, levelState.levelId || app.currentLevelId)
       );
+      // The editor reuses one runtime app while painting. Terrain can change
+      // without actor coordinates changing, so invalidate the live surface
+      // cache or newly painted gates/walls inherit the previous board state.
+      liveSurfaceActorCodes = null;
+      liveSurfaceActorState = null;
       invalidateTerrainFeatureIndex();
       app.gateAnimations.clear();
       app.gateAnimationsInitialized = false;
@@ -2080,7 +2085,7 @@
     function computeRaisedOrangeWallSet(actors = app.state.actors) {
       const raised = new Set();
 
-      if (areOrangeButtonsPressed(actors)) {
+      if (!app.isEditorRenderApp && areOrangeButtonsPressed(actors)) {
         return raised;
       }
 

@@ -81,6 +81,27 @@ function buildPlayerGateTerrain(width, height, gateX, gateY, elevation = 0) {
   return terrain;
 }
 
+function buildOrangeWallTerrain() {
+  const terrain = buildTerrain(2, 1);
+  terrain[0][0] = {
+    type: "orange_wall",
+    label: "Orange Wall",
+    imageUrl: null,
+    underlay: null,
+    raised: false,
+    layers: [{ type: "orange_wall", elevation: 0 }]
+  };
+  terrain[0][1] = {
+    type: "orange_button",
+    label: "Orange Button",
+    imageUrl: null,
+    underlay: null,
+    raised: false,
+    layers: [{ type: "orange_button", elevation: 0 }]
+  };
+  return terrain;
+}
+
 function createRenderApp({ terrain, actors, playData = {}, collectedGemIds = [] }) {
   const context = createStubContext();
   const storedCollectedGemIds = JSON.stringify(collectedGemIds);
@@ -159,6 +180,48 @@ function createRenderApp({ terrain, actors, playData = {}, collectedGemIds = [] 
 
   window.PlayModules.registerRenderFunctions(app);
   return app;
+}
+
+{
+  const actors = [{ type: "box", x: 1, y: 0, elevation: 0, removed: false }];
+  const playApp = createRenderApp({ terrain: buildOrangeWallTerrain(), actors });
+  const editorApp = createRenderApp({
+    terrain: buildOrangeWallTerrain(),
+    actors,
+    playData: { editorRender: true, levelId: "__editor_render__" }
+  });
+
+  assert.equal(playApp.computeRaisedOrangeWallSet().has("0,0"), false);
+  assert.equal(editorApp.computeRaisedOrangeWallSet().has("0,0"), true);
+}
+
+{
+  const actors = [{ type: "box", x: 1, y: 0, elevation: 0, removed: false }];
+  const initialTerrain = buildTerrain(2, 1);
+  initialTerrain[0][1] = buildOrangeWallTerrain()[0][1];
+  const app = createRenderApp({
+    terrain: initialTerrain,
+    actors,
+    playData: { editorRender: true, levelId: "__editor_render__" }
+  });
+
+  app.syncLiveRaisedSurfaces();
+  assert.equal(app.liveRaisedOrangeWalls.has("0,0"), false);
+
+  app.applyLevelState(
+    {
+      editorRender: true,
+      levelId: "__editor_render__",
+      levelLabel: "__editor_render__",
+      width: 2,
+      height: 1,
+      terrain: buildOrangeWallTerrain(),
+      actors
+    },
+    { deferRender: true, skipTransientSideEffects: true }
+  );
+  app.syncLiveRaisedSurfaces();
+  assert.equal(app.liveRaisedOrangeWalls.has("0,0"), true);
 }
 
 {
