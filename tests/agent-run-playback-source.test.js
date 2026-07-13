@@ -10,6 +10,11 @@ assert.match(runScript, /type="number" min="1" max="60" step="1"[^>]+data-replay
 assert.match(runScript, />FPS<\/span>/);
 assert.doesNotMatch(runScript, /<select data-replay-rate/);
 assert.match(runScript, /function updateReplayControlsInPlace\(container, viewId\)/);
+assert.match(runScript, /function fitAsciiBoard\(\)/);
+assert.match(runScript, /--run-ascii-font-size/);
+assert.match(runScript, /function resolveReplayFrame\(turn\)/);
+assert.match(runScript, /rendered view catching up/);
+assert.doesNotMatch(runScript, /liveGrid\?\.classList\.toggle\("is-text-history"/);
 assert.match(runScript, /document\.activeElement !== rateInput/);
 assert.match(runScript, /playbackGeneration: 0/);
 assert.match(runScript, /state\.playbackGeneration \+= 1/);
@@ -30,6 +35,9 @@ assert.match(runScript, /!pointerActivated && !keyboardActivated/);
 assert.doesNotMatch(runScript, /replayPointerAt/);
 assert.match(siteTheme, /\.replay-control__icon \{[\s\S]*?pointer-events: none/);
 assert.match(siteTheme, /\.replay-control \{[\s\S]*?min-height: 40px/);
+assert.match(siteTheme, /\.run-live__grid \{[\s\S]*?align-items: stretch/);
+assert.match(siteTheme, /\.run-live__board \.agent-board \{[\s\S]*?height: 100%/);
+assert.doesNotMatch(siteTheme, /\.run-live__grid\.is-text-history \.run-live__viewer/);
 assert.match(siteTheme, /\.replay-rate input \{/);
 assert.doesNotMatch(siteTheme, /\.replay-rate select \{/);
 

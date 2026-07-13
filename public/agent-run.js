@@ -78,6 +78,8 @@
     lastImageUrl: null,
     frameRendering: false,
     frameFailures: 0,
+    replayFrameRequest: 0,
+    replayFrameTimer: null,
     videoShown: false,
     tokenSignature: "",
     explorationSignature: "",
@@ -104,6 +106,32 @@
     const label = levelLabel(value);
     return label ? `level_${label}` : "";
   };
+
+  function fitAsciiBoard() {
+    if (!boardEl || !boardWrap || boardWrap.hidden) return;
+    const terminalColumns = 64;
+    const terminalRows = 64;
+    const availableWidth = Math.max(1, boardEl.clientWidth - 44);
+    const availableHeight = Math.max(1, boardEl.clientHeight - 64);
+    let fontSize = Math.min(13, availableHeight / terminalRows);
+    const canvas = fitAsciiBoard.canvas || (fitAsciiBoard.canvas = document.createElement("canvas"));
+    const context = canvas.getContext("2d");
+    if (context) {
+      const terminalFont = '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace';
+      context.font = `${fontSize}px ${terminalFont}`;
+      const cellWidth = Math.max(1, context.measureText("M").width);
+      fontSize *= Math.min(1, availableWidth / (cellWidth * terminalColumns));
+    }
+    boardEl.style.setProperty("--run-ascii-font-size", `${fontSize}px`);
+    boardEl.style.setProperty("--run-ascii-line-height", `${availableHeight / terminalRows}px`);
+  }
+
+  function showAsciiBoard(board) {
+    if (!board) return;
+    boardEl.textContent = board;
+    boardWrap.hidden = false;
+    requestAnimationFrame(fitAsciiBoard);
+  }
 
   // Chevrons, Play, and Pause from Lucide Icons (ISC License).
   // https://lucide.dev/
@@ -223,6 +251,10 @@
     const previous = state.playingView;
     state.playingView = "";
     if (previous) refreshReplayControls(previous);
+    if (previous === "primary") {
+      const observation = state.replayObservations.get("primary");
+      if (observation && !observation.frame_url) resolveReplayFrame(replayTurn("primary"));
+    }
   }
 
   async function setReplayTurn(viewId, requestedTurn, { playbackGeneration = null } = {}) {
@@ -254,9 +286,6 @@
     const observation = await setReplayTurn(viewId, replayTotal(viewId));
     state.replayCursors.delete(viewId);
     if (viewId !== "primary") state.replayObservations.delete(viewId);
-    if (viewId === "primary" && observation?.mode === "text" && !observation.frame_url) {
-      liveGrid?.classList.add("is-text-history");
-    }
     refreshReplayControls(viewId);
   }
 
@@ -298,6 +327,7 @@
       return;
     }
     stopPlayback();
+    if (viewId === "primary") cancelReplayFrameResolution();
     state.activeReplay = viewId;
     state.playingView = viewId;
     const generation = state.playbackGeneration;
@@ -1199,8 +1229,7 @@
         state.feedVersion += 1;
       }
       if (action.level && !isVision && !state.replayCursors.has("primary")) {
-        boardEl.textContent = action.level;
-        boardWrap.hidden = false;
+        showAsciiBoard(action.level);
       }
       state.afterTurn = Math.max(state.afterTurn, Number(action.turn) || 0);
     }
@@ -1323,9 +1352,41 @@
 
   const captionEl = document.getElementById("run-live-caption");
 
+  function cancelReplayFrameResolution() {
+    state.replayFrameRequest += 1;
+    if (state.replayFrameTimer) clearTimeout(state.replayFrameTimer);
+    state.replayFrameTimer = null;
+  }
+
+  function resolveReplayFrame(turn) {
+    if (isPrime || isVision || !state.replayCursors.has("primary")) return;
+    cancelReplayFrameResolution();
+    const requestId = state.replayFrameRequest;
+    const requestedTurn = Math.max(0, Number(turn) || 0);
+
+    const attempt = async (retries = 0) => {
+      try {
+        const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/frame?turn=${requestedTurn}`);
+        const payload = await response.json();
+        if (requestId !== state.replayFrameRequest || replayTurn("primary") !== requestedTurn) return;
+        const renderedTurn = Number.isFinite(Number(payload.turn)) ? Number(payload.turn) : requestedTurn;
+        if (payload.url && renderedTurn === requestedTurn) {
+          showImage(payload.url, renderedTurn);
+          return;
+        }
+        if (payload.pending && retries < 12) {
+          state.replayFrameTimer = setTimeout(() => attempt(retries + 1), 250);
+        }
+      } catch (_error) {
+        // The observation remains visible; a later manual step can try again.
+      }
+    };
+
+    void attempt();
+  }
+
   function showImage(url, turn) {
     if (!url) return;
-    liveGrid?.classList.remove("is-text-history");
     livePlaceholder?.classList.remove("is-history");
     // Each turn gets its own frame URL, so only touch the <img> when the URL
     // actually changes — the poll loop calls this every tick, and resetting
@@ -1346,26 +1407,28 @@
     if (!observation) return;
     const turn = Math.max(0, Number(observation.turn) || 0);
     if (observation.board && observation.mode === "text") {
-      boardEl.textContent = observation.board;
-      boardWrap.hidden = false;
+      showAsciiBoard(observation.board);
     }
     if (observation.frame_url) {
+      cancelReplayFrameResolution();
       showImage(observation.frame_url, turn);
       return;
     }
 
-    liveImage.hidden = true;
-    livePlaceholder.hidden = false;
+    const hasRenderedImage = Boolean(state.lastImageUrl || liveImage?.src);
+    liveImage.hidden = !hasRenderedImage;
+    livePlaceholder.hidden = hasRenderedImage;
     livePlaceholder.classList.add("is-history");
-    const label = livePlaceholder.querySelector("span:last-child");
+    const label = livePlaceholder?.querySelector("span:last-child");
     if (label) label.textContent = observation.mode === "vision"
       ? `No saved vision frame for move ${turn}`
-      : `Text observation · move ${turn}`;
-    liveGrid?.classList.toggle("is-text-history", observation.mode === "text");
+      : `Rendering move ${turn}…`;
     if (captionEl) {
-      captionEl.textContent = turn === 0 ? "move 0 · starting state" : `after move ${turn}`;
+      const turnLabel = turn === 0 ? "move 0 · starting state" : `after move ${turn}`;
+      captionEl.textContent = hasRenderedImage ? `${turnLabel} · rendered view catching up` : turnLabel;
       captionEl.hidden = false;
     }
+    if (observation.mode === "text" && state.playingView !== "primary") resolveReplayFrame(turn);
   }
 
   // Text-mode runs always use an on-demand frame. Vision runs use the same
@@ -1751,6 +1814,11 @@
     const seeSection = document.getElementById("run-see-section");
     if (seeSection) seeSection.hidden = true;
   }
+
+  const asciiBoardResizeObserver = window.ResizeObserver && boardWrap
+    ? new window.ResizeObserver(() => requestAnimationFrame(fitAsciiBoard))
+    : null;
+  asciiBoardResizeObserver?.observe(boardWrap);
 
   describeRun(initial);
   renderStats(initial);
