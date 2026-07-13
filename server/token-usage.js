@@ -134,14 +134,37 @@ function codexPayloadActions(payload = {}) {
 
   const source = typeof input === "string" ? input : "";
   const actions = [];
-  const callPattern = /mcp__mazebench__maze_action\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
+  const appendAction = (body) => {
+    if (/(?:["']clone_id["']|\bclone_id)\s*:/.test(body)) return;
+    const action = body.match(/(?:^|[,\s])(?:["']action["']|action)\s*:\s*(["'`])([\s\S]*?)\1/);
+    if (action?.[2]?.trim()) actions.push(action[2].trim());
+  };
+  const directCallPattern = /mcp__mazebench__maze_action\s*\(\s*\{([\s\S]*?)\}\s*\)/g;
   let match;
 
-  while ((match = callPattern.exec(source))) {
-    const body = match[1];
-    if (/\bclone_id\s*:/.test(body)) continue;
-    const action = body.match(/(?:^|[,\s])action\s*:\s*(["'`])([\s\S]*?)\1/);
-    if (action?.[2]?.trim()) actions.push(action[2].trim());
+  while ((match = directCallPattern.exec(source))) {
+    appendAction(match[1]);
+  }
+
+  // Codex may discover a deferred MCP tool through ALL_TOOLS and invoke it by
+  // its computed name: `const m = ALL_TOOLS.find(..."maze_action"...);` then
+  // `tools[m.name]({ action: "up" })`. Track only bindings whose resolver
+  // explicitly selects the primary maze action tool so observe calls and other
+  // computed tools are not mistaken for moves.
+  const bindingPattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*ALL_TOOLS\.find\s*\(([\s\S]*?)\)\s*;/g;
+  while ((match = bindingPattern.exec(source))) {
+    const [, binding, selector] = match;
+    if (!/maze_action/i.test(selector)) continue;
+
+    const escapedBinding = binding.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const computedCallPattern = new RegExp(
+      `\\btools\\s*\\[\\s*${escapedBinding}\\s*\\.\\s*name\\s*\\]\\s*\\(\\s*\\{([\\s\\S]*?)\\}\\s*\\)`,
+      "g"
+    );
+    let callMatch;
+    while ((callMatch = computedCallPattern.exec(source))) {
+      appendAction(callMatch[1]);
+    }
   }
 
   return actions;
@@ -173,6 +196,14 @@ function codexAgentMessageText(payload = {}) {
     .join("\n");
 }
 
+function codexToolCallFailed(payload = {}) {
+  if (payload.error || payload.is_error || payload.status === "failed") return true;
+  const text = typeof payload.output === "string"
+    ? payload.output
+    : JSON.stringify(payload.output || "");
+  return /\bScript (?:failed|error)\b|\bError:\s|budget exhausted|maze bridge returned no response|paused this run after the previous completed action/i.test(text);
+}
+
 function parseCodexSession(raw) {
   const points = [];
   let latest = null;
@@ -181,6 +212,7 @@ function parseCodexSession(raw) {
   const activeAgents = new Set(["/root"]);
   const allAgents = new Set(["/root"]);
   const pendingSpawns = new Map();
+  const pendingActionPoints = new Map();
 
   for (const [eventIndex, event] of jsonLines(raw).entries()) {
     const payload = event.payload || {};
@@ -200,6 +232,18 @@ function parseCodexSession(raw) {
         allAgents.add(String(result.task_name));
       }
       pendingSpawns.delete(payload.call_id);
+      continue;
+    }
+
+    if (event.type === "response_item" && payload.type === "custom_tool_call_output") {
+      const pending = pendingActionPoints.get(payload.call_id);
+      if (pending && codexToolCallFailed(payload)) {
+        const rejected = new Set(pending);
+        for (let index = points.length - 1; index >= 0; index -= 1) {
+          if (rejected.has(points[index])) points.splice(index, 1);
+        }
+      }
+      pendingActionPoints.delete(payload.call_id);
       continue;
     }
 
@@ -228,8 +272,9 @@ function parseCodexSession(raw) {
       const actions = codexPayloadActions(event.payload);
       const count = actions.length;
       if (!count) continue;
+      const added = [];
       for (let index = 0; index < count; index += 1) {
-        points.push({
+        const point = {
           action: points.length + 1,
           total_tokens: Math.round(latest.total_tokens / count),
           input_tokens: Math.round(latest.input_tokens / count),
@@ -239,10 +284,17 @@ function parseCodexSession(raw) {
           context_tokens: latest.input_tokens,
           active_agents: activeAgents.size,
           at_ms: atMs
-        });
+        };
+        points.push(point);
+        added.push(point);
       }
+      if (payload.call_id) pendingActionPoints.set(payload.call_id, added);
     }
   }
+
+  points.forEach((point, index) => {
+    point.action = index + 1;
+  });
 
   return finishUsage({
     provider: "codex",

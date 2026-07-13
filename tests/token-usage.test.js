@@ -46,6 +46,43 @@ const codexCall = (verb) => ({
 }
 
 {
+  const tokenEvent = (totalInput, latestInput, totalOutput, latestOutput = totalOutput) => ({
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: { input_tokens: totalInput, output_tokens: totalOutput },
+        last_token_usage: { input_tokens: latestInput, output_tokens: latestOutput },
+        model_context_window: 1000
+      }
+    }
+  });
+  const dynamicCall = (tool, input, callId = "") => ({
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call",
+      name: "exec",
+      call_id: callId,
+      input: `const m=ALL_TOOLS.find(x=>x.name.endsWith("${tool}"));const r=await tools[m.name](${JSON.stringify(input)});`
+    }
+  });
+  const usage = parseCodexSession(
+    lines(
+      tokenEvent(100, 100, 10),
+      { type: "response_item", payload: { type: "custom_tool_call", name: "exec", input: 'await tools.mcp__mazebench__maze_action({action:"right"})' } },
+      tokenEvent(150, 50, 20, 10),
+      dynamicCall("maze_action", { action: "up" }),
+      dynamicCall("maze_observe", {}),
+      dynamicCall("maze_action", { action: "left", clone_id: "scout" }),
+      dynamicCall("maze_action", { action: "left" }, "failed-action"),
+      { type: "response_item", payload: { type: "custom_tool_call_output", call_id: "failed-action", output: "Script completed\nOutput:\nError: cannot goto unvisited level" } }
+    )
+  );
+  assert.equal(usage.actions.length, 2, "computed maze action calls receive per-action token points");
+  assert.deepEqual(usage.actions.map((point) => point.total_tokens), [110, 60]);
+}
+
+{
   const tokenEvent = (timestamp, totalInput, latestInput, output = 10) => ({
     timestamp,
     type: "event_msg",
