@@ -1930,19 +1930,39 @@ function recordPlayerVisit(context) {
     stats.maxElevation === null ? player.elevation : Math.max(stats.maxElevation, player.elevation);
 }
 
+const LEGACY_GEM_ID_PATTERN = /^(.*):gem:(?:-?\d+:)?(-?\d+),(-?\d+),(-?\d+)$/;
+
+function normalizeGemCollectionId(value) {
+  const id = String(value || "");
+  const match = id.match(LEGACY_GEM_ID_PATTERN);
+  return match ? `${match[1]}:gem:${match[2]},${match[3]},${match[4]}` : id;
+}
+
+function normalizeCollectedGemIds(ids) {
+  if (!(ids instanceof Set) || ids.size === 0) {
+    return ids;
+  }
+
+  const normalized = Array.from(ids, normalizeGemCollectionId);
+  ids.clear();
+  normalized.forEach((id) => ids.add(id));
+  return ids;
+}
+
 function terminalGemId(context, index) {
   const actor = context.playData.actors[index] || {};
-  const type = context.engine.actorTypes[index] || actor.type || "actor";
   const x = actor.x ?? context.state.actorX[index] ?? 0;
   const y = actor.y ?? context.state.actorY[index] ?? 0;
   const elevation = actor.elevation ?? context.state.actorElevation[index] ?? 0;
-  return `${context.level.id}:${type}:${index}:${x},${y},${elevation}`;
+  return `${context.level.id}:gem:${x},${y},${elevation}`;
 }
 
 function applyCollectedGemsToContext(context) {
   if (!context?.stats?.collectedGemIds?.size) {
     return;
   }
+
+  normalizeCollectedGemIds(context.stats.collectedGemIds);
 
   for (let index = 0; index < context.engine.actorCount; index += 1) {
     const type = context.engine.actorTypes[index] || context.playData.actors[index]?.type || "";
@@ -1975,7 +1995,8 @@ function recordCollectedGems(context, beforeIds) {
     return [];
   }
 
-  const before = new Set(beforeIds || []);
+  normalizeCollectedGemIds(stats.collectedGemIds);
+  const before = new Set(Array.from(beforeIds || [], normalizeGemCollectionId));
   const after = new Set(visibleGemIds(context));
   const collected = [];
 
@@ -2392,6 +2413,7 @@ function totalRoomCount(game) {
 
 function buildScorecard(context, nowMs = Date.now()) {
   const stats = context.stats || createRunStats(context.level?.id || "");
+  normalizeCollectedGemIds(stats.collectedGemIds);
   const player = activePlayerEntry(context);
   const durationMs = nowMs - stats.startedAtMs;
   const totalGems = countTotalGems(context.game);
@@ -2480,6 +2502,7 @@ function buildScorecard(context, nowMs = Date.now()) {
 }
 
 function isGameWon(context) {
+  normalizeCollectedGemIds(context?.stats?.collectedGemIds);
   const collectedGemCount = context?.stats?.collectedGemIds?.size || 0;
   const gameWonGemCount = normalizeGameWonGemCount(context?.options?.gameWonGemCount);
   return collectedGemCount >= gameWonGemCount;

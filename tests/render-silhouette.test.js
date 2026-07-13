@@ -291,13 +291,19 @@ function createRenderApp({ terrain, actors, playData = {}, collectedGemIds = [] 
     playData: {
       levelId: "level_AxA"
     },
-    collectedGemIds: ["level_AxA:gem:0:0,0,0"]
+    collectedGemIds: ["level_AxA:gem:0:0,0,0", "level_AxA:gem:1:0,0,0"]
   });
 
   assert.equal(app.state.actors[0].collected, true);
   assert.equal(app.state.actors[0].removed, true);
   assert.equal(app.state.actors[0].showCollectedGhost, true);
   assert.equal(app.state.actors[0].renderAlpha, app.COLLECTED_GEM_ALPHA);
+  assert.equal(app.state.actors[0].collectionId, "level_AxA:gem:0,0,0");
+  assert.deepEqual(Array.from(app.collectedGemIds), ["level_AxA:gem:0,0,0"]);
+  assert.equal(
+    app.gemCollectionId({ type: "gem", x: 0, y: 0, elevation: 0 }, 99, "level_AxA"),
+    "level_AxA:gem:0,0,0"
+  );
 }
 
 {

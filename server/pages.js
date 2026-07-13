@@ -31,6 +31,9 @@ const TRAIN_REWARD_ICONS = Object.freeze({
   blocks: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12.89 1.45 8 4A2 2 0 0 1 22 7.24v9.52a2 2 0 0 1-1.11 1.79l-8 4a2 2 0 0 1-1.78 0l-8-4A2 2 0 0 1 2 16.76V7.24a2 2 0 0 1 1.11-1.79l8-4a2 2 0 0 1 1.78 0Z"></path><path d="m2.32 6.16 9.68 4.84 9.68-4.84"></path><path d="M12 22.76V11"></path></svg>`
 });
 
+// Map from Lucide Icons (ISC License). Shared with the play-page world map.
+const MAP_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4.5 6.5 9 4l6 3 4.5-2.5v13L15 20l-6-3-4.5 2.5v-13Z"></path><path d="M9 4v13"></path><path d="M15 7v13"></path></svg>`;
+
 // Page renderers. Shared chrome and the complete world-editor frontend are
 // canonical in this repo; Maze Jam consumes them during its build:
 //   - site pages load /site.css + /build-theme.css + /local-site.css
@@ -77,7 +80,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css?v=20260710-card-parity-1">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">
+    <link rel="stylesheet" href="/local-site.css?v=20260713-run-config-76">
     ${extraHeadHtml}`
     })}
   </head>
@@ -240,7 +243,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css?v=${PLAY_ASSET_VERSION}">
-    <link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260713-run-config-76">`;
   }
 
   function renderPlayPage(game, level) {
@@ -450,7 +453,7 @@ function createPageRenderer({
     ${includeRuntimeStyles ? '<link rel="stylesheet" href="/styles.css">' : ""}
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260710-quit-policy-66">' : ""}`;
+    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260713-run-config-76">' : ""}`;
   }
 
   function renderAuthorPage(game, level) {
@@ -1039,6 +1042,8 @@ function createPageRenderer({
 
   function renderAgentRunPage(run) {
     const isPrime = run.kind === "prime" || run.model === "prime";
+    const runGame = getGame(run.game_id);
+    const runWorld = runGame?.worldMap ? agentWorldOption(runGame) : null;
     const tokenSection = `<section class="panel run-tokens" id="run-token-section">
           <div class="run-tokens__head">
             <h2>Tokens</h2>
@@ -1078,7 +1083,13 @@ function createPageRenderer({
           <h2>Exploration progress</h2>
           <div class="run-exploration__grid" id="run-exploration-grid" hidden>
             <article class="run-metric-chart">
-              <div class="run-metric-chart__head"><span class="run-metric-chart__label run-metric-chart__label--rooms">${TRAIN_REWARD_ICONS.rooms}<span>Rooms visited</span></span><strong id="run-rooms-latest">—</strong></div>
+              <div class="run-metric-chart__head">
+                <span class="run-metric-chart__label run-metric-chart__label--rooms">${TRAIN_REWARD_ICONS.rooms}<span>Rooms visited</span></span>
+                <div class="run-metric-chart__actions">
+                  <strong id="run-rooms-latest">—</strong>
+                  <button id="run-rooms-map-button" class="run-rooms-map-button" type="button" aria-controls="run-rooms-map-dialog" aria-expanded="false" aria-haspopup="dialog" title="View visited rooms map">${MAP_ICON}<span>Map</span></button>
+                </div>
+              </div>
               <canvas id="run-rooms-chart" class="run-metric-chart__canvas" role="img" aria-label="Rooms visited by action"></canvas>
             </article>
             <article class="run-metric-chart">
@@ -1087,6 +1098,28 @@ function createPageRenderer({
             </article>
           </div>
           <p id="run-exploration-empty" class="muted">Waiting for the agent's first action…</p>
+          <div id="run-rooms-map-dialog" class="run-world-map" role="dialog" aria-modal="true" aria-labelledby="run-rooms-map-title" hidden>
+            <div class="run-world-map__dialog">
+              <header class="run-world-map__head">
+                <div>
+                  <span class="run-world-map__eyebrow">Exploration</span>
+                  <h2 id="run-rooms-map-title">Rooms visited</h2>
+                  <p id="run-rooms-map-summary" class="muted"></p>
+                </div>
+                <button id="run-rooms-map-close" class="run-world-map__close" type="button" aria-label="Close visited rooms map" title="Close">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m7 7 10 10"></path><path d="m17 7-10 10"></path></svg>
+                </button>
+              </header>
+              <div class="run-world-map__viewport">
+                <div id="run-rooms-map-grid" class="run-world-map__grid" role="img" aria-label="Visited rooms world map"></div>
+              </div>
+              <div class="run-world-map__legend" aria-hidden="true">
+                <span><i class="is-visited"></i>Visited</span>
+                <span><i class="is-current"></i>Current room</span>
+                <span><i></i>Not visited</span>
+              </div>
+            </div>
+          </div>
         </section>`;
     // Hosted Prime Evaluations expose lifecycle/log state immediately and their
     // scored sample after the rollout completes. Move zero is local; the move
@@ -1166,7 +1199,7 @@ function createPageRenderer({
             <button id="delete-run" class="button--ghost delete-button" type="button" title="Delete run">${TRASH_ICON}<span>Delete</span></button>
           </div>
           <h2 id="run-title" class="run-title"></h2>
-          <p id="run-meta" class="muted"></p>
+          <p id="run-meta" class="run-config" aria-label="Launch configuration"></p>
           <div id="run-progress" class="run-progress">
             <div class="run-progress__copy">
               <span id="run-progress-count">0 / 0 moves</span>
@@ -1188,8 +1221,8 @@ function createPageRenderer({
           <h2>Runner log</h2>
           <pre id="run-log" class="agent-log"></pre>
         </section>
-        <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
-        <script src="/agent-run.js?v=20260712-replay-transition-73" defer></script>`
+        <script>window.__AGENT_RUN__ = ${serializeForScript(run)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
+        <script src="/agent-run.js?v=20260713-run-config-76" defer></script>`
     });
   }
 

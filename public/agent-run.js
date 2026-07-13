@@ -1,5 +1,6 @@
 (() => {
   const initial = window.__AGENT_RUN__ || {};
+  const runWorld = window.__AGENT_RUN_WORLD__ || null;
   const runId = initial.id;
   const isVision = initial.mode === "vision";
   // Hosted Prime evaluations expose lifecycle state immediately and the scored
@@ -32,6 +33,11 @@
   const explorationEmpty = document.getElementById("run-exploration-empty");
   const roomsChart = document.getElementById("run-rooms-chart");
   const gemsChart = document.getElementById("run-gems-chart");
+  const roomsMapButton = document.getElementById("run-rooms-map-button");
+  const roomsMapDialog = document.getElementById("run-rooms-map-dialog");
+  const roomsMapClose = document.getElementById("run-rooms-map-close");
+  const roomsMapGrid = document.getElementById("run-rooms-map-grid");
+  const roomsMapSummary = document.getElementById("run-rooms-map-summary");
   const swarmSection = document.getElementById("run-swarm-section");
   const swarmGrid = document.getElementById("run-swarm-grid");
   const swarmCount = document.getElementById("run-swarm-count");
@@ -61,8 +67,9 @@
     activeReplay: "primary",
     playingView: "",
     playbackTimer: null,
-    playbackTick: null,
-    mainControlSignature: "",
+    playbackGeneration: 0,
+    playbackDeadline: 0,
+    playbackPending: false,
     keyboardStepAt: 0,
     suppressCardToggleView: "",
     suppressCardToggleUntil: 0,
@@ -74,6 +81,7 @@
     videoShown: false,
     tokenSignature: "",
     explorationSignature: "",
+    worldMapSignature: "",
     swarmSignature: "",
     contextPoints: [],
     feedVersion: 0,
@@ -92,6 +100,10 @@
   }
 
   const levelLabel = (id) => String(id || "").replace(/^level_/, "");
+  const levelId = (value) => {
+    const label = levelLabel(value);
+    return label ? `level_${label}` : "";
+  };
 
   // Chevrons, Play, and Pause from Lucide Icons (ISC License).
   // https://lucide.dev/
@@ -118,11 +130,11 @@
 
   function replayRate(viewId) {
     const rate = Number(state.replayRates.get(viewId));
-    return [1, 2, 5, 10, 20].includes(rate) ? rate : 10;
+    return Number.isFinite(rate) ? Math.max(1, Math.min(60, rate)) : 10;
   }
 
   function replayDelay(viewId) {
-    return Math.max(50, Math.round(1000 / replayRate(viewId)));
+    return 1000 / replayRate(viewId);
   }
 
   function replayControlsMarkup(viewId) {
@@ -134,20 +146,58 @@
     const active = state.activeReplay === viewId ? " is-active" : "";
     const button = (action, icon, label, disabled = false, extra = "") =>
       `<button type="button" class="replay-control${extra}" data-replay-view="${escapeText(viewId)}" data-replay-action="${action}" aria-label="${label}" title="${label}"${disabled ? " disabled" : ""}>${icon}</button>`;
-    return `<div class="replay-controls__buttons${active}" role="group" aria-label="Observation playback">
+    return `<div class="replay-controls__buttons${active}" data-replay-controls-view="${escapeText(viewId)}" role="group" aria-label="Observation playback">
       ${button("first", REPLAY_ICONS.first, "First observation", turn <= 0)}
       ${button("previous", REPLAY_ICONS.previous, "Previous observation", turn <= 0)}
       ${button("play", playing ? REPLAY_ICONS.pause : REPLAY_ICONS.play, playing ? "Pause playback" : `Play at ${rate} action${rate === 1 ? "" : "s"} per second`, total <= 0, " replay-control--play")}
       ${button("next", REPLAY_ICONS.next, "Next observation", turn >= total)}
       ${button("last", REPLAY_ICONS.last, "Latest observation", followingLatest)}
       <label class="replay-rate" title="Playback speed">
-        <span class="sr-only">Actions per second</span>
-        <select data-replay-rate data-replay-view="${escapeText(viewId)}" aria-label="Actions per second">
-          ${[1, 2, 5, 10, 20].map((option) => `<option value="${option}"${option === rate ? " selected" : ""}>${option}/s</option>`).join("")}
-        </select>
+        <input type="number" min="1" max="60" step="1" value="${rate}" inputmode="numeric" data-replay-rate data-replay-view="${escapeText(viewId)}" aria-label="Playback frames per second">
+        <span aria-hidden="true">FPS</span>
       </label>
       <span class="replay-controls__position" aria-live="polite">${turn} / ${total}</span>
     </div>`;
+  }
+
+  function updateReplayControlsInPlace(container, viewId) {
+    const controls = container?.querySelector("[data-replay-controls-view]");
+    if (!controls || controls.dataset.replayControlsView !== viewId) return false;
+    const total = replayTotal(viewId);
+    const turn = Math.min(total, replayTurn(viewId));
+    const playing = state.playingView === viewId;
+    const rate = replayRate(viewId);
+    const followingLatest = !state.replayCursors.has(viewId) && turn >= total;
+    const disabled = {
+      first: turn <= 0,
+      previous: turn <= 0,
+      play: total <= 0,
+      next: turn >= total,
+      last: followingLatest
+    };
+
+    controls.classList.toggle("is-active", state.activeReplay === viewId);
+    Object.entries(disabled).forEach(([action, value]) => {
+      const control = controls.querySelector(`[data-replay-action="${action}"]`);
+      if (control) control.disabled = value;
+    });
+
+    const play = controls.querySelector('[data-replay-action="play"]');
+    if (play) {
+      const label = playing
+        ? "Pause playback"
+        : `Play at ${rate} action${rate === 1 ? "" : "s"} per second`;
+      play.innerHTML = playing ? REPLAY_ICONS.pause : REPLAY_ICONS.play;
+      play.setAttribute("aria-label", label);
+      play.setAttribute("aria-pressed", String(playing));
+      play.title = label;
+    }
+
+    const rateInput = controls.querySelector("[data-replay-rate]");
+    if (rateInput && document.activeElement !== rateInput) rateInput.value = String(rate);
+    const position = controls.querySelector(".replay-controls__position");
+    if (position) position.textContent = `${turn} / ${total}`;
+    return true;
   }
 
   function refreshReplayControls(viewId) {
@@ -162,16 +212,19 @@
   function stopPlayback() {
     if (state.playbackTimer) clearTimeout(state.playbackTimer);
     state.playbackTimer = null;
-    state.playbackTick = null;
+    state.playbackGeneration += 1;
+    state.playbackDeadline = 0;
+    state.playbackPending = false;
     const previous = state.playingView;
     state.playingView = "";
     if (previous) refreshReplayControls(previous);
   }
 
-  async function setReplayTurn(viewId, requestedTurn) {
+  async function setReplayTurn(viewId, requestedTurn, { playbackGeneration = null } = {}) {
     const total = replayTotal(viewId);
     const turn = Math.max(0, Math.min(total, Math.floor(Number(requestedTurn) || 0)));
-    state.replayCursors.set(viewId, turn);
+    const playbackRequest = playbackGeneration !== null;
+    if (!playbackRequest) state.replayCursors.set(viewId, turn);
 
     const requestId = (state.replayRequests.get(viewId) || 0) + 1;
     state.replayRequests.set(viewId, requestId);
@@ -181,6 +234,8 @@
       if (!response.ok) return null;
       const observation = await response.json();
       if (state.replayRequests.get(viewId) !== requestId) return null;
+      if (playbackRequest && !isCurrentPlayback(viewId, playbackGeneration)) return null;
+      state.replayCursors.set(viewId, turn);
       state.replayObservations.set(viewId, observation);
       if (viewId === "primary") applyMainObservation(observation);
       refreshReplayControls(viewId);
@@ -200,6 +255,38 @@
     refreshReplayControls(viewId);
   }
 
+  function isCurrentPlayback(viewId, generation) {
+    return state.playingView === viewId && state.playbackGeneration === generation;
+  }
+
+  function schedulePlaybackTick(viewId, generation, { fromNow = false } = {}) {
+    if (!isCurrentPlayback(viewId, generation)) return;
+    const now = performance.now();
+    if (fromNow || !state.playbackDeadline) state.playbackDeadline = now;
+    state.playbackDeadline += replayDelay(viewId);
+    if (state.playbackTimer) clearTimeout(state.playbackTimer);
+    state.playbackTimer = setTimeout(() => {
+      state.playbackTimer = null;
+      void playbackTick(viewId, generation);
+    }, Math.max(0, state.playbackDeadline - performance.now()));
+  }
+
+  async function playbackTick(viewId, generation) {
+    if (!isCurrentPlayback(viewId, generation)) return;
+    const total = replayTotal(viewId);
+    const current = replayTurn(viewId);
+    if (current >= total) {
+      stopPlayback();
+      return;
+    }
+
+    state.playbackPending = true;
+    await setReplayTurn(viewId, current + 1, { playbackGeneration: generation });
+    if (!isCurrentPlayback(viewId, generation)) return;
+    state.playbackPending = false;
+    schedulePlaybackTick(viewId, generation);
+  }
+
   async function startPlayback(viewId) {
     if (state.playingView === viewId) {
       stopPlayback();
@@ -208,23 +295,16 @@
     stopPlayback();
     state.activeReplay = viewId;
     state.playingView = viewId;
-    if (replayTurn(viewId) >= replayTotal(viewId)) await setReplayTurn(viewId, 0);
-    if (state.playingView !== viewId) return;
+    const generation = state.playbackGeneration;
+    state.playbackPending = true;
     refreshReplayControls(viewId);
-
-    const tick = async () => {
-      if (state.playingView !== viewId) return;
-      const total = replayTotal(viewId);
-      const current = replayTurn(viewId);
-      if (current >= total) {
-        stopPlayback();
-        return;
-      }
-      await setReplayTurn(viewId, current + 1);
-      if (state.playingView === viewId) state.playbackTimer = setTimeout(tick, replayDelay(viewId));
-    };
-    state.playbackTick = tick;
-    state.playbackTimer = setTimeout(tick, replayDelay(viewId));
+    if (replayTurn(viewId) >= replayTotal(viewId)) {
+      await setReplayTurn(viewId, 0, { playbackGeneration: generation });
+    }
+    if (!isCurrentPlayback(viewId, generation)) return;
+    state.playbackPending = false;
+    state.playbackDeadline = performance.now();
+    schedulePlaybackTick(viewId, generation);
   }
 
   function handleReplayAction(viewId, action) {
@@ -270,28 +350,41 @@
     container?.querySelectorAll("[data-replay-rate]").forEach((control) => {
       control.addEventListener("pointerdown", (event) => event.stopPropagation());
       control.addEventListener("click", (event) => event.stopPropagation());
-      control.addEventListener("change", (event) => {
+      const updateRate = (event, commit = false) => {
         event.stopPropagation();
         const viewId = control.dataset.replayView || "primary";
-        const rate = Number(control.value);
-        if (![1, 2, 5, 10, 20].includes(rate)) return;
-        state.replayRates.set(viewId, rate);
-        if (state.playingView === viewId && state.playbackTick) {
-          if (state.playbackTimer) clearTimeout(state.playbackTimer);
-          state.playbackTimer = setTimeout(state.playbackTick, replayDelay(viewId));
+        const requestedRate = Number(control.value);
+        if (!Number.isFinite(requestedRate) || requestedRate <= 0) {
+          if (commit) control.value = String(replayRate(viewId));
+          return;
         }
-        refreshReplayControls(viewId);
+        const rate = Math.max(1, Math.min(60, requestedRate));
+        state.replayRates.set(viewId, rate);
+        if (commit) control.value = String(rate);
+        if (state.playingView === viewId) {
+          state.playbackDeadline = 0;
+          if (!state.playbackPending) {
+            schedulePlaybackTick(viewId, state.playbackGeneration, { fromNow: true });
+          }
+        }
+        updateReplayControlsInPlace(control.closest(".replay-controls"), viewId);
+      };
+      control.addEventListener("input", (event) => updateRate(event));
+      control.addEventListener("change", (event) => updateRate(event, true));
+      control.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") control.blur();
       });
     });
   }
 
   function renderMainReplayControls() {
     if (!mainReplayControls) return;
-    const markup = replayControlsMarkup("primary");
-    if (markup === state.mainControlSignature) return;
-    state.mainControlSignature = markup;
-    mainReplayControls.innerHTML = markup;
-    wireReplayControls(mainReplayControls);
+    if (!updateReplayControlsInPlace(mainReplayControls, "primary")) {
+      mainReplayControls.innerHTML = replayControlsMarkup("primary");
+      wireReplayControls(mainReplayControls);
+      updateReplayControlsInPlace(mainReplayControls, "primary");
+    }
   }
 
   function instanceCards(workers) {
@@ -400,21 +493,77 @@
     wireInstanceCards(finishedGrid, workers);
   }
 
+  function configuredValue(params, key, fallback) {
+    return Object.prototype.hasOwnProperty.call(params, key) ? params[key] : fallback;
+  }
+
+  function configuredFlag(params, key, fallback = false) {
+    const value = configuredValue(params, key, fallback);
+    return value === true || value === "true" || value === 1 || value === "1";
+  }
+
+  function titleCase(value) {
+    return String(value || "")
+      .replaceAll("-", " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
+  function runConfiguration(run) {
+    const params = run.launch_params && typeof run.launch_params === "object" ? run.launch_params : {};
+    const prime = run.kind === "prime" || run.model === "prime";
+    const unlimited = !prime && configuredFlag(params, "unlimited", run.unlimited);
+    const moves = prime
+      ? configuredValue(params, "max_turns", run.moves)
+      : configuredValue(params, "moves", run.moves);
+    const observation = prime
+      ? (configuredFlag(params, "vision", run.mode === "vision") ? "Vision" : "Text")
+      : titleCase(configuredValue(params, "mode", run.mode || "text"));
+    const allowQuit = configuredFlag(params, "allow_quit", run.allow_quit !== false);
+    const reasoning = configuredValue(params, "reasoning", run.reasoning || "");
+    const items = [
+      ["Provider", prime ? "Prime" : titleCase(run.model)],
+      ["Model", configuredValue(params, "model_name", run.model_name || run.model)],
+      ["World", run.game_title || run.game_id],
+      ["Start room", levelLabel(configuredValue(params, "level_id", run.level_id))],
+      ["Budget", unlimited ? "Unlimited" : moves ? `${moves} moves` : "Default"],
+      ["Observation", observation, observation === "Vision"],
+      ["Reasoning", reasoning ? titleCase(reasoning) : "Off"],
+      ["Allow quit", allowQuit ? "Yes" : "No"]
+    ];
+
+    if (!prime) {
+      if (run.model === "codex" && Object.prototype.hasOwnProperty.call(params, "codex_fast")) {
+        const fast = configuredFlag(params, "codex_fast");
+        items.push(["Fast mode", fast ? "On" : "Off", fast]);
+      }
+      const container = configuredFlag(params, "container", run.container !== false);
+      const toolUse = String(configuredValue(params, "tool_use", run.tool_use || "read-only"));
+      const swarm = configuredFlag(params, "swarm", run.swarm);
+      items.push(
+        ["Isolation", container ? "Docker" : "Host access"],
+        ["Tool use", toolUse === "offline" ? "Offline tools" : "Read only"],
+        ["Orchestration", swarm ? "Swarm" : "Single", swarm]
+      );
+    } else if (run.prime_execution) {
+      items.push(["Execution", run.prime_execution === "hosted" ? "Hosted" : "Local"]);
+    }
+
+    return items.filter(([, value]) => value !== "" && value != null);
+  }
+
   function describeRun(run) {
     document.getElementById("run-title").textContent =
       `${run.model}${run.model_name ? ` (${run.model_name})` : ""} on ${run.game_title || run.game_id}`;
-    const bits = [
-      `run ${run.id}`,
-      run.level_id ? `level ${levelLabel(run.level_id)}` : null,
-      run.unlimited ? "Unlimited move budget" : run.moves ? `${run.moves} move budget` : null,
-      run.mode,
-      run.reasoning ? `reasoning ${run.reasoning}` : null,
-      run.continued ? `continued ×${run.continued}` : null,
-      run.kind === "local" ? (run.container ? "container" : "host") : "prime verifiers",
-      run.prime_evaluation_id ? `Prime eval ${run.prime_evaluation_id}` : null,
-      run.note || ""
-    ].filter(Boolean);
-    document.getElementById("run-meta").textContent = bits.join(" · ");
+    const meta = document.getElementById("run-meta");
+    meta.className = "run-config";
+    meta.setAttribute("aria-label", "Launch configuration");
+    meta.innerHTML = `<span class="run-config__heading">Launch configuration</span>
+      <span class="run-config__list" role="list">
+        ${runConfiguration(run).map(([label, value, active]) => `<span class="run-config__item${active ? " is-active" : ""}" role="listitem">
+          <span class="run-config__key">${escapeText(label)}</span>
+          <strong class="run-config__value">${escapeText(value)}</strong>
+        </span>`).join("")}
+      </span>`;
   }
 
   function renderStats(run) {
@@ -844,9 +993,130 @@
     drawMetricChart(gemsChart, points, "gems", "#ffd15c");
   }
 
+  function visitedRoomIds() {
+    const visited = new Set();
+    const startingRoom = levelId(initial.level_id || state.run?.level_id);
+    if (startingRoom) visited.add(startingRoom);
+    [...state.moves.entries()]
+      .sort(([left], [right]) => left - right)
+      .forEach(([, move]) => {
+        const room = levelId(move.roomId || move.room);
+        if (room) visited.add(room);
+      });
+    return visited;
+  }
+
+  function worldAxisIndex(value) {
+    const letter = String(value || "").trim().toUpperCase();
+    return /^[A-Z]$/.test(letter) ? letter.charCodeAt(0) - 65 : -1;
+  }
+
+  function runWorldMapLevels() {
+    return (Array.isArray(runWorld?.levels) ? runWorld.levels : [])
+      .map((level) => ({
+        ...level,
+        columnIndex: worldAxisIndex(level.column),
+        rowIndex: worldAxisIndex(level.row)
+      }))
+      .filter((level) => level.id && level.columnIndex >= 0 && level.rowIndex >= 0);
+  }
+
+  function fittedRunWorldMapTileSize(columnCount, rowCount) {
+    const viewport = roomsMapGrid?.parentElement;
+    const availableWidth = Math.max(120, (viewport?.clientWidth || window.innerWidth || 720) - 28);
+    const availableHeight = Math.max(120, (window.innerHeight || 720) - 260);
+    return Math.max(
+      10,
+      Math.min(62, Math.floor(Math.min(availableWidth / columnCount, availableHeight / rowCount)))
+    );
+  }
+
+  function renderRunWorldMap({ force = false } = {}) {
+    if (!roomsMapGrid || roomsMapDialog?.hidden) return;
+    const levels = runWorldMapLevels();
+    if (levels.length === 0) return;
+    const visited = visitedRoomIds();
+    const currentRoom = levelId(state.run?.current_room || initial.current_room || initial.level_id);
+    const minColumn = Math.min(...levels.map((level) => level.columnIndex));
+    const maxColumn = Math.max(...levels.map((level) => level.columnIndex));
+    const minRow = Math.min(...levels.map((level) => level.rowIndex));
+    const maxRow = Math.max(...levels.map((level) => level.rowIndex));
+    const columnCount = maxColumn - minColumn + 1;
+    const rowCount = maxRow - minRow + 1;
+    const tileSize = fittedRunWorldMapTileSize(columnCount, rowCount);
+    const signature = JSON.stringify({ currentRoom, tileSize, visited: [...visited].sort() });
+    if (!force && signature === state.worldMapSignature) return;
+    state.worldMapSignature = signature;
+
+    const mappedVisitedCount = levels.filter((level) => visited.has(level.id)).length;
+    roomsMapSummary.textContent = `${mappedVisitedCount.toLocaleString()} of ${levels.length.toLocaleString()} rooms visited`;
+    roomsMapGrid.setAttribute(
+      "aria-label",
+      `${mappedVisitedCount.toLocaleString()} of ${levels.length.toLocaleString()} rooms visited${currentRoom ? `; current room ${levelLabel(currentRoom)}` : ""}`
+    );
+    roomsMapGrid.style.setProperty("--run-world-map-columns", String(columnCount));
+    roomsMapGrid.style.setProperty("--run-world-map-tile-size", `${tileSize}px`);
+    roomsMapGrid.replaceChildren();
+
+    levels.forEach((level) => {
+      const cell = document.createElement("div");
+      const isVisited = visited.has(level.id);
+      const isCurrent = level.id === currentRoom;
+      cell.className = "run-world-map__cell";
+      cell.classList.toggle("is-visited", isVisited);
+      cell.classList.toggle("is-current", isCurrent);
+      cell.style.gridColumn = String(level.columnIndex - minColumn + 1);
+      cell.style.gridRow = String(level.rowIndex - minRow + 1);
+      cell.title = `${levelLabel(level.id)} — ${isCurrent ? "current room" : isVisited ? "visited" : "not visited"}`;
+
+      if (isVisited && level.preview_url) {
+        const image = document.createElement("img");
+        image.className = "run-world-map__thumb";
+        image.alt = "";
+        image.decoding = "async";
+        image.src = level.preview_url;
+        cell.append(image);
+      }
+
+      const label = document.createElement("span");
+      label.textContent = levelLabel(level.id);
+      cell.append(label);
+      roomsMapGrid.append(cell);
+    });
+  }
+
+  let roomsMapCloseTimer = 0;
+  let roomsMapReturnFocus = null;
+
+  function setRunWorldMapOpen(open) {
+    if (!roomsMapDialog || !roomsMapButton || runWorldMapLevels().length === 0) return;
+    window.clearTimeout(roomsMapCloseTimer);
+    if (open) {
+      roomsMapReturnFocus = document.activeElement;
+      roomsMapDialog.hidden = false;
+      roomsMapButton.setAttribute("aria-expanded", "true");
+      document.documentElement.classList.add("has-run-world-map");
+      state.worldMapSignature = "";
+      window.requestAnimationFrame(() => {
+        roomsMapDialog.classList.add("is-open");
+        renderRunWorldMap({ force: true });
+        roomsMapClose?.focus({ preventScroll: true });
+      });
+      return;
+    }
+    roomsMapDialog.classList.remove("is-open");
+    roomsMapButton.setAttribute("aria-expanded", "false");
+    document.documentElement.classList.remove("has-run-world-map");
+    roomsMapCloseTimer = window.setTimeout(() => {
+      roomsMapDialog.hidden = true;
+    }, 160);
+    roomsMapReturnFocus?.focus?.({ preventScroll: true });
+  }
+
   function renderExplorationCharts() {
     const points = explorationPoints();
     const signature = JSON.stringify(points);
+    if (roomsMapDialog?.hidden === false) renderRunWorldMap();
     if (signature === state.explorationSignature) return;
     state.explorationSignature = signature;
     const available = points.length > 0;
@@ -862,7 +1132,24 @@
     requestAnimationFrame(drawExplorationCharts);
   }
 
-  window.addEventListener("resize", () => requestAnimationFrame(drawExplorationCharts), { passive: true });
+  if (runWorldMapLevels().length === 0 && roomsMapButton) roomsMapButton.hidden = true;
+  roomsMapButton?.addEventListener("click", () => setRunWorldMapOpen(true));
+  roomsMapClose?.addEventListener("click", () => setRunWorldMapOpen(false));
+  roomsMapDialog?.addEventListener("click", (event) => {
+    if (event.target === roomsMapDialog) setRunWorldMapOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && roomsMapDialog?.hidden === false) {
+      event.preventDefault();
+      setRunWorldMapOpen(false);
+    }
+  });
+  window.addEventListener("resize", () => {
+    requestAnimationFrame(() => {
+      drawExplorationCharts();
+      if (roomsMapDialog?.hidden === false) renderRunWorldMap({ force: true });
+    });
+  }, { passive: true });
 
   // ---- combined moves + reasoning feed --------------------------------------
 
@@ -876,6 +1163,7 @@
       const nextMove = {
         action: action.command_text,
         room: levelLabel(action.current_room),
+        roomId: levelId(action.current_room),
         gems: action.gem_count ?? 0,
         timestamp: action.timestamp || null,
         flags
@@ -920,6 +1208,7 @@
           state.moves.set(entry.move, {
             action: entry.action,
             room: levelLabel(entry.room),
+            roomId: levelId(entry.room),
             gems: entry.gems ?? 0,
             timestamp: entry.timestamp || null,
             flags: [entry.moved === false ? "blocked" : null, entry.player_dead ? "died" : null].filter(Boolean)

@@ -160,13 +160,31 @@ const DEAD_INTERNAL_COMMANDS = new Set([
   "undo"
 ]);
 
-function actorId(context, index) {
+const LEGACY_GEM_ID_PATTERN = /^(.*):gem:(?:-?\d+:)?(-?\d+),(-?\d+),(-?\d+)$/;
+
+function normalizeGemCollectionId(value) {
+  const id = String(value || "");
+  const match = id.match(LEGACY_GEM_ID_PATTERN);
+  return match ? `${match[1]}:gem:${match[2]},${match[3]},${match[4]}` : id;
+}
+
+function normalizeCollectedGemIds(ids) {
+  if (!(ids instanceof Set) || ids.size === 0) {
+    return ids;
+  }
+
+  const normalized = Array.from(ids, normalizeGemCollectionId);
+  ids.clear();
+  normalized.forEach((id) => ids.add(id));
+  return ids;
+}
+
+function gemCollectionId(context, index) {
   const actor = context.playData.actors[index] || {};
-  const type = context.engine.actorTypes[index] || actor.type || "actor";
   const x = actor.x ?? context.state.actorX[index] ?? 0;
   const y = actor.y ?? context.state.actorY[index] ?? 0;
   const elevation = actor.elevation ?? context.state.actorElevation[index] ?? 0;
-  return `${context.level.id}:${type}:${index}:${x},${y},${elevation}`;
+  return `${context.level.id}:gem:${x},${y},${elevation}`;
 }
 
 function visibleGemIds(context) {
@@ -176,7 +194,7 @@ function visibleGemIds(context) {
     const type = context.engine.actorTypes[index] || context.playData.actors[index]?.type || "";
 
     if (type === "gem" && !context.state.actorRemoved[index]) {
-      ids.push(actorId(context, index));
+      ids.push(gemCollectionId(context, index));
     }
   }
 
@@ -230,7 +248,8 @@ function recordSessionVisit(session) {
 }
 
 function recordCollectedGems(session, beforeIds) {
-  const before = new Set(beforeIds || []);
+  normalizeCollectedGemIds(session.collectedGemIds);
+  const before = new Set(Array.from(beforeIds || [], normalizeGemCollectionId));
   const after = new Set(visibleGemIds(session.context));
   const collected = [];
 
@@ -287,7 +306,10 @@ function syncSessionStats(session) {
     return;
   }
 
+  normalizeCollectedGemIds(session.collectedGemIds);
+  normalizeCollectedGemIds(stats.collectedGemIds);
   session.collectedGemIds.forEach((id) => stats.collectedGemIds.add(id));
+  normalizeCollectedGemIds(stats.collectedGemIds);
   session.visitedLevels.forEach((level) => stats.visitedRooms.add(level));
   recordSessionVisit(session);
 }
@@ -314,12 +336,13 @@ function applyCollectedGemsToContext(session) {
     return;
   }
 
+  normalizeCollectedGemIds(session.collectedGemIds);
   const { context } = session;
 
   for (let index = 0; index < context.engine.actorCount; index += 1) {
     const type = context.engine.actorTypes[index] || context.playData.actors[index]?.type || "";
 
-    if (type === "gem" && session.collectedGemIds.has(actorId(context, index))) {
+    if (type === "gem" && session.collectedGemIds.has(gemCollectionId(context, index))) {
       context.state.actorRemoved[index] = 1;
     }
   }

@@ -271,11 +271,17 @@ function syntheticFloor(width, height) {
     ...baseContext,
     state: engine.cloneState(engine.initialState),
     stats: {
-      collectedGemIds: new Set(["gem_suppress:gem:0:0,0,0"])
+      collectedGemIds: new Set([
+        "gem_suppress:gem:0:0,0,0",
+        "gem_suppress:gem:1:0,0,0"
+      ])
     }
   };
 
   assert.doesNotMatch(body(renderScreen(collectedContext)), /G/);
+  assert.deepEqual(Array.from(collectedContext.stats.collectedGemIds), [
+    "gem_suppress:gem:0,0,0"
+  ]);
 }
 
 {
@@ -630,6 +636,83 @@ function syntheticFloor(width, height) {
 
   assert.equal(closed.action, "close");
   assert.equal(closed.ok, true);
+}
+
+{
+  // Regression: entering a room moves the player to the end of the runtime
+  // actor array. Gem identity must survive that reorder and a later goto-level
+  // reconstruction, or the same physical gem respawns and increments twice.
+  const routeToGem = [
+    "down",
+    "right",
+    "right",
+    "right",
+    "right",
+    "down",
+    "left",
+    "down",
+    "right",
+    "down",
+    "left",
+    "up",
+    "right",
+    "down",
+    "left",
+    "up",
+    "right",
+    "down",
+    "left",
+    "down",
+    "left",
+    "up",
+    "right",
+    "down",
+    "right",
+    "up",
+    "left",
+    "up",
+    "right",
+    "down",
+    "left",
+    "down",
+    "left",
+    "up"
+  ];
+  const move = (direction) => ({ command: "move", direction });
+  const enterFromNorth = ["up", "up", "down", "down"].map(move);
+  const firstRoute = routeToGem.map(move);
+  const secondRoute = routeToGem.map(move);
+  const commands = [
+    ...enterFromNorth,
+    ...firstRoute,
+    { command: "goto_level", x: "I", y: "I" },
+    ...secondRoute,
+    { command: "close" }
+  ];
+  const responses = runBridge(commands, ["--level", "level_IxI", "--view", "top"]);
+  const firstPickupIndex = enterFromNorth.length + firstRoute.length - 1;
+  const gotoIndex = firstPickupIndex + 1;
+  const revisitIndex = gotoIndex + secondRoute.length;
+  const firstPickup = responses[firstPickupIndex];
+  const jumpedBack = responses[gotoIndex];
+  const revisitedGemTile = responses[revisitIndex];
+
+  assert.equal(firstPickup.gem_count, 1);
+  assert.deepEqual(firstPickup.collected_this_action, ["level_IxI:gem:1,13,0"]);
+  assert.doesNotMatch(firstPickup.level, /G/);
+
+  assert.equal(jumpedBack.action, "goto_level");
+  assert.equal(jumpedBack.current_room, "level_IxI");
+  assert.equal(jumpedBack.gem_count, 1);
+  assert.deepEqual(jumpedBack.collected_gems, ["level_IxI:gem:1,13,0"]);
+  assert.doesNotMatch(jumpedBack.level, /G/);
+
+  assert.equal(revisitedGemTile.player.x, 1);
+  assert.equal(revisitedGemTile.player.y, 13);
+  assert.equal(revisitedGemTile.gem_count, 1);
+  assert.deepEqual(revisitedGemTile.collected_this_action, []);
+  assert.deepEqual(revisitedGemTile.collected_gems, ["level_IxI:gem:1,13,0"]);
+  assert.doesNotMatch(revisitedGemTile.level, /G/);
 }
 
 {

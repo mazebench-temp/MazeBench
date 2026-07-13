@@ -21,6 +21,17 @@ const DEFAULT_BROWSER_PATHS = [
 ];
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
+const LEGACY_GEM_ID_PATTERN = /^(.*):gem:(?:-?\d+:)?(-?\d+),(-?\d+),(-?\d+)$/;
+
+function normalizeGemCollectionId(value) {
+  const id = String(value || "");
+  const match = id.match(LEGACY_GEM_ID_PATTERN);
+  return match ? `${match[1]}:gem:${match[2]},${match[3]},${match[4]}` : id;
+}
+
+function normalizedGemCollectionIds(values) {
+  return Array.from(new Set((values || []).map(normalizeGemCollectionId))).sort();
+}
 
 function usage() {
   return `Usage: npm run maze:replay -- [results-dir | results.jsonl | session.json | session-dir] [options]
@@ -2020,6 +2031,12 @@ async function renderReplayVideo(
           return Boolean(
             app?.isAnimating ||
               app?.isTransitioningLevel ||
+              app?.levelTransition ||
+              app?.levelTransitionFrameId !== null ||
+              app?.cameraFrameId !== null ||
+              app?.gateAnimationFrameId !== null ||
+              app?.orangeWallAnimationFrameId !== null ||
+              app?.playerLiftAnimationFrameId !== null ||
               app?.threeRenderer?.isDebugCameraAnimating?.()
           );
         }
@@ -2357,11 +2374,46 @@ async function renderReplayVideo(
         }
         if (animated) await settleAndCapture(3.2);
         else await captureFrame();
-        await page.evaluate(async () => {
+        const transitionHandoff = await page.evaluate(async (accelerated) => {
           await window.__MAZE_REPLAY_GOTO_PROMISE__;
           window.__MAZE_REPLAY_GOTO_PROMISE__ = null;
           window.__MAZE_REPLAY_GOTO_DONE__ = false;
-        });
+          const app = window.__PIXEL_GAME_APP__;
+          const settled = Boolean(
+            app &&
+              !app.isTransitioningLevel &&
+              !app.levelTransition &&
+              app.levelTransitionFrameId === null &&
+              app.cameraFrameId === null &&
+              app.gateAnimationFrameId === null &&
+              app.orangeWallAnimationFrameId === null &&
+              app.playerLiftAnimationFrameId === null &&
+              !app.threeRenderer?.isDebugCameraAnimating?.()
+          );
+
+          if (settled && accelerated) {
+            // A completed transition is still the most recent active render.
+            // Run one uncaptured idle render before the synthetic clock is
+            // re-anchored for the next action. This clears the renderer's
+            // monotonic animation timestamp; without it, back-to-back gotos
+            // inherit the previous tween's end time and jump ahead.
+            app.render?.(performance.now());
+          }
+
+          return {
+            levelTransition: Boolean(app?.levelTransition),
+            levelTransitionFramePending: app?.levelTransitionFrameId !== null,
+            settled,
+            transitioning: app?.isTransitioningLevel === true
+          };
+        }, Boolean(options.accelerated));
+        if (!transitionHandoff.settled) {
+          throw new Error(
+            `Room transition did not settle before the next action (${JSON.stringify(
+              transitionHandoff
+            )})`
+          );
+        }
       } else if (parsed.command === "quit") {
         await captureFrame();
       }
@@ -2396,10 +2448,11 @@ async function renderReplayVideo(
           }
         }
         if (Array.isArray(expectedState.collected_gems)) {
-          const expectedGems = expectedState.collected_gems.map(String).sort();
-          if (JSON.stringify(expectedGems) !== JSON.stringify(visualState.collected_gems)) {
+          const expectedGems = normalizedGemCollectionIds(expectedState.collected_gems);
+          const visualGems = normalizedGemCollectionIds(visualState.collected_gems);
+          if (JSON.stringify(expectedGems) !== JSON.stringify(visualGems)) {
             mismatches.push(
-              `collected gems ${visualState.collected_gems.join(",")} != ${expectedGems.join(",")}`
+              `collected gems ${visualGems.join(",")} != ${expectedGems.join(",")}`
             );
           }
         }

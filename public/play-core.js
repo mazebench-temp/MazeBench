@@ -578,6 +578,25 @@
       return `pixel-game:${app.currentGameId}:collected-gems:v1`;
     }
 
+    const LEGACY_GEM_ID_PATTERN = /^(.*):gem:(?:-?\d+:)?(-?\d+),(-?\d+),(-?\d+)$/;
+
+    function normalizeGemCollectionId(value) {
+      const id = String(value || "");
+      const match = id.match(LEGACY_GEM_ID_PATTERN);
+      return match ? `${match[1]}:gem:${match[2]},${match[3]},${match[4]}` : id;
+    }
+
+    function normalizeCollectedGemIds(ids) {
+      if (!(ids instanceof Set) || ids.size === 0) {
+        return ids;
+      }
+
+      const normalized = Array.from(ids, normalizeGemCollectionId);
+      ids.clear();
+      normalized.forEach((id) => ids.add(id));
+      return ids;
+    }
+
     function loadCollectedGemIds() {
       if (app.isEditorRenderApp) {
         return new Set();
@@ -586,7 +605,13 @@
       try {
         const raw = window.localStorage?.getItem(collectedGemStorageKey());
         const values = JSON.parse(raw || "[]");
-        return new Set(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
+        return new Set(
+          Array.isArray(values)
+            ? values
+                .filter((value) => typeof value === "string")
+                .map(normalizeGemCollectionId)
+            : []
+        );
       } catch (error) {
         return new Set();
       }
@@ -598,6 +623,7 @@
       }
 
       try {
+        normalizeCollectedGemIds(app.collectedGemIds);
         window.localStorage?.setItem(
           collectedGemStorageKey(),
           JSON.stringify(Array.from(app.collectedGemIds).sort())
@@ -612,10 +638,14 @@
         return null;
       }
 
+      if (typeof actor.collectionId === "string" && actor.collectionId.length > 0) {
+        return normalizeGemCollectionId(actor.collectionId);
+      }
+
       const x = Number.isInteger(actor.x) ? actor.x : 0;
       const y = Number.isInteger(actor.y) ? actor.y : 0;
       const elevation = Number.isInteger(actor.elevation) ? actor.elevation : 0;
-      return `${levelId}:gem:${index}:${x},${y},${elevation}`;
+      return `${levelId}:gem:${x},${y},${elevation}`;
     }
 
     function applyCollectedGemVisual(actor) {
