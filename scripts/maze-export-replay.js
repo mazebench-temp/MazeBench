@@ -2292,6 +2292,41 @@ async function renderReplayVideo(
       });
     }
 
+    async function settleReplayActionBoundary() {
+      return page.evaluate((accelerated) => {
+        const app = window.__PIXEL_GAME_APP__;
+        const settled = Boolean(
+          app &&
+            !app.isAnimating &&
+            !app.isTransitioningLevel &&
+            !app.levelTransition &&
+            app.animationFrameId === null &&
+            app.levelTransitionFrameId === null &&
+            app.cameraFrameId === null &&
+            app.gateAnimationFrameId === null &&
+            app.orangeWallAnimationFrameId === null &&
+            app.playerLiftAnimationFrameId === null &&
+            !app.threeRenderer?.isDebugCameraAnimating?.()
+        );
+
+        if (settled && accelerated) {
+          // A room transition can be completed by an edge move as well as by
+          // goto. Its final captured render still carries the synthetic clock's
+          // high-water mark. Run one uncaptured idle render so the renderer
+          // clears that timestamp before the next action re-anchors the clock.
+          app.render?.(performance.now());
+        }
+
+        return {
+          animating: app?.isAnimating === true,
+          levelTransition: Boolean(app?.levelTransition),
+          levelTransitionFramePending: app?.levelTransitionFrameId !== null,
+          settled,
+          transitioning: app?.isTransitioningLevel === true
+        };
+      }, Boolean(options.accelerated));
+    }
+
     for (const entry of actionEntries) {
       const parsed = entry.parsed;
       const frameStart = frameIndex;
@@ -2385,48 +2420,25 @@ async function renderReplayVideo(
         }
         if (animated) await settleAndCapture(3.2);
         else await captureFrame();
-        const transitionHandoff = await page.evaluate(async (accelerated) => {
+        await page.evaluate(async () => {
           await window.__MAZE_REPLAY_GOTO_PROMISE__;
           window.__MAZE_REPLAY_GOTO_PROMISE__ = null;
           window.__MAZE_REPLAY_GOTO_DONE__ = false;
-          const app = window.__PIXEL_GAME_APP__;
-          const settled = Boolean(
-            app &&
-              !app.isTransitioningLevel &&
-              !app.levelTransition &&
-              app.levelTransitionFrameId === null &&
-              app.cameraFrameId === null &&
-              app.gateAnimationFrameId === null &&
-              app.orangeWallAnimationFrameId === null &&
-              app.playerLiftAnimationFrameId === null &&
-              !app.threeRenderer?.isDebugCameraAnimating?.()
-          );
-
-          if (settled && accelerated) {
-            // A completed transition is still the most recent active render.
-            // Run one uncaptured idle render before the synthetic clock is
-            // re-anchored for the next action. This clears the renderer's
-            // monotonic animation timestamp; without it, back-to-back gotos
-            // inherit the previous tween's end time and jump ahead.
-            app.render?.(performance.now());
-          }
-
-          return {
-            levelTransition: Boolean(app?.levelTransition),
-            levelTransitionFramePending: app?.levelTransitionFrameId !== null,
-            settled,
-            transitioning: app?.isTransitioningLevel === true
-          };
-        }, Boolean(options.accelerated));
-        if (!transitionHandoff.settled) {
-          throw new Error(
-            `Room transition did not settle before the next action (${JSON.stringify(
-              transitionHandoff
-            )})`
-          );
-        }
+        });
       } else if (parsed.command === "quit") {
         await captureFrame();
+      }
+
+      // Do this for every action, not only goto: an ordinary directional move
+      // can itself cross a room edge and leave the same synthetic transition
+      // timestamp behind. The idle render is skipped unless all motion settled.
+      const actionHandoff = await settleReplayActionBoundary();
+      if (parsed.command === "goto_level" && !actionHandoff.settled) {
+        throw new Error(
+          `Room transition did not settle before the next action (${JSON.stringify(
+            actionHandoff
+          )})`
+        );
       }
 
       completedActions += 1;
