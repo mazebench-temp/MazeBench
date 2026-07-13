@@ -2363,8 +2363,8 @@ body.play-body {
   border: 1px solid rgba(124, 143, 255, 0.24);
   border-radius: 999px;
   display: inline-flex;
-  gap: 3px;
-  padding: 4px;
+  gap: 4px;
+  padding: 5px;
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
@@ -2383,14 +2383,16 @@ body.play-body {
   color: #9ba6cb;
   cursor: pointer;
   display: inline-flex;
-  flex: 0 0 31px;
-  height: 31px;
+  flex: 0 0 40px;
+  height: 40px;
   justify-content: center;
-  min-height: 31px;
-  min-width: 31px;
+  min-height: 40px;
+  min-width: 40px;
   padding: 0;
+  touch-action: manipulation;
   transition: background 130ms ease, color 130ms ease, transform 130ms ease;
-  width: 31px;
+  user-select: none;
+  width: 40px;
 }
 
 .replay-control:hover:not(:disabled),
@@ -2406,6 +2408,10 @@ body.play-body {
   opacity: 0.28;
 }
 
+.replay-control:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
 .replay-control--play {
   background: rgba(101, 243, 212, 0.12);
   border-color: rgba(101, 243, 212, 0.32);
@@ -2418,14 +2424,31 @@ body.play-body {
   color: #8cffe5;
 }
 
+.replay-control--play[aria-pressed="true"] {
+  background: rgba(255, 209, 92, 0.14);
+  border-color: rgba(255, 209, 92, 0.42);
+  color: #ffd15c;
+}
+
 .replay-control svg {
   fill: none;
   height: 16px;
+  pointer-events: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
   width: 16px;
+}
+
+.replay-control__icon {
+  display: grid;
+  pointer-events: none;
+  place-items: center;
+}
+
+.replay-control__icon[hidden] {
+  display: none;
 }
 
 .replay-controls__position {
@@ -2496,9 +2519,11 @@ body.play-body {
 }
 
 .replay-controls--instance .replay-control {
-  flex-basis: 31px;
-  height: 31px;
-  width: 31px;
+  flex-basis: 34px;
+  height: 34px;
+  min-height: 34px;
+  min-width: 34px;
+  width: 34px;
 }
 
 .replay-controls--instance .replay-control svg {

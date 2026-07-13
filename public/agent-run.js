@@ -146,10 +146,12 @@
     const active = state.activeReplay === viewId ? " is-active" : "";
     const button = (action, icon, label, disabled = false, extra = "") =>
       `<button type="button" class="replay-control${extra}" data-replay-view="${escapeText(viewId)}" data-replay-action="${action}" aria-label="${label}" title="${label}"${disabled ? " disabled" : ""}>${icon}</button>`;
+    const playPauseIcons = `<span class="replay-control__icon" data-replay-icon="play"${playing ? " hidden" : ""}>${REPLAY_ICONS.play}</span>
+      <span class="replay-control__icon" data-replay-icon="pause"${playing ? "" : " hidden"}>${REPLAY_ICONS.pause}</span>`;
     return `<div class="replay-controls__buttons${active}" data-replay-controls-view="${escapeText(viewId)}" role="group" aria-label="Observation playback">
       ${button("first", REPLAY_ICONS.first, "First observation", turn <= 0)}
       ${button("previous", REPLAY_ICONS.previous, "Previous observation", turn <= 0)}
-      ${button("play", playing ? REPLAY_ICONS.pause : REPLAY_ICONS.play, playing ? "Pause playback" : `Play at ${rate} action${rate === 1 ? "" : "s"} per second`, total <= 0, " replay-control--play")}
+      ${button("play", playPauseIcons, playing ? "Pause playback" : `Play at ${rate} action${rate === 1 ? "" : "s"} per second`, total <= 0, " replay-control--play")}
       ${button("next", REPLAY_ICONS.next, "Next observation", turn >= total)}
       ${button("last", REPLAY_ICONS.last, "Latest observation", followingLatest)}
       <label class="replay-rate" title="Playback speed">
@@ -187,7 +189,10 @@
       const label = playing
         ? "Pause playback"
         : `Play at ${rate} action${rate === 1 ? "" : "s"} per second`;
-      play.innerHTML = playing ? REPLAY_ICONS.pause : REPLAY_ICONS.play;
+      const playIcon = play.querySelector('[data-replay-icon="play"]');
+      const pauseIcon = play.querySelector('[data-replay-icon="pause"]');
+      if (playIcon) playIcon.hidden = playing;
+      if (pauseIcon) pauseIcon.hidden = !playing;
       play.setAttribute("aria-label", label);
       play.setAttribute("aria-pressed", String(playing));
       play.title = label;
@@ -321,31 +326,44 @@
     refreshReplayControls(viewId);
   }
 
-  function wireReplayControls(container, { immediate = false } = {}) {
+  function wireReplayControls(container) {
     container?.querySelectorAll("[data-replay-action]").forEach((control) => {
       const activate = (event) => {
         event.preventDefault();
         event.stopPropagation();
         const viewId = control.dataset.replayView || "primary";
-        if (immediate && event.type === "pointerdown") {
+        if (control.closest(".run-swarm-card") && event.type === "pointerdown") {
           state.suppressCardToggleView = viewId;
           state.suppressCardToggleUntil = Date.now() + 750;
         }
         handleReplayAction(viewId, control.dataset.replayAction || "");
       };
-      if (immediate) {
-        control.addEventListener("pointerdown", activate);
-        control.addEventListener("click", (event) => {
-          // Pointer activation already ran on pointerdown. Preserve keyboard clicks.
-          if (event.detail === 0) activate(event);
-          else {
-            event.preventDefault();
-            event.stopPropagation();
-          }
-        });
-      } else {
-        control.addEventListener("click", activate);
-      }
+      control.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        control.dataset.replayPointerPending = "true";
+        activate(event);
+      });
+      control.addEventListener("keydown", (event) => {
+        if ((event.key !== "Enter" && event.key !== " ") || event.repeat) return;
+        control.dataset.replayKeyboardPending = "true";
+        activate(event);
+        window.setTimeout(() => {
+          delete control.dataset.replayKeyboardPending;
+        }, 0);
+      });
+      control.addEventListener("click", (event) => {
+        const pointerActivated = control.dataset.replayPointerPending === "true";
+        const keyboardActivated = control.dataset.replayKeyboardPending === "true";
+        delete control.dataset.replayPointerPending;
+        delete control.dataset.replayKeyboardPending;
+        // Pointer and keyboard activation already ran on their earliest reliable
+        // events. Programmatic/assistive clicks without either path still work.
+        if (!pointerActivated && !keyboardActivated) activate(event);
+        else {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      });
     });
     container?.querySelectorAll("[data-replay-rate]").forEach((control) => {
       control.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -433,7 +451,7 @@
   }
 
   function wireInstanceCards(container, workers) {
-    wireReplayControls(container, { immediate: true });
+    wireReplayControls(container);
     container.querySelectorAll(".run-swarm-card").forEach((card) => {
       const toggle = () => {
         const id = card.dataset.instanceId || "";

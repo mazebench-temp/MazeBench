@@ -18,6 +18,18 @@ assert.match(runScript, /playbackRequest && !isCurrentPlayback\(viewId, playback
 assert.match(runScript, /state\.playbackDeadline \+= replayDelay\(viewId\)/);
 assert.match(runScript, /state\.playbackDeadline - performance\.now\(\)/);
 assert.match(runScript, /control\.addEventListener\("input", \(event\) => updateRate\(event\)\)/);
+assert.match(runScript, /data-replay-icon="play"/);
+assert.match(runScript, /data-replay-icon="pause"/);
+assert.doesNotMatch(runScript, /play\.innerHTML = playing/);
+assert.match(runScript, /control\.addEventListener\("pointerdown"/);
+assert.match(runScript, /control\.dataset\.replayPointerPending = "true"/);
+assert.match(runScript, /delete control\.dataset\.replayPointerPending/);
+assert.match(runScript, /event\.key !== "Enter" && event\.key !== " "/);
+assert.match(runScript, /control\.dataset\.replayKeyboardPending = "true"/);
+assert.match(runScript, /!pointerActivated && !keyboardActivated/);
+assert.doesNotMatch(runScript, /replayPointerAt/);
+assert.match(siteTheme, /\.replay-control__icon \{[\s\S]*?pointer-events: none/);
+assert.match(siteTheme, /\.replay-control \{[\s\S]*?min-height: 40px/);
 assert.match(siteTheme, /\.replay-rate input \{/);
 assert.doesNotMatch(siteTheme, /\.replay-rate select \{/);
 
