@@ -19,6 +19,7 @@ const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 // Clapperboard and Download from Lucide Icons (ISC License).
 // https://lucide.dev/
 const VIDEO_ICONS = Object.freeze({
+  cancel: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>`,
   clapperboard: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12.296 3.464 3.02 3.956"></path><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z"></path><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><path d="m6.18 5.276 3.1 3.899"></path></svg>`,
   download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"></path><path d="m7 10 5 5 5-5"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path></svg>`
 });
@@ -1141,6 +1142,8 @@ function createPageRenderer({
             <button id="resume-run" class="button--primary" type="button" hidden>Resume</button>
             <button id="continue-run" class="button" type="button" hidden>Continue</button>
             <button id="generate-video" class="button run-video-action" type="button" hidden>${VIDEO_ICONS.clapperboard}<span>Generate video</span></button>
+            <button id="regenerate-video" class="button run-video-action" type="button" hidden>${VIDEO_ICONS.clapperboard}<span>Regenerate video</span></button>
+            <button id="cancel-video" class="button--coral run-video-action" type="button" hidden>${VIDEO_ICONS.cancel}<span>Cancel video</span></button>
             ${isPrime ? '<a id="open-prime-evaluation" class="button" href="#" target="_blank" rel="noreferrer" hidden>Open in Prime ↗</a>' : ""}
             ${isPrime ? '<button id="stop-run" class="button--coral" type="button" hidden>Cancel Run</button>' : ""}
             <button id="delete-run" class="button--ghost delete-button" type="button" title="Delete run">${TRASH_ICON}<span>Delete</span></button>
@@ -1169,7 +1172,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)};</script>
-        <script src="/agent-run.js?v=20260712-fast-video-72" defer></script>`
+        <script src="/agent-run.js?v=20260712-replay-transition-73" defer></script>`
     });
   }
 

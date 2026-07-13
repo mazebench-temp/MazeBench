@@ -293,6 +293,20 @@ try {
   assert(videoArgs.includes("--ascii-side-by-side"));
   assert.equal(videoArgs.includes("--draft"), false);
   assert.equal(videoArgs[videoArgs.indexOf("--preset") + 1], "slower");
+  const canceledVideo = service.cancelRunVideo(hostReadOnlySwarm.id);
+  assert.equal(canceledVideo.video_status, "idle");
+  assert.equal(fs.existsSync(path.join(hostRunDir, "replay-progress.json")), false);
+  fs.writeFileSync(path.join(hostRunDir, "maze_replay.mp4"), "old replay");
+  const readyMeta = loadJson(path.join(hostRunDir, "run.json"), {});
+  fs.writeFileSync(
+    path.join(hostRunDir, "run.json"),
+    JSON.stringify({ ...readyMeta, video_status: "ready" })
+  );
+  assert.equal(service.summarizeRun(hostReadOnlySwarm.id).has_video, true);
+  const regeneratedVideo = service.regenerateRunVideo(hostReadOnlySwarm.id);
+  assert.equal(regeneratedVideo.video_status, "rendering");
+  assert.equal(regeneratedVideo.has_video, false);
+  assert.equal(fs.existsSync(path.join(hostRunDir, "maze_replay.mp4")), false);
   const resumedHostRun = service.resumeRun(hostReadOnlySwarm.id);
   assert.equal(resumedHostRun.status, "running");
   assert.match(resumedHostRun.command, /resume=cold-pause-thread/);

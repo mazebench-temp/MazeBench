@@ -1113,6 +1113,21 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options, asciiFra
   let captureProgress = null;
   let frameIndex = 0;
   let lastFrameBuffer = null;
+  let terminating = false;
+  const terminateRenderer = () => {
+    if (terminating) return;
+    terminating = true;
+    const forceExit = setTimeout(() => process.exit(143), 3000);
+    Promise.allSettled([
+      browser.close(),
+      server.close()
+    ]).finally(() => {
+      clearTimeout(forceExit);
+      process.exit(143);
+    });
+  };
+  process.once("SIGINT", terminateRenderer);
+  process.once("SIGTERM", terminateRenderer);
 
   fs.rmSync(framesDir, { force: true, recursive: true });
   ensureDir(framesDir);
@@ -1175,6 +1190,11 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options, asciiFra
     });
     await page.evaluate(async ({ asciiSideBySide, draft, edges, fast, fps, height, motionScale, moveSpeed, outputWidth, width }) => {
       const app = window.__PIXEL_GAME_APP__;
+      // Agent sessions record deaths as terminal states until the model
+      // explicitly chooses undo, reset, or a room change. The interactive
+      // player normally auto-undoes falls, which advances only the visual
+      // replay and makes it diverge from the recorded text observations.
+      app.autoUndoPlayerFalls = false;
       const pngDataUrl = (canvas) => new Promise((resolve, reject) => {
         canvas.toBlob((blob) => {
           if (!blob) {
@@ -1235,26 +1255,33 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options, asciiFra
         context.fillRect(asciiX - 1, 0, 2, canvas.height);
 
         context.textBaseline = "top";
-        const lines = String(composite.ascii || "").split(/\r?\n/);
-        const maxColumns = Math.max(1, ...lines.map((line) => line.length));
+        const terminalColumns = 64;
+        const terminalRows = 64;
+        const lines = String(composite.ascii || "").split(/\r?\n/).slice(0, terminalRows);
         const availableWidth = canvas.width - asciiX - 44;
         const availableHeight = canvas.height - 64;
-        const fontSize = Math.max(
-          5,
-          Math.min(13, availableHeight / Math.max(1, lines.length), availableWidth / (maxColumns * 0.62))
-        );
+        const terminalFont = '"SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace';
+        let fontSize = Math.min(13, availableHeight / terminalRows);
+        context.font = `${fontSize}px ${terminalFont}`;
+        const cellWidth = Math.max(1, context.measureText("M").width);
+        fontSize *= Math.min(1, availableWidth / (cellWidth * terminalColumns));
+        const lineHeight = availableHeight / terminalRows;
         context.fillStyle = "#d9e4ff";
-        context.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        lines.forEach((line, index) => context.fillText(line, asciiX + 22, 54 + index * fontSize));
-
-        // Paint the title rail last so dense observations can never visually
-        // interfere with the persistent mode/action labels.
+        context.font = `${fontSize}px ${terminalFont}`;
+        context.save();
+        context.beginPath();
+        context.rect(asciiX + 22, 54, availableWidth, availableHeight);
+        context.clip();
+        lines.forEach((line, index) => {
+          context.fillText(line.slice(0, terminalColumns), asciiX + 22, 54 + index * lineHeight);
+        });
+        context.restore();
         context.fillStyle = "rgba(5,7,19,0.96)";
         context.fillRect(asciiX + 2, 0, visualWidth - 2, 47);
         context.fillStyle = "#65f3d4";
         context.font = "700 15px ui-monospace, SFMono-Regular, Menlo, monospace";
         context.textAlign = "left";
-        context.fillText("ASCII OBSERVATION", asciiX + 22, 18);
+        context.fillText("What the model sees:", asciiX + 22, 18);
         context.fillStyle = "rgba(154,163,199,0.82)";
         context.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
         context.textAlign = "right";
@@ -1530,7 +1557,6 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options, asciiFra
       await setCameraView({ animate: false });
       await settleAndCapture(1);
     }
-
     const actionEntries = actions
       .map((commandText, sourceIndex) => ({ parsed: parseCommandLine(commandText), sourceIndex }))
       .filter((entry) => entry.parsed);
@@ -1576,27 +1602,38 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options, asciiFra
         await settleAndCapture(2.0);
       } else if (parsed.command === "goto_level") {
         const levelId = `level_${parsed.x}x${parsed.y}`;
-        await page.evaluate(async (nextLevelId) => {
+        const started = await page.evaluate((nextLevelId) => {
           const app = window.__PIXEL_GAME_APP__;
-          const response = await fetch(
-            `/api/play/${encodeURIComponent(app.currentGameId)}/${encodeURIComponent(nextLevelId)}`
-          );
-
-          if (!response.ok) {
-            throw new Error(`Could not load ${nextLevelId}`);
+          if (typeof app?.switchPlayWorldLevel !== "function") {
+            return false;
           }
-
-          const levelState = await response.json();
-          app.applyLevelState(levelState, {
-            deferRender: true,
-            immediateCamera: true,
-            resetHistory: false,
-            resetLevelEntry: true
+          window.__MAZE_REPLAY_GOTO_DONE__ = false;
+          window.__MAZE_REPLAY_GOTO_PROMISE__ = Promise.resolve(
+            app.switchPlayWorldLevel(nextLevelId)
+          ).finally(() => {
+            window.__MAZE_REPLAY_GOTO_DONE__ = true;
           });
-          await app.preloadImagesForLevelState?.(levelState);
-          app.render?.();
+          return true;
         }, levelId);
-        await settleAndCapture(2.0);
+        if (!started) {
+          throw new Error("The game does not expose its room transition renderer.");
+        }
+        const animated = await page.evaluate(async () => {
+          for (let frame = 0; frame < 300; frame += 1) {
+            await new Promise((resolve) => window.requestAnimationFrame(resolve));
+            const app = window.__PIXEL_GAME_APP__;
+            if (app?.isTransitioningLevel || app?.levelTransition) return true;
+            if (window.__MAZE_REPLAY_GOTO_DONE__) return false;
+          }
+          return false;
+        });
+        if (animated) await settleAndCapture(3.2);
+        else await captureFrame();
+        await page.evaluate(async () => {
+          await window.__MAZE_REPLAY_GOTO_PROMISE__;
+          window.__MAZE_REPLAY_GOTO_PROMISE__ = null;
+          window.__MAZE_REPLAY_GOTO_DONE__ = false;
+        });
       } else if (parsed.command === "quit") {
         await captureFrame();
       }
@@ -1616,6 +1653,8 @@ async function renderReplayVideo(actions, mazeOptions, outDir, options, asciiFra
 
     duplicateLastFrame(Math.round(options.tailSeconds * options.fps));
   } finally {
+    process.off("SIGINT", terminateRenderer);
+    process.off("SIGTERM", terminateRenderer);
     await browser.close().catch(() => {});
     await server.close().catch(() => {});
   }

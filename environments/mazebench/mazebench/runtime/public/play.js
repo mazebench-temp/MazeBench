@@ -724,6 +724,10 @@
     }
   }
 
+  // Replay export uses the same world-map navigation path as the interactive
+  // game so valid goto actions retain the full room-to-room camera tween.
+  app.switchPlayWorldLevel = switchPlayWorldLevel;
+
   function installPlayControls() {
     const controls = document.querySelector(".mazebench-controls");
     const controlsOverlay = document.getElementById("controls-settings-overlay");

@@ -16,6 +16,8 @@
   const resumeButton = document.getElementById("resume-run");
   const continueButton = document.getElementById("continue-run");
   const generateVideoButton = document.getElementById("generate-video");
+  const cancelVideoButton = document.getElementById("cancel-video");
+  const regenerateVideoButton = document.getElementById("regenerate-video");
   const downloadVideoButton = document.getElementById("download-video");
   const deleteButton = document.getElementById("delete-run");
   const liveImage = document.getElementById("run-live-image");
@@ -540,6 +542,10 @@
     generateVideoButton.classList.toggle("is-rendering", renderingVideo);
     const generateLabel = generateVideoButton.querySelector("span");
     if (generateLabel) generateLabel.textContent = renderingVideo ? "Generating…" : "Generate video";
+    cancelVideoButton.hidden = !renderingVideo;
+    cancelVideoButton.disabled = false;
+    regenerateVideoButton.hidden = !run.has_video || renderingVideo;
+    regenerateVideoButton.disabled = renderingVideo;
   }
 
   function formatTokens(value) {
@@ -1349,18 +1355,44 @@
     }
   });
 
-  generateVideoButton?.addEventListener("click", async () => {
+  async function startVideoGeneration(action, statusMessage) {
     generateVideoButton.disabled = true;
+    regenerateVideoButton.disabled = true;
     try {
-      const payload = await runAction("video");
+      const payload = await runAction(action);
       state.run = payload.run || state.run;
       renderControls(state.run);
       updateReplay(state.run, { phase: "starting", percent: 0 });
-      setStatus("Generating replay video…");
+      setStatus(statusMessage);
       clearTimeout(state.timer);
       poll();
     } catch (error) {
       generateVideoButton.disabled = false;
+      regenerateVideoButton.disabled = false;
+      setStatus(error.message, true);
+    }
+  }
+
+  generateVideoButton?.addEventListener("click", () => {
+    startVideoGeneration("video", "Generating replay video…");
+  });
+
+  regenerateVideoButton?.addEventListener("click", () => {
+    startVideoGeneration("video/regenerate", "Regenerating replay video…");
+  });
+
+  cancelVideoButton?.addEventListener("click", async () => {
+    cancelVideoButton.disabled = true;
+    try {
+      const payload = await runAction("video/cancel");
+      state.run = payload.run || state.run;
+      renderControls(state.run);
+      updateReplay(state.run, null);
+      setStatus("Replay video generation canceled.");
+      clearTimeout(state.timer);
+      poll();
+    } catch (error) {
+      cancelVideoButton.disabled = false;
       setStatus(error.message, true);
     }
   });

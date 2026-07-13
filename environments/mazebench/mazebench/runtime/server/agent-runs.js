@@ -3482,26 +3482,34 @@ function createAgentRunService({
     );
     if (!hasArtifacts) return meta;
 
+    const terminateRenderer = (pid) => {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch (_error) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch (_innerError) {
+          /* renderer already exited */
+        }
+      }
+      const forceTimer = setTimeout(() => {
+        if (!/maze-export-replay\.js/.test(processCommand(pid))) return;
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch (_error) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch (_innerError) {
+            /* renderer already exited */
+          }
+        }
+      }, 3500);
+      forceTimer.unref?.();
+    };
     if (activeVideo?.pid) {
-      try {
-        process.kill(-activeVideo.pid, "SIGKILL");
-      } catch (_error) {
-        try {
-          process.kill(activeVideo.pid, "SIGKILL");
-        } catch (_innerError) {
-          /* renderer already exited */
-        }
-      }
+      terminateRenderer(activeVideo.pid);
     } else if (meta.video_pid && pidAlive(meta.video_pid)) {
-      try {
-        process.kill(-meta.video_pid, "SIGKILL");
-      } catch (_error) {
-        try {
-          process.kill(meta.video_pid, "SIGKILL");
-        } catch (_innerError) {
-          /* renderer already exited */
-        }
-      }
+      terminateRenderer(meta.video_pid);
     }
     videoChildren.delete(runId);
     fs.rmSync(path.join(runDir, "maze_replay.mp4"), { force: true });
@@ -3518,6 +3526,26 @@ function createAgentRunService({
     } = meta;
     writeRunMeta(runId, cleanMeta);
     return cleanMeta;
+  }
+
+  function cancelRunVideo(runId) {
+    const meta = readRunMeta(runId);
+    if (!meta) throw new Error(`Unknown run "${runId}".`);
+    if (meta.video_status !== "rendering" && !videoChildren.has(runId)) {
+      return summarizeRun(runId);
+    }
+    discardRunVideo(runId, meta);
+    return summarizeRun(runId);
+  }
+
+  function regenerateRunVideo(runId) {
+    const meta = readRunMeta(runId);
+    if (!meta) throw new Error(`Unknown run "${runId}".`);
+    if (!["paused", "finished", "stopped"].includes(meta.status)) {
+      throw new Error("Pause or finish the run before regenerating its replay video.");
+    }
+    discardRunVideo(runId, meta);
+    return generateRunVideo(runId);
   }
 
   function cancelPrimeEvaluation(runId) {
@@ -3706,6 +3734,7 @@ function createAgentRunService({
   providerRetryTimer.unref?.();
 
   return {
+    cancelRunVideo,
     continueRun,
     deleteRun,
     generateRunVideo,
@@ -3718,6 +3747,7 @@ function createAgentRunService({
     listRuns,
     pauseRun,
     renderLiveFrame,
+    regenerateRunVideo,
     resolveRunFilePath,
     resumeRun,
     setRunMoveTarget,

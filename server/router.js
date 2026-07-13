@@ -241,7 +241,12 @@ function createRequestRouter({
       return;
     }
 
-    if (segments.length === 5 && segments[0] === "api" && segments[1] === "agent" && segments[2] === "runs") {
+    if (
+      (segments.length === 5 || segments.length === 6) &&
+      segments[0] === "api" &&
+      segments[1] === "agent" &&
+      segments[2] === "runs"
+    ) {
       const runId = decodeURIComponent(segments[3]);
 
       if (segments[4] === "progress" && request.method === "GET") {
@@ -288,7 +293,19 @@ function createRequestRouter({
         return;
       }
 
-      if (segments[4] === "video" && request.method === "POST") {
+      if (segments[4] === "video" && segments[5] === "cancel" && request.method === "POST") {
+        const run = agentRuns.cancelRunVideo(runId);
+        sendJson(response, 200, { run, message: "Replay video generation canceled." });
+        return;
+      }
+
+      if (segments[4] === "video" && segments[5] === "regenerate" && request.method === "POST") {
+        const run = agentRuns.regenerateRunVideo(runId);
+        sendJson(response, 202, { run, message: "Replay video regeneration started." });
+        return;
+      }
+
+      if (segments.length === 5 && segments[4] === "video" && request.method === "POST") {
         const run = agentRuns.generateRunVideo(runId);
         sendJson(response, 202, { run, message: "Replay video generation started." });
         return;
