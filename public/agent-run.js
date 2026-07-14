@@ -57,6 +57,7 @@
   const heatmapSummary = document.getElementById("run-heatmap-summary");
   const heatmapLegend = document.getElementById("run-heatmap-legend");
   const heatmapEmpty = document.getElementById("run-heatmap-empty");
+  let heatmapExportFormat = document.getElementById("run-heatmap-export-format");
   let heatmapExportButton = document.getElementById("run-heatmap-export");
   const swarmSection = document.getElementById("run-swarm-section");
   const swarmGrid = document.getElementById("run-swarm-grid");
@@ -120,13 +121,27 @@
         heatmapSummary.append(stat);
       });
     }
+    if (actions && !heatmapExportFormat) {
+      heatmapExportFormat = document.createElement("select");
+      heatmapExportFormat.id = "run-heatmap-export-format";
+      heatmapExportFormat.className = "run-heatmap__format";
+      heatmapExportFormat.setAttribute("aria-label", "Heatmap export format");
+      [["gif", "GIF"], ["mp4", "MP4"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        heatmapExportFormat.append(option);
+      });
+      heatmapExportFormat.hidden = true;
+      actions.append(heatmapExportFormat);
+    }
     if (actions && !heatmapExportButton) {
       heatmapExportButton = document.createElement("button");
       heatmapExportButton.id = "run-heatmap-export";
       heatmapExportButton.className = "run-heatmap__export";
       heatmapExportButton.type = "button";
-      heatmapExportButton.title = "Export a compact video of the heatmap forming";
-      heatmapExportButton.textContent = "Export video";
+      heatmapExportButton.title = "Export a compact animated GIF of the heatmap forming";
+      heatmapExportButton.textContent = "Export GIF";
       heatmapExportButton.hidden = true;
       actions.append(heatmapExportButton);
     }
@@ -1416,9 +1431,9 @@
     return `rgb(${color.join(", ")})`;
   }
 
-  function paintHeatmap(context, data, width, height, visits = data.visits) {
+  function paintHeatmap(context, data, width, height, visits = data.visits, theme = {}) {
     context.clearRect(0, 0, width, height);
-    context.fillStyle = "#070a16";
+    context.fillStyle = theme.background || "#070a16";
     context.fillRect(0, 0, width, height);
 
     const cellWidth = width / data.columns;
@@ -1433,12 +1448,12 @@
         const top = (y - data.minY) * cellHeight + gap;
         context.fillStyle = count
           ? heatmapColor(range > 0 ? (Math.log1p(count) - low) / range : 0)
-          : "rgba(21, 26, 51, 0.72)";
+          : theme.empty || "rgba(21, 26, 51, 0.72)";
         context.fillRect(left, top, Math.max(0.5, cellWidth - gap * 2), Math.max(0.5, cellHeight - gap * 2));
       }
     }
 
-    context.strokeStyle = "rgba(124, 143, 255, 0.52)";
+    context.strokeStyle = theme.grid || "rgba(124, 143, 255, 0.52)";
     context.lineWidth = Math.max(1, Math.min(2, Math.min(cellWidth, cellHeight) * 0.08));
     context.beginPath();
     for (let column = data.minRoomColumn; column <= data.maxRoomColumn + 1; column += 1) {
@@ -1473,29 +1488,231 @@
     paintHeatmap(context, data, width, height);
   }
 
-  function heatmapVideoSupported() {
-    return typeof MediaRecorder !== "undefined" && typeof heatmapCanvas?.captureStream === "function";
-  }
-
-  function heatmapVideoMimeType() {
-    const candidates = [
-      "video/webm;codecs=vp9",
-      "video/webm;codecs=vp8",
-      "video/webm",
-      "video/mp4;codecs=avc1.42E01E",
-      "video/mp4"
-    ];
-    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
-    return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
-  }
-
   function heatmapExportSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  async function exportHeatmapVideo() {
+  function heatmapMp4MimeType() {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
+    return [
+      "video/mp4;codecs=avc1.42E01E",
+      "video/mp4;codecs=avc1.42001f",
+      "video/mp4"
+    ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function heatmapMp4Supported() {
+    return Boolean(heatmapMp4MimeType()) && typeof heatmapCanvas?.captureStream === "function";
+  }
+
+  function selectedHeatmapExportFormat() {
+    return heatmapExportFormat?.value === "mp4" ? "mp4" : "gif";
+  }
+
+  function updateHeatmapExportControl() {
+    if (!heatmapExportButton) return;
+    const mp4Option = heatmapExportFormat?.querySelector('option[value="mp4"]');
+    const mp4Supported = heatmapMp4Supported();
+    if (mp4Option) mp4Option.disabled = !mp4Supported;
+    if (!mp4Supported && heatmapExportFormat?.value === "mp4") heatmapExportFormat.value = "gif";
+    const format = selectedHeatmapExportFormat();
+    if (!state.heatmapExporting) heatmapExportButton.textContent = `Export ${format.toUpperCase()}`;
+    heatmapExportButton.disabled = state.heatmapExporting || (format === "mp4" && !mp4Supported);
+    heatmapExportButton.title = format === "mp4"
+      ? "Export a compact black-background MP4 of the heatmap forming"
+      : "Export a compact black-background animated GIF of the heatmap forming";
+  }
+
+  function downloadHeatmapExport(blob, extension) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `maze-heatmap-${String(runId || "run").replace(/[^a-z0-9_-]+/gi, "-")}.${extension}`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  function gifWriteText(bytes, value) {
+    for (let index = 0; index < value.length; index += 1) bytes.push(value.charCodeAt(index));
+  }
+
+  function gifWriteUint16(bytes, value) {
+    bytes.push(value & 0xff, value >> 8 & 0xff);
+  }
+
+  function gifLzwEncode(indices, minimumCodeSize) {
+    const clearCode = 1 << minimumCodeSize;
+    const endCode = clearCode + 1;
+    const output = [];
+    let bitBuffer = 0;
+    let bitCount = 0;
+    let codeSize = minimumCodeSize + 1;
+    let nextCode = endCode + 1;
+    const dictionary = new Map();
+    const writeCode = (code) => {
+      bitBuffer |= code << bitCount;
+      bitCount += codeSize;
+      while (bitCount >= 8) {
+        output.push(bitBuffer & 0xff);
+        bitBuffer >>= 8;
+        bitCount -= 8;
+      }
+    };
+    const reset = () => {
+      dictionary.clear();
+      codeSize = minimumCodeSize + 1;
+      nextCode = endCode + 1;
+    };
+
+    writeCode(clearCode);
+    let prefix = indices[0] || 0;
+    for (let index = 1; index < indices.length; index += 1) {
+      const suffix = indices[index];
+      const key = prefix * 256 + suffix;
+      const existing = dictionary.get(key);
+      if (existing !== undefined) {
+        prefix = existing;
+        continue;
+      }
+      writeCode(prefix);
+      if (nextCode < 4096) {
+        dictionary.set(key, nextCode);
+        nextCode += 1;
+        // The decoder's dictionary trails the encoder by one emitted code.
+        // Grow only after allocating the first code beyond the current width.
+        if (nextCode > 1 << codeSize && codeSize < 12) codeSize += 1;
+      } else {
+        writeCode(clearCode);
+        reset();
+      }
+      prefix = suffix;
+    }
+    writeCode(prefix);
+    writeCode(endCode);
+    if (bitCount > 0) output.push(bitBuffer & 0xff);
+    return output;
+  }
+
+  function gifWriteFrame(bytes, pixels, width, height, delay, transparent) {
+    bytes.push(0x21, 0xf9, 0x04, transparent ? 0x05 : 0x04);
+    gifWriteUint16(bytes, delay);
+    bytes.push(0x00, 0x00);
+    bytes.push(0x2c);
+    gifWriteUint16(bytes, 0);
+    gifWriteUint16(bytes, 0);
+    gifWriteUint16(bytes, width);
+    gifWriteUint16(bytes, height);
+    bytes.push(0x00);
+
+    const minimumCodeSize = 3;
+    const encoded = gifLzwEncode(pixels, minimumCodeSize);
+    bytes.push(minimumCodeSize);
+    for (let offset = 0; offset < encoded.length; offset += 255) {
+      const block = encoded.slice(offset, offset + 255);
+      bytes.push(block.length, ...block);
+    }
+    bytes.push(0x00);
+  }
+
+  function heatmapGifPaletteIndex(count, data) {
+    if (!count) return 1;
+    const low = Math.log1p(data.minCount);
+    const range = Math.log1p(data.maxCount) - low;
+    const intensity = range > 0 ? (Math.log1p(count) - low) / range : 0;
+    if (intensity < 0.25) return 2;
+    if (intensity < 0.5) return 3;
+    if (intensity < 0.75) return 4;
+    return 5;
+  }
+
+  function heatmapGifBytes(data, sequence, onProgress) {
+    const maxDimension = 320;
+    const scale = Math.max(1, Math.min(3, Math.floor(maxDimension / data.columns), Math.floor(maxDimension / data.rows)));
+    const width = data.columns * scale;
+    const height = data.rows * scale;
+    const bytes = [];
+    gifWriteText(bytes, "GIF89a");
+    gifWriteUint16(bytes, width);
+    gifWriteUint16(bytes, height);
+    bytes.push(0xf2, 0x00, 0x00);
+    [
+      [0, 0, 0],
+      [0, 0, 0],
+      [255, 216, 77],
+      [255, 151, 45],
+      [239, 62, 84],
+      [139, 76, 220],
+      [36, 36, 36],
+      [0, 0, 0]
+    ].forEach((color) => bytes.push(...color));
+    bytes.push(0x21, 0xff, 0x0b);
+    gifWriteText(bytes, "NETSCAPE2.0");
+    bytes.push(0x03, 0x01, 0x00, 0x00, 0x00);
+
+    const fps = 25;
+    const durationSeconds = 16;
+    const totalFrames = fps * durationSeconds;
+    const holdFrames = fps;
+    const activeFrames = totalFrames - holdFrames;
+    const delay = Math.round(100 / fps);
+    const roomPixels = data.roomSize * scale;
+    const base = new Uint8Array(width * height);
+    base.fill(1);
+    for (let column = 0; column <= data.maxRoomColumn - data.minRoomColumn + 1; column += 1) {
+      const x = Math.min(width - 1, column * roomPixels);
+      for (let y = 0; y < height; y += 1) base[y * width + x] = 6;
+    }
+    for (let row = 0; row <= data.maxRoomRow - data.minRoomRow + 1; row += 1) {
+      const y = Math.min(height - 1, row * roomPixels);
+      base.fill(6, y * width, (y + 1) * width);
+    }
+    gifWriteFrame(bytes, base, width, height, delay, false);
+
+    const visits = new Map();
+    const renderedColors = new Map();
+    let visitIndex = 0;
+    const paintCell = (frame, visit, paletteIndex) => {
+      const cellX = (visit.x - data.minX) * scale;
+      const cellY = (visit.y - data.minY) * scale;
+      for (let offsetY = 0; offsetY < scale; offsetY += 1) {
+        const y = cellY + offsetY;
+        for (let offsetX = 0; offsetX < scale; offsetX += 1) {
+          const x = cellX + offsetX;
+          if (x % roomPixels === 0 || y % roomPixels === 0) continue;
+          frame[y * width + x] = paletteIndex;
+        }
+      }
+    };
+
+    for (let frameIndex = 1; frameIndex < totalFrames; frameIndex += 1) {
+      const target = frameIndex >= activeFrames - 1
+        ? sequence.length
+        : Math.floor(frameIndex / Math.max(1, activeFrames - 1) * sequence.length);
+      const frame = new Uint8Array(width * height);
+      while (visitIndex < target) {
+        const visit = sequence[visitIndex];
+        const key = `${visit.x},${visit.y}`;
+        const count = (visits.get(key) || 0) + 1;
+        visits.set(key, count);
+        const paletteIndex = heatmapGifPaletteIndex(count, data);
+        if (renderedColors.get(key) !== paletteIndex) {
+          renderedColors.set(key, paletteIndex);
+          paintCell(frame, visit, paletteIndex);
+        }
+        visitIndex += 1;
+      }
+      gifWriteFrame(bytes, frame, width, height, delay, true);
+      onProgress?.(target / sequence.length, frameIndex);
+    }
+    bytes.push(0x3b);
+    return new Uint8Array(bytes);
+  }
+
+  async function exportHeatmapGif() {
     if (!heatmapExportButton || state.heatmapExporting) return;
     const data = state.heatmapData || heatmapVisitData();
     const sequence = heatmapVisitSequence(data);
@@ -1503,88 +1720,165 @@
       setStatus("There are no heatmap visits to export yet.", true);
       return;
     }
-    if (!heatmapVideoSupported()) {
-      setStatus("This browser cannot record a canvas video.", true);
+    state.heatmapExporting = true;
+    heatmapExportButton.disabled = true;
+    if (heatmapExportFormat) heatmapExportFormat.disabled = true;
+    heatmapExportButton.textContent = "Preparing…";
+    setStatus("Building a compact heatmap GIF…");
+    try {
+      const gif = heatmapGifBytes(data, sequence, (progress, frameIndex) => {
+        heatmapExportButton.textContent = `Exporting ${Math.round(progress * 100)}%`;
+        if (frameIndex % 8 === 0) setStatus(`Building a compact heatmap GIF… ${Math.round(progress * 100)}%`);
+      });
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      const blob = new Blob([gif], { type: "image/gif" });
+      if (!blob.size) throw new Error("The exported GIF was empty.");
+      downloadHeatmapExport(blob, "gif");
+      setStatus(`Heatmap GIF exported (${heatmapExportSize(blob.size)}).`);
+    } catch (error) {
+      setStatus(error.message || "Heatmap GIF export failed.", true);
+    } finally {
+      state.heatmapExporting = false;
+      if (heatmapExportFormat) heatmapExportFormat.disabled = false;
+      updateHeatmapExportControl();
+    }
+  }
+
+  async function exportHeatmapMp4() {
+    if (!heatmapExportButton || state.heatmapExporting) return;
+    const mimeType = heatmapMp4MimeType();
+    const data = state.heatmapData || heatmapVisitData();
+    const sequence = heatmapVisitSequence(data);
+    if (!data || sequence.length === 0) {
+      setStatus("There are no heatmap visits to export yet.", true);
+      return;
+    }
+    if (!mimeType || !heatmapMp4Supported()) {
+      setStatus("MP4 export is not supported by this browser. Choose GIF instead.", true);
       return;
     }
 
     state.heatmapExporting = true;
     heatmapExportButton.disabled = true;
+    if (heatmapExportFormat) heatmapExportFormat.disabled = true;
     heatmapExportButton.textContent = "Preparing…";
-    setStatus("Building a compact heatmap video…");
+    setStatus("Building a compact heatmap MP4…");
     let stream = null;
     let recorder = null;
     try {
-      const exportCanvas = document.createElement("canvas");
-      const maxDimension = 512;
-      const scale = Math.max(1, Math.min(4, maxDimension / data.columns, maxDimension / data.rows));
-      exportCanvas.width = Math.max(1, Math.round(data.columns * scale));
-      exportCanvas.height = Math.max(1, Math.round(data.rows * scale));
-      const context = exportCanvas.getContext("2d", { alpha: false });
-      if (!context) throw new Error("Could not create the video canvas.");
+      const canvas = document.createElement("canvas");
+      const maxDimension = 320;
+      const scale = Math.max(1, Math.min(4, Math.floor(maxDimension / data.columns), Math.floor(maxDimension / data.rows)));
+      canvas.width = data.columns * scale;
+      canvas.height = data.rows * scale;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("Could not create the MP4 canvas.");
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const cellWidth = canvas.width / data.columns;
+      const cellHeight = canvas.height / data.rows;
+      const gap = Math.min(1.25, Math.min(cellWidth, cellHeight) * 0.08);
+      context.strokeStyle = "#242424";
+      context.lineWidth = 1;
+      context.beginPath();
+      for (let column = data.minRoomColumn; column <= data.maxRoomColumn + 1; column += 1) {
+        const x = (column - data.minRoomColumn) * data.roomSize * cellWidth;
+        context.moveTo(x, 0);
+        context.lineTo(x, canvas.height);
+      }
+      for (let row = data.minRoomRow; row <= data.maxRoomRow + 1; row += 1) {
+        const y = (row - data.minRoomRow) * data.roomSize * cellHeight;
+        context.moveTo(0, y);
+        context.lineTo(canvas.width, y);
+      }
+      context.stroke();
 
-      const fps = 12;
-      const durationSeconds = 8;
+      const fps = 25;
+      const durationSeconds = 16;
       const totalFrames = fps * durationSeconds;
       const holdFrames = fps;
       const activeFrames = totalFrames - holdFrames;
-      const frameDelay = 1000 / fps;
+      const frameDuration = 1000 / fps;
       const visits = new Map();
       let visitIndex = 0;
-      const mimeType = heatmapVideoMimeType();
-      stream = exportCanvas.captureStream(fps);
-      const options = { videoBitsPerSecond: 240_000 };
-      if (mimeType) options.mimeType = mimeType;
-      recorder = new MediaRecorder(stream, options);
+      const low = Math.log1p(data.minCount);
+      const range = Math.log1p(data.maxCount) - low;
+      const paintVisit = (visit, count) => {
+        const left = (visit.x - data.minX) * cellWidth + gap;
+        const top = (visit.y - data.minY) * cellHeight + gap;
+        context.fillStyle = heatmapColor(range > 0 ? (Math.log1p(count) - low) / range : 0);
+        context.fillRect(left, top, Math.max(0.5, cellWidth - gap * 2), Math.max(0.5, cellHeight - gap * 2));
+      };
+      stream = canvas.captureStream(0);
+      let videoTrack = stream.getVideoTracks()[0];
+      const manuallyCaptured = typeof videoTrack?.requestFrame === "function";
+      if (!manuallyCaptured) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = canvas.captureStream(fps);
+        videoTrack = stream.getVideoTracks()[0];
+      }
+      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 320_000 });
       const chunks = [];
       const stopped = new Promise((resolve, reject) => {
         recorder.addEventListener("dataavailable", (event) => {
           if (event.data?.size) chunks.push(event.data);
         });
         recorder.addEventListener("stop", resolve, { once: true });
-        recorder.addEventListener("error", (event) => reject(event.error || new Error("Video recording failed.")), { once: true });
+        recorder.addEventListener("error", (event) => reject(event.error || new Error("MP4 recording failed.")), { once: true });
       });
 
-      recorder.start(1000);
-      for (let frame = 0; frame < totalFrames; frame += 1) {
-        const target = frame >= activeFrames - 1
+      const renderFrame = (frameIndex) => {
+        const target = frameIndex >= activeFrames - 1
           ? sequence.length
-          : Math.floor(frame / Math.max(1, activeFrames - 1) * sequence.length);
+          : Math.floor(frameIndex / Math.max(1, activeFrames - 1) * sequence.length);
         while (visitIndex < target) {
           const visit = sequence[visitIndex];
           const key = `${visit.x},${visit.y}`;
-          visits.set(key, (visits.get(key) || 0) + 1);
+          const count = (visits.get(key) || 0) + 1;
+          visits.set(key, count);
+          paintVisit(visit, count);
           visitIndex += 1;
         }
-        paintHeatmap(context, data, exportCanvas.width, exportCanvas.height, visits);
+        // Mark the canvas dirty even during the final hold so MediaRecorder
+        // preserves those black frames instead of shortening the MP4 by 1s.
+        context.fillStyle = "#000";
+        context.fillRect(canvas.width - 1, canvas.height - 1, 1, 1);
         heatmapExportButton.textContent = `Exporting ${Math.round(target / sequence.length * 100)}%`;
-        await new Promise((resolve) => window.setTimeout(resolve, frameDelay));
+      };
+
+      renderFrame(0);
+      recorder.start(1000);
+      if (manuallyCaptured) videoTrack.requestFrame();
+      const startedAt = performance.now();
+      for (let frameIndex = 1; frameIndex < totalFrames; frameIndex += 1) {
+        const frameAt = startedAt + frameIndex * frameDuration;
+        await new Promise((resolve) => window.setTimeout(resolve, Math.max(0, frameAt - performance.now())));
+        renderFrame(frameIndex);
+        if (manuallyCaptured) videoTrack.requestFrame();
       }
+      const stopAt = startedAt + durationSeconds * 1000;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.max(0, stopAt - performance.now())));
       recorder.stop();
       await stopped;
 
-      const type = recorder.mimeType || mimeType || "video/webm";
-      const blob = new Blob(chunks, { type });
-      if (!blob.size) throw new Error("The exported video was empty.");
-      const extension = type.startsWith("video/mp4") ? "mp4" : "webm";
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `maze-heatmap-${String(runId || "run").replace(/[^a-z0-9_-]+/gi, "-")}.${extension}`;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      setStatus(`Heatmap video exported (${heatmapExportSize(blob.size)}).`);
+      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
+      if (!blob.size) throw new Error("The exported MP4 was empty.");
+      downloadHeatmapExport(blob, "mp4");
+      setStatus(`Heatmap MP4 exported (${heatmapExportSize(blob.size)}).`);
     } catch (error) {
       if (recorder?.state === "recording") recorder.stop();
-      setStatus(error.message || "Heatmap video export failed.", true);
+      setStatus(error.message || "Heatmap MP4 export failed.", true);
     } finally {
       stream?.getTracks().forEach((track) => track.stop());
       state.heatmapExporting = false;
-      heatmapExportButton.disabled = !heatmapVideoSupported();
-      heatmapExportButton.textContent = "Export video";
+      if (heatmapExportFormat) heatmapExportFormat.disabled = false;
+      updateHeatmapExportControl();
     }
+  }
+
+  async function exportSelectedHeatmapFormat() {
+    if (selectedHeatmapExportFormat() === "mp4") await exportHeatmapMp4();
+    else await exportHeatmapGif();
   }
 
   function renderHeatmap() {
@@ -1597,12 +1891,10 @@
     heatmapSummary.hidden = !available;
     heatmapLegend.hidden = !available;
     heatmapEmpty.hidden = available;
+    if (heatmapExportFormat) heatmapExportFormat.hidden = !available;
     if (heatmapExportButton) {
       heatmapExportButton.hidden = !available;
-      heatmapExportButton.disabled = state.heatmapExporting || !heatmapVideoSupported();
-      heatmapExportButton.title = heatmapVideoSupported()
-        ? "Export a compact video of the heatmap forming"
-        : "Heatmap video export is not supported by this browser";
+      updateHeatmapExportControl();
     }
     if (!data) return;
 
@@ -1936,8 +2228,9 @@
   heatmapCanvas?.addEventListener("pointerleave", () => {
     if (heatmapTooltip) heatmapTooltip.hidden = true;
   });
+  heatmapExportFormat?.addEventListener("change", updateHeatmapExportControl);
   heatmapExportButton?.addEventListener("click", () => {
-    void exportHeatmapVideo();
+    void exportSelectedHeatmapFormat();
   });
 
   // ---- combined moves + reasoning feed --------------------------------------

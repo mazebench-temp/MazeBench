@@ -87,7 +87,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css?v=20260710-card-parity-1">
-    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-video-95">
+    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-choice-97">
     ${extraHeadHtml}`
     })}
   </head>
@@ -250,7 +250,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css?v=${PLAY_ASSET_VERSION}">
-    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-video-95">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-choice-97">`;
   }
 
   function renderPlayPage(game, level) {
@@ -460,7 +460,7 @@ function createPageRenderer({
     ${includeRuntimeStyles ? '<link rel="stylesheet" href="/styles.css">' : ""}
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-video-95">' : ""}`;
+    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-choice-97">' : ""}`;
   }
 
   function renderAuthorPage(game, level) {
@@ -1152,7 +1152,11 @@ function createPageRenderer({
             <h2>Heatmap</h2>
             <div class="run-heatmap__actions">
               <span id="run-heatmap-summary" class="run-heatmap__summary" hidden></span>
-              <button id="run-heatmap-export" class="run-heatmap__export" type="button" title="Export a compact video of the heatmap forming" hidden>Export video</button>
+              <select id="run-heatmap-export-format" class="run-heatmap__format" aria-label="Heatmap export format" hidden>
+                <option value="gif">GIF</option>
+                <option value="mp4">MP4</option>
+              </select>
+              <button id="run-heatmap-export" class="run-heatmap__export" type="button" title="Export a compact animated GIF of the heatmap forming" hidden>Export GIF</button>
             </div>
           </div>
           <div id="run-heatmap-viewport" class="run-heatmap__viewport" hidden>
@@ -1285,7 +1289,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260714-heatmap-video-95" defer></script>`
+        <script src="/agent-run.js?v=20260714-heatmap-export-choice-97" defer></script>`
     });
   }
 

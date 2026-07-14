@@ -3290,6 +3290,29 @@ body.play-body {
   text-transform: uppercase;
 }
 
+.run-heatmap__format {
+  background: rgba(12, 17, 38, 0.82);
+  border: 1px solid rgba(124, 143, 255, 0.32);
+  border-radius: 999px;
+  color: #e8ebff;
+  color-scheme: dark;
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 800;
+  min-height: 34px;
+  padding: 0 28px 0 12px;
+}
+
+.run-heatmap__format[hidden] {
+  display: none;
+}
+
+.run-heatmap__format:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .run-heatmap__export {
   background: rgba(124, 143, 255, 0.1);
   border: 1px solid rgba(124, 143, 255, 0.32);
