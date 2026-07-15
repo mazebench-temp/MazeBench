@@ -67,6 +67,31 @@ function normalizeObservationMode(value) {
   const mode = String(value || "text").toLowerCase();
   return ["json", "vision"].includes(mode) ? mode : "text";
 }
+
+function normalizedHideNamesSeed(value) {
+  return String(value || "").trim().slice(0, 128);
+}
+
+function resolvedHideNamesSeed(hideNames, value) {
+  if (!hideNames) return "";
+  return normalizedHideNamesSeed(value) || "1";
+}
+
+function replayMessageForCommandText(value) {
+  const command = String(value || "").trim().toLowerCase();
+  if (["up", "down", "left", "right"].includes(command)) {
+    return { command: "move", direction: command };
+  }
+  const rotation = command.match(/^rotate camera (up|down|left|right)$/);
+  if (rotation) return { command: "rotate_camera", direction: rotation[1] };
+  if (command === "undo") return { command: "undo" };
+  if (command === "reset") return { command: "reset_level" };
+  if (command === "quit") return { command: "quit" };
+  const level = command.match(/^go to level (?:level_)?([a-z])(?:x|\s+)([a-z])$/i);
+  if (level) return { command: "goto_level", x: level[1].toUpperCase(), y: level[2].toUpperCase() };
+  return null;
+}
+
 const MAX_LOCAL_MOVE_BUDGET = 100_000;
 const RUNNER_STARTUP_GRACE_MS = 15_000;
 const RUNNER_ACTIVITY_GRACE_MS = 120_000;
@@ -142,10 +167,18 @@ function createAgentRunService({
   const legacyClaudeSnapshotStamps = new Map();
   const codexSessionPaths = new Map();
   const primeResultsPaths = new Map();
+  const actionCache = new Map();
+  const reasoningCache = new Map();
+  const toolActivityCache = new Map();
+  const primeRolloutFailureCache = new Map();
   const tokenUsageCache = new Map();
   const jsonLineIndexes = new Map();
   const initialPlayerCache = new Map();
   const reconstructedJsonObservationCache = new Map();
+  const reconstructedAsciiObservationCache = new Map();
+  const reconstructedBoardStateTimelineCache = new Map();
+  const LARGE_TELEMETRY_BYTES = 1024 * 1024;
+  const LARGE_TELEMETRY_REFRESH_MS = 10_000;
   const stableCodexCatalogPath = path.join(runsDir, ".codex-model-catalog.json");
   let stableCodexCatalog;
   let claudeQueueOrder = Date.now() * 1000;
@@ -435,6 +468,56 @@ function createAgentRunService({
 
   function readPrimeEvaluation(runId) {
     return loadJson(path.join(runDirFor(runId), "prime-evaluation.json"), null);
+  }
+
+  function readPrimeRolloutFailure(runId) {
+    const samplesPath = path.join(runDirFor(runId), "prime-evaluation-samples.json");
+    const localResultsPath = path.join(runDirFor(runId), "eval-output", "results.jsonl");
+    const signature = `${fileStamp(samplesPath)}|${fileStamp(localResultsPath)}`;
+    const cached = primeRolloutFailureCache.get(runId);
+    if (cached?.signature === signature) return cached.value;
+
+    const payload = loadJson(samplesPath, null);
+    const samples = Array.isArray(payload?.samples) ? payload.samples : [];
+    let value = null;
+    for (const sample of samples) {
+      const info = sample?.info || {};
+      const error = info.error;
+      if (info.stop_condition !== "has_error" && !error) continue;
+      value = {
+        message: String(
+          error?.error_chain_str ||
+          error?.message ||
+          error?.error ||
+          "The Prime rollout stopped with an error."
+        ).trim(),
+        stop_condition: String(info.stop_condition || "has_error")
+      };
+      break;
+    }
+    if (!value && fs.existsSync(localResultsPath)) {
+      try {
+        const firstLine = fs.readFileSync(localResultsPath, "utf8").split(/\r?\n/).find((line) => line.trim());
+        const result = firstLine ? JSON.parse(firstLine) : null;
+        const errors = Array.isArray(result?.errors) ? result.errors : [];
+        if (errors.length || ["error", "has_error"].includes(String(result?.stop_condition || ""))) {
+          const error = errors[errors.length - 1] || {};
+          const traceback = String(error.traceback || "");
+          const providerMatches = [...traceback.matchAll(/openai\.([A-Za-z]+Error):\s*([^\n]+)/g)];
+          const providerError = providerMatches[providerMatches.length - 1];
+          value = {
+            message: providerError
+              ? `${providerError[1]}: ${providerError[2]}`
+              : [error.type, error.message].filter(Boolean).join(": ") || "The Prime rollout stopped with an error.",
+            stop_condition: String(result?.stop_condition || "error")
+          };
+        }
+      } catch (_error) {
+        /* a partial result row is not a terminal failure yet */
+      }
+    }
+    primeRolloutFailureCache.set(runId, { signature, value });
+    return value;
   }
 
   function writeRunMeta(runId, meta) {
@@ -808,24 +891,55 @@ function createAgentRunService({
     const actionsPath = path.join(runDirFor(runId), "actions.jsonl");
 
     if (!fs.existsSync(actionsPath)) {
+      actionCache.delete(runId);
       return [];
     }
 
-    return fs
-      .readFileSync(actionsPath, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
+    const stat = fs.statSync(actionsPath);
+    let cached = actionCache.get(runId);
+    const canAppend = Boolean(cached && stat.ino === cached.ino && stat.size >= cached.size);
+
+    if (!canAppend || (cached && stat.size === cached.size && stat.mtimeMs !== cached.mtimeMs)) {
+      cached = null;
+    }
+
+    if (!cached || stat.size > cached.size) {
+      const start = cached?.size || 0;
+      const length = stat.size - start;
+      const buffer = Buffer.alloc(length);
+      const fd = fs.openSync(actionsPath, "r");
+      try {
+        if (length) fs.readSync(fd, buffer, 0, length, start);
+      } finally {
+        fs.closeSync(fd);
+      }
+
+      const records = cached?.records || [];
+      const text = `${cached?.remainder || ""}${buffer.toString("utf8")}`;
+      const lines = text.split("\n");
+      const remainder = text.endsWith("\n") ? "" : lines.pop() || "";
+
+      lines.filter(Boolean).forEach((line) => {
+        let record;
         try {
-          return JSON.parse(line);
-        } catch (error) {
-          return null;
+          record = JSON.parse(line);
+        } catch (_error) {
+          return;
         }
-      })
-      .filter((record) => record && Number(record.turn) > afterTurn)
-      .map((record) => ({
+        if (!record) return;
+
+        // Only the newest action needs its full observation for the live board.
+        // Keeping a 64x64 board on every historical row made large progress
+        // responses tens of megabytes and retained the same data in memory.
+        const previous = records[records.length - 1];
+        if (previous) {
+          delete previous.level;
+          delete previous.json_observation;
+        }
+        records.push({
         turn: record.turn,
         timestamp: record.timestamp || record.recorded_at || record.created_at || null,
+        board_state_hash: record.status?.board_state_hash || null,
         command_text: record.command_text,
         moved: record.status?.moved,
         gem_count: record.status?.gem_count,
@@ -833,9 +947,21 @@ function createAgentRunService({
         player: record.status?.player || null,
         player_dead: Boolean(record.status?.player_dead),
         solved: Boolean(record.status?.solved),
+        valid: record.valid !== false && !record.error,
+        error: record.error || null,
         level: record.status?.level || null,
         json_observation: record.status?.json_observation || null
-      }));
+        });
+      });
+
+      cached = { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, records, remainder };
+      actionCache.set(runId, cached);
+    }
+
+    const threshold = Number(afterTurn) || 0;
+    return threshold > 0
+      ? cached.records.filter((record) => Number(record.turn) > threshold)
+      : cached.records;
   }
 
   function readInitialPlayer(runId) {
@@ -849,8 +975,17 @@ function createAgentRunService({
     const y = Number(status?.player?.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     const player = { x, y };
+    const elevation = Number(status?.player?.elevation);
+    if (Number.isFinite(elevation)) player.elevation = elevation;
     initialPlayerCache.set(runId, player);
     return player;
+  }
+
+  function readInitialBoardStateHash(runId) {
+    const runDir = runDirFor(runId);
+    const initialStatus = loadJson(path.join(runDir, "initial-status.json"), null);
+    const status = initialStatus || loadJson(path.join(runDir, "session.json"), null)?.initial || null;
+    return String(status?.board_state_hash || "");
   }
 
   function readPrimeLiveTurns(runDir) {
@@ -1107,17 +1242,27 @@ function createAgentRunService({
   }
 
   function summarizeRun(runId) {
-    const meta = finalizeStatus(runId, readRunMeta(runId));
+    let meta = finalizeStatus(runId, readRunMeta(runId));
 
     if (!meta) {
       return null;
+    }
+
+    const runDir = runDirFor(runId);
+    const primeRolloutFailure = meta.kind === "prime" ? readPrimeRolloutFailure(runId) : null;
+    if (primeRolloutFailure && meta.status === "finished") {
+      meta = {
+        ...meta,
+        status: "failed",
+        rollout_error: primeRolloutFailure.message,
+        rollout_stop_condition: primeRolloutFailure.stop_condition
+      };
     }
 
     if (meta.status === "running") startLegacyClaudeSnapshots(runId);
 
     const actions = readActions(runId);
     const last = actions[actions.length - 1] || null;
-    const runDir = runDirFor(runId);
     const primeEvaluation = meta.kind === "prime" ? readPrimeEvaluation(runId) : null;
     const modelName = resolvedRunModelName(runId, meta);
     const scorecard = loadJson(path.join(runDir, "maze_scorecard.json"), null);
@@ -1137,7 +1282,9 @@ function createAgentRunService({
     const scorecardStatsCurrent = Number.isFinite(scorecardActionCount)
       ? scorecardActionCount === actions.length
       : ["finished", "stopped", "failed"].includes(meta.status);
-    const turns = meta.kind === "prime" ? Math.max(actions.length, readPrimeLiveTurns(runDir)) : actions.length;
+    // Prime's evaluator may sample several graph branches for one committed
+    // environment move. Only committed actions are user-visible turns.
+    const turns = actions.length;
     const game = getGame(meta.game_id);
     const defaultLevelId = game ? worldMaps.defaultLevelIdForGame(game) : "";
     const instanceMetrics = readInstanceMetrics(runId);
@@ -1183,7 +1330,7 @@ function createAgentRunService({
       video_status: videoStatus,
       has_reasoning: fs.existsSync(path.join(runDir, "reasoning.json")),
       prime_evaluation_id: String(primeEvaluation?.evaluation_id || primeEvaluation?.id || ""),
-      prime_evaluation_status: String(primeEvaluation?.status || ""),
+      prime_evaluation_status: String(primeRolloutFailure ? "FAILED" : primeEvaluation?.status || ""),
       prime_evaluation_url: String(
         primeEvaluation?.viewer_url ||
         (primeEvaluation?.evaluation_id
@@ -1336,13 +1483,11 @@ function createAgentRunService({
   // Per-move reasoning, live. reasoning.json exists only once the run finishes;
   // while it runs we distill the streamed agent-events.jsonl on the fly so the
   // web UI shows each move's thoughts as they arrive.
-  function readReasoning(runId, model) {
+  function readReasoningUncached(runId, model) {
     const runDir = runDirFor(runId);
     const finalPath = path.join(runDir, "reasoning.json");
     const finalReasoning = fs.existsSync(finalPath) ? loadJson(finalPath, []) : [];
-    const executedMoves = model === "prime"
-      ? Math.max(readActions(runId).length, readPrimeLiveTurns(runDir))
-      : readActions(runId).length;
+    const executedMoves = readActions(runId).length;
     const alignToMoves = (entries) => entries.filter(
       (entry) => !Number(entry?.move) || Number(entry.move) <= executedMoves
     );
@@ -1390,6 +1535,33 @@ function createAgentRunService({
     } catch (error) {
       return alignToMoves(finalReasoning);
     }
+  }
+
+  function readReasoning(runId, model, status = "") {
+    const runDir = runDirFor(runId);
+    const signature = [
+      model,
+      fileStamp(path.join(runDir, "reasoning.json")),
+      fileStamp(path.join(runDir, "prime-reasoning.jsonl")),
+      fileStamp(path.join(runDir, "prime-usage.jsonl")),
+      fileStamp(path.join(runDir, "agent-events.jsonl")),
+      fileStamp(path.join(runDir, "actions.jsonl"))
+    ].join("|");
+    const cached = reasoningCache.get(runId);
+    if (cached?.signature === signature) return cached.value;
+
+    // Reasoning is supplemental telemetry. Re-distilling a growing provider
+    // stream can mean parsing tens of megabytes, so do it at a human-readable
+    // cadence instead of on every 1.5 second run-page poll.
+    const active = ["running", "pausing", "stopping"].includes(status);
+    const expensive = fileSize(path.join(runDir, "agent-events.jsonl")) > LARGE_TELEMETRY_BYTES;
+    if (active && expensive && cached && Date.now() - cached.checkedAt < LARGE_TELEMETRY_REFRESH_MS) {
+      return cached.value;
+    }
+
+    const value = readReasoningUncached(runId, model);
+    reasoningCache.set(runId, { signature, checkedAt: Date.now(), value });
+    return value;
   }
 
   function readJsonLineTail(filePath, maxBytes = 8 * 1024 * 1024) {
@@ -1493,7 +1665,7 @@ function createAgentRunService({
     };
   }
 
-  function readToolActivity(runId, summary) {
+  function readToolActivityUncached(runId, summary) {
     if (summary.provider === "prime") return { active: [], recent: [], calls: 0, moves_tried: 0 };
     const runDir = runDirFor(runId);
     const mcpEntries = readJsonLineTail(path.join(runDir, "tool-activity.jsonl"), 4 * 1024 * 1024);
@@ -1611,6 +1783,37 @@ function createAgentRunService({
     };
   }
 
+  function readToolActivity(runId, summary) {
+    if (summary.provider === "prime") return { active: [], recent: [], calls: 0, moves_tried: 0 };
+    const runDir = runDirFor(runId);
+    const signature = [
+      summary.provider,
+      fileStamp(path.join(runDir, "tool-activity.jsonl")),
+      fileStamp(path.join(runDir, "agent-events.jsonl"))
+    ].join("|");
+    const cached = toolActivityCache.get(runId);
+    if (cached?.signature === signature) return cached.value;
+    const active = ["running", "pausing", "stopping"].includes(summary.status);
+    const expensive = fileSize(path.join(runDir, "agent-events.jsonl")) +
+      fileSize(path.join(runDir, "tool-activity.jsonl")) > LARGE_TELEMETRY_BYTES;
+    if (active && expensive && cached && Date.now() - cached.checkedAt < LARGE_TELEMETRY_REFRESH_MS) {
+      return cached.value;
+    }
+
+    const value = readToolActivityUncached(runId, summary);
+    toolActivityCache.set(runId, { signature, checkedAt: Date.now(), value });
+    return value;
+  }
+
+  function fileSize(filePath) {
+    if (!filePath) return 0;
+    try {
+      return fs.statSync(filePath).size;
+    } catch (_error) {
+      return 0;
+    }
+  }
+
   function fileStamp(filePath) {
     if (!filePath || !fs.existsSync(filePath)) return "-";
 
@@ -1675,6 +1878,12 @@ function createAgentRunService({
     };
     const cached = tokenUsageCache.get(runId);
     if (cached?.signature === signature) return withSwarmAgentStatus(cached.value);
+    const active = ["running", "pausing", "stopping"].includes(summary.status);
+    const expensive = [eventsPath, codexSessionPath, ...codexSwarmSessionPaths, primeLiveUsagePath, primeResultsPath]
+      .some((filePath) => fileSize(filePath) > LARGE_TELEMETRY_BYTES);
+    if (active && expensive && cached && Date.now() - cached.checkedAt < LARGE_TELEMETRY_REFRESH_MS) {
+      return withSwarmAgentStatus(cached.value);
+    }
 
     let value;
     try {
@@ -1709,7 +1918,7 @@ function createAgentRunService({
       };
     }
 
-    tokenUsageCache.set(runId, { signature, value });
+    tokenUsageCache.set(runId, { signature, checkedAt: Date.now(), value });
     return withSwarmAgentStatus(value);
   }
 
@@ -2204,6 +2413,142 @@ function createAgentRunService({
     }
   }
 
+  function reconstructAsciiObservation(runId, absoluteTurn, summary) {
+    const actionsPath = path.join(runDirFor(runId), "actions.jsonl");
+    let actionsStamp = "";
+    try {
+      const stat = fs.statSync(actionsPath);
+      actionsStamp = `${stat.size}:${stat.mtimeMs}`;
+    } catch (_error) {
+      if (absoluteTurn > 0) return "";
+    }
+
+    const launchParams = summary.launch_params || {};
+    const hideNames = Boolean(launchParams.hide_names ?? summary.hide_names);
+    const seed = resolvedHideNamesSeed(hideNames, launchParams.hide_names_seed || summary.hide_names_seed);
+    const turn = Math.max(0, Math.floor(Number(absoluteTurn) || 0));
+    const cacheKey = [runId, turn, actionsStamp, hideNames ? 1 : 0, seed].join(":");
+    if (reconstructedAsciiObservationCache.has(cacheKey)) {
+      return reconstructedAsciiObservationCache.get(cacheKey);
+    }
+
+    const replay = readActions(runId)
+      .slice(0, turn)
+      .filter((action) => action?.valid !== false)
+      .map((action) => replayMessageForCommandText(action.command_text))
+      .filter(Boolean);
+    const bridgeArgs = [
+      path.join(rootDir, "scripts", "maze-bridge.js"),
+      "--game", String(launchParams.game_id || summary.game_id || "maze"),
+      "--level", String(launchParams.level_id || summary.level_id || "level_HxI"),
+      "--view", String(launchParams.view || summary.view || "top-diagonal"),
+      "--yaw", String(Number(launchParams.yaw ?? summary.yaw) || 0),
+      "--game-won-gem-count", String(Math.max(1, Number(summary.gem_total) || 100)),
+      "--observation-mode", "text",
+      "--hide-names-seed", seed || "1"
+    ];
+    if (hideNames) bridgeArgs.push("--hide-names");
+
+    const messages = [...replay, { command: "observe" }, { command: "close" }];
+    const result = spawnSync(process.execPath, bridgeArgs, {
+      cwd: rootDir,
+      encoding: "utf8",
+      input: `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
+      maxBuffer: 80 * 1024 * 1024,
+      timeout: 30_000
+    });
+    if (result.error || result.status !== 0) return "";
+
+    try {
+      const responses = String(result.stdout || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      const board = String(responses[replay.length]?.level || "");
+      if (!board) return "";
+      if (reconstructedAsciiObservationCache.size >= 64) {
+        reconstructedAsciiObservationCache.delete(reconstructedAsciiObservationCache.keys().next().value);
+      }
+      reconstructedAsciiObservationCache.set(cacheKey, board);
+      return board;
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function reconstructBoardStateTimeline(runId, summary) {
+    const actionsPath = path.join(runDirFor(runId), "actions.jsonl");
+    let actionsStamp = "0";
+    try {
+      const stat = fs.statSync(actionsPath);
+      actionsStamp = `${stat.size}:${stat.mtimeMs}`;
+    } catch (_error) {
+      // Move zero still has a canonical state when no actions have been written.
+    }
+
+    const launchParams = summary.launch_params || {};
+    const cacheKey = [
+      runId,
+      actionsStamp,
+      launchParams.game_id || summary.game_id || "maze",
+      launchParams.level_id || summary.level_id || "level_HxI"
+    ].join(":");
+    if (reconstructedBoardStateTimelineCache.has(cacheKey)) {
+      return reconstructedBoardStateTimelineCache.get(cacheKey);
+    }
+
+    const actions = readActions(runId);
+    const replay = actions.map((action) => {
+      if (action?.valid === false) return { command: "observe" };
+      return replayMessageForCommandText(action.command_text) || { command: "observe" };
+    });
+    const bridgeArgs = [
+      path.join(rootDir, "scripts", "maze-bridge.js"),
+      "--game", String(launchParams.game_id || summary.game_id || "maze"),
+      "--level", String(launchParams.level_id || summary.level_id || "level_HxI"),
+      "--view", String(launchParams.view || summary.view || "top-diagonal"),
+      "--yaw", String(Number(launchParams.yaw ?? summary.yaw) || 0),
+      "--game-won-gem-count", String(Math.max(
+        1,
+        Number(launchParams.game_won_gem_count || summary.game_won_gem_count || summary.gem_total) || 100
+      )),
+      "--observation-mode", "text"
+    ];
+    const messages = [{ command: "observe" }, ...replay, { command: "close" }];
+    const result = spawnSync(process.execPath, bridgeArgs, {
+      cwd: rootDir,
+      encoding: "utf8",
+      input: `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
+      maxBuffer: 80 * 1024 * 1024,
+      timeout: 30_000
+    });
+    if (result.error || result.status !== 0) return null;
+
+    try {
+      const responses = String(result.stdout || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      const initialHash = String(responses[0]?.board_state_hash || "");
+      if (!initialHash) return null;
+      const hashes = new Map();
+      actions.forEach((action, index) => {
+        const hash = String(responses[index + 1]?.board_state_hash || "");
+        if (hash) hashes.set(Number(action.turn) || index + 1, hash);
+      });
+      const timeline = { initial_hash: initialHash, hashes };
+      if (reconstructedBoardStateTimelineCache.size >= 32) {
+        reconstructedBoardStateTimelineCache.delete(reconstructedBoardStateTimelineCache.keys().next().value);
+      }
+      reconstructedBoardStateTimelineCache.set(cacheKey, timeline);
+      return timeline;
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function reconstructJsonObservation(runId, instanceId, instanceDir, absoluteTurn, summary, metadata) {
     const sessionPath = path.join(instanceDir, "session.json");
     const session = loadJson(sessionPath, null);
@@ -2223,7 +2568,9 @@ function createAgentRunService({
     const hideNames = typeof session.hideNames === "boolean"
       ? session.hideNames
       : Boolean(metadata.hide_names ?? launchParams.hide_names);
-    const seed = String(session.hideNamesSeed || `${runId}:${instanceId}`);
+    const seed = String(
+      session.hideNamesSeed || metadata.hide_names_seed || launchParams.hide_names_seed || "1"
+    );
     const cacheKey = [
       runId,
       instanceId,
@@ -2313,6 +2660,9 @@ function createAgentRunService({
     }
 
     const mode = normalizeObservationMode(metadata.observation_mode || summary.mode);
+    const board = mode === "text" && primary && !status?.level
+      ? reconstructAsciiObservation(runId, absoluteTurn, summary)
+      : String(status?.level || "");
     const jsonObservation = mode === "json" && !status?.json_observation
       ? reconstructJsonObservation(runId, requestedInstance, instanceDir, absoluteTurn, summary, metadata)
       : status?.json_observation || null;
@@ -2339,7 +2689,7 @@ function createAgentRunService({
       absolute_turn: absoluteTurn,
       total,
       command_text: String(record?.command_text || ""),
-      board: String(status?.level || ""),
+      board,
       json_observation: jsonObservation,
       frame_url: frameUrl,
       current_room: String(status?.current_room || ""),
@@ -2358,22 +2708,70 @@ function createAgentRunService({
 
     if (summary.status === "running") startLegacyClaudeSnapshots(runId);
 
+    const cursor = Math.max(0, Number(afterTurn) || 0);
+    const historyFloor = Math.max(1, cursor - 5);
     const log = readLogChunk(runId, logOffset);
     const instanceViews = readSwarmViews(runId);
-    const instanceMetrics = readInstanceMetrics(runId);
+    const actions = readActions(runId, cursor);
+    if (summary.mode === "text" && actions.length) {
+      const latest = actions[actions.length - 1];
+      const latestTurn = Math.max(0, Number(summary.turns) || 0);
+      if (!latest.level && Number(latest.turn) === latestTurn) {
+        latest.level = reconstructAsciiObservation(runId, latestTurn, summary) || null;
+      }
+    }
+    let initialBoardStateHash = readInitialBoardStateHash(runId);
+    if (!initialBoardStateHash || actions.some((action) => !action.board_state_hash)) {
+      const reconstructed = reconstructBoardStateTimeline(runId, summary);
+      if (reconstructed) {
+        initialBoardStateHash ||= reconstructed.initial_hash;
+        actions.forEach((action) => {
+          action.board_state_hash ||= reconstructed.hashes.get(Number(action.turn)) || null;
+        });
+      }
+    }
+    const reasoning = readReasoning(runId, summary.model, summary.status);
+    const tokenUsage = readTokenUsage(runId, summary);
+    const incrementalTokenUsage = cursor > 0 && Array.isArray(tokenUsage?.actions)
+      ? {
+          ...tokenUsage,
+          actions: tokenUsage.actions.filter((point, index) =>
+            Math.max(1, Number(point?.action) || index + 1) >= historyFloor
+          )
+        }
+      : tokenUsage;
+
+    const latestPrimeUsage = summary.provider === "prime"
+      ? readLastJsonLine(path.join(runDirFor(runId), "prime-usage.jsonl"))
+      : null;
+    const lastModelActivityMs = Number(latestPrimeUsage?.recorded_at) > 0
+      ? Number(latestPrimeUsage.recorded_at) * 1000
+      : Date.parse(summary.active_started_at || summary.created_at || "");
+    const inference = summary.provider === "prime" && summary.status === "running"
+      ? {
+          state: "in_flight",
+          action: Math.max(1, Number(summary.turns) + 1),
+          elapsed_ms: Number.isFinite(lastModelActivityMs) ? Math.max(0, Date.now() - lastModelActivityMs) : 0
+        }
+      : null;
 
     return {
-      run: summary,
-      actions: readActions(runId, Number(afterTurn) || 0),
+      run: inference ? { ...summary, inference } : summary,
+      actions,
+      initial_board_state_hash: initialBoardStateHash || null,
       initial_player: readInitialPlayer(runId),
       log_chunk: log.chunk,
       log_offset: log.offset,
-      token_usage: readTokenUsage(runId, summary),
+      token_usage: incrementalTokenUsage,
       tool_activity: readToolActivity(runId, summary),
-      reasoning: readReasoning(runId, summary.model),
+      reasoning: cursor > 0
+        ? reasoning.filter((entry) => Math.max(1, Number(entry?.move) || 0) >= historyFloor)
+        : reasoning,
       instance_activity: {
         active: instanceViews.filter((instance) => ["acting", "exploring"].includes(instance.activity)).length,
-        ...instanceMetrics
+        instances: Math.max(0, Number(summary.explorer_instances) || 0),
+        auxiliary_actions: Math.max(0, Number(summary.auxiliary_actions) || 0),
+        auxiliary_action_attempts: Math.max(0, Number(summary.auxiliary_action_attempts) || 0)
       },
       swarm_views: instanceViews,
       vision_frame_url: summary.mode === "vision" ? latestVisionFrame(runId) : null,
@@ -2813,11 +3211,12 @@ function createAgentRunService({
       : wantTools
         ? "offline"
         : "read-only";
-    const swarm = params.swarm === true || params.swarm === "true";
+    const swarm = toolUse === "offline" && (params.swarm === true || params.swarm === "true");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const mode = normalizeObservationMode(params.mode);
     const omniscient = mode === "json" && (params.omniscient === true || params.omniscient === "true");
-    const hideNames = mode === "json" && (params.hide_names === true || params.hide_names === "true");
+    const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
+    const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
 
     // Safety net for the UI toggle: container mode needs Docker installed AND
     // its daemon running.
@@ -2840,6 +3239,7 @@ function createAgentRunService({
       `mode=${mode}`,
       `omniscient=${omniscient ? "true" : "false"}`,
       `hide_names=${hideNames ? "true" : "false"}`,
+      ...(hideNames ? [`hide_names_seed=${hideNamesSeed}`] : []),
       `tools=${toolUse === "read-only" ? "false" : "true"}`,
       `tool_use=${toolUse}`,
       `swarm=${swarm ? "true" : "false"}`,
@@ -2932,12 +3332,14 @@ function createAgentRunService({
       args.push(`session_id=${String(params.session_id)}`);
     }
 
-    return { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited, allowQuit, mode, omniscient, hideNames };
+    return { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited, allowQuit, mode, omniscient, hideNames, hideNamesSeed };
   }
 
-  // Prime text runs are real Hosted Evaluations, visible in Prime Evals from
-  // launch through completion. Vision keeps using the local v1 evaluator until
-  // the published environment has a self-contained Chromium renderer.
+  // Agent Runner defaults to a local Verifiers evaluator (while inference still
+  // goes through Prime). Its PendingTurn hook can publish every resolved move
+  // immediately. A hosted evaluation only publishes sample artifacts on the
+  // platform's schedule, which can be after this single long rollout finishes.
+  // Keep hosted execution as an API-level opt-in for evaluation workflows.
   function buildPrimeCommand(params, runDir, runId, game) {
     const model = String(params.model_name || params.model || "").trim();
     const maxTurns = Math.max(1, Math.min(500, Number(params.max_turns) || 20));
@@ -2946,8 +3348,9 @@ function createAgentRunService({
     );
     const vision = mode === "vision";
     const omniscient = mode === "json" && (params.omniscient === true || params.omniscient === "true");
-    const hideNames = mode === "json" && (params.hide_names === true || params.hide_names === "true");
-    const hosted = !vision;
+    const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
+    const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
+    const hosted = !vision && (params.hosted === true || params.hosted === "true");
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     // Reasoning effort → --sampling.reasoning-effort. OpenAI reasoning models and
@@ -2988,8 +3391,8 @@ function createAgentRunService({
     } else if (mode === "json") {
       argv.push("--observation-mode", "json");
       if (omniscient) argv.push("--omniscient");
-      if (hideNames) argv.push("--hide-names");
     }
+    if (hideNames) argv.push("--hide-names", "--hide-names-seed", hideNamesSeed);
 
     if (reasoning) {
       argv.push("--reasoning", reasoning);
@@ -3011,7 +3414,7 @@ function createAgentRunService({
       .concat(vision ? ["--vision"] : [])
       .concat(mode === "json" ? ["--observation-mode", "json"] : [])
       .concat(omniscient ? ["--omniscient"] : [])
-      .concat(hideNames ? ["--hide-names"] : [])
+      .concat(hideNames ? ["--hide-names", "--hide-names-seed", hideNamesSeed] : [])
       .concat(reasoning ? ["--reasoning", reasoning] : [])
       .concat(!allowQuit ? ["--no-quit"] : [])
       .join(" ");
@@ -3026,6 +3429,7 @@ function createAgentRunService({
       vision,
       omniscient,
       hideNames,
+      hideNamesSeed,
       hosted,
       levelId,
       gemTotal,
@@ -3078,15 +3482,19 @@ function createAgentRunService({
           vision: command.vision,
           omniscient: command.omniscient,
           hide_names: command.hideNames,
+          hide_names_seed: command.hideNamesSeed,
           reasoning: command.reasoning,
           allow_quit: command.allowQuit,
           video: command.video,
-          launch_params: launchParamsOf(params),
+          launch_params: {
+            ...launchParamsOf(params),
+            ...(command.hideNames ? { hide_names_seed: command.hideNamesSeed } : {})
+          },
           continue_of: params.continue_of || null,
           prime_execution: command.hosted ? "hosted" : "local",
           note: command.hosted
-            ? "Prime Hosted Evaluation. The evaluation ID and dashboard link appear as soon as Prime accepts the run; scored samples and replay artifacts sync back after completion."
-            : "Local Prime Verifiers vision evaluation. Hosted vision will replace this path once the published renderer is self-contained."
+            ? "Prime Hosted Evaluation. Sample artifacts sync as Prime publishes them; per-turn streaming requires local Agent execution."
+            : "Local Prime Verifiers evaluation using Prime inference. Moves, boards, reasoning, and usage stream into this page after every model turn."
         };
       } else {
         let effectiveParams = params;
@@ -3108,7 +3516,7 @@ function createAgentRunService({
         }
 
         const game = normalizedGameForRun(effectiveParams.game_id);
-        const { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited, allowQuit, mode, omniscient, hideNames } = buildLocalRunArgs(runId, effectiveParams, game);
+        const { args, model, levelId, moves, gems, view, toolUse, swarm, unlimited, allowQuit, mode, omniscient, hideNames, hideNamesSeed } = buildLocalRunArgs(runId, effectiveParams, game);
         const requestedModelName = String(effectiveParams.model_name || "");
         const exactModelName = model === "claude"
           ? resolveClaudeCatalogModelId(requestedModelName)
@@ -3152,12 +3560,16 @@ function createAgentRunService({
           mode,
           omniscient,
           hide_names: hideNames,
+          hide_names_seed: hideNamesSeed,
           tools: toolUse !== "read-only",
           tool_use: toolUse,
           swarm,
           container: !(effectiveParams.container === false || effectiveParams.container === "false"),
           video: !(effectiveParams.video === false || effectiveParams.video === "false"),
-          launch_params: launchParamsOf(effectiveParams),
+          launch_params: {
+            ...launchParamsOf(effectiveParams),
+            ...(hideNames ? { hide_names_seed: hideNamesSeed } : {})
+          },
           continue_of: effectiveParams.continue_of || null,
           branch_of: effectiveParams.branch_of || null,
           branch_turn: effectiveParams.branch_of ? segmentStartTurns : null,
@@ -3428,6 +3840,7 @@ function createAgentRunService({
         vision: meta.mode === "vision",
         omniscient: Boolean(meta.omniscient),
         hide_names: Boolean(meta.hide_names),
+        hide_names_seed: normalizedHideNamesSeed(meta.hide_names_seed),
         reasoning: meta.reasoning || "",
         allow_quit: meta.allow_quit !== false,
         video: meta.video !== false
@@ -3443,6 +3856,7 @@ function createAgentRunService({
       mode: meta.mode,
       omniscient: Boolean(meta.omniscient),
       hide_names: Boolean(meta.hide_names),
+      hide_names_seed: normalizedHideNamesSeed(meta.hide_names_seed),
       reasoning: meta.reasoning || "",
       unlimited: Boolean(meta.unlimited),
       allow_quit: meta.allow_quit !== false,
@@ -3856,6 +4270,7 @@ function createAgentRunService({
     if (!fs.existsSync(sessionPath) && !resultsPath) {
       throw new Error("This run has no saved session or eval result to render.");
     }
+    const replayInputPath = resultsPath || sessionPath;
 
     const snapshotTurns = readActions(runId).length;
     const generationId = crypto.randomUUID();
@@ -3869,7 +4284,7 @@ function createAgentRunService({
     try {
       const videoArgs = [
         replayScript,
-        runDir,
+        replayInputPath,
         "--out-dir", runDir,
         "--fps", "24",
         "--crf", "19",
@@ -3878,7 +4293,7 @@ function createAgentRunService({
         "--accelerated",
         "--intro"
       ];
-      if (meta.mode === "text") {
+      if (normalizeObservationMode(meta.mode) === "text") {
         videoArgs.push("--width", "1280", "--height", "720", "--ascii-side-by-side");
       } else {
         videoArgs.push("--width", "960", "--height", "960");
@@ -4081,6 +4496,11 @@ function createAgentRunService({
     liveChildren.delete(runId);
     stopLegacyClaudeSnapshots(runId);
     stopLiveRenderer(runId);
+    actionCache.delete(runId);
+    reasoningCache.delete(runId);
+    toolActivityCache.delete(runId);
+    tokenUsageCache.delete(runId);
+    primeRolloutFailureCache.delete(runId);
     initialPlayerCache.delete(runId);
     for (const filePath of jsonLineIndexes.keys()) {
       if (filePath.startsWith(`${runDir}${path.sep}`)) jsonLineIndexes.delete(filePath);
@@ -4228,5 +4648,6 @@ module.exports = {
   branchLaunchParams,
   collectedAllWorldGems,
   createAgentRunService,
-  enrichedPathEnv
+  enrichedPathEnv,
+  replayMessageForCommandText
 };

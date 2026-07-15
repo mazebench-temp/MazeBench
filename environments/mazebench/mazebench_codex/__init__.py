@@ -271,7 +271,7 @@ try {
 """
 
 
-CODEX_PROMPT = """You are playing MazeBench through the local Codex CLI inside a Verifiers v1 rollout.
+CODEX_PROMPT = """You are controlling a 3D grid game through the local Codex CLI inside a Verifiers v1 rollout.
 
 Use shell commands to interact with the maze. Do not modify source files or try
 to parse the embedded observation manually. Your first shell command must start
@@ -450,7 +450,7 @@ class MazeBenchCodexTaskset(
             MazeBenchCodexTask(
                 idx=index,
                 name=f"codex:{row['game_id']}:{row['level_id']}#{index}",
-                prompt="MazeBench Codex CLI task. The harness will render the concrete run prompt.",
+                prompt="Grid-game Codex CLI task. The harness will render the concrete run prompt.",
                 system_prompt=None,
                 artifact_root=ARTIFACT_ROOT,
                 example_id=int(row["example_id"]),

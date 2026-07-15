@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 from typing import Any
 
 from datasets import Dataset
@@ -240,7 +239,7 @@ class LegacyMazeEnv(vf.MultiTurnEnv):
             observation_mode=self.observation_mode,
             omniscient=self.omniscient,
             hide_names=self.hide_names,
-            hide_names_seed=secrets.token_hex(16),
+            hide_names_seed="1",
             node_bin=str(row.get("node_bin") or DEFAULT_NODE_BIN),
             repo_root=str(row.get("repo_root") or find_bridge_root()),
             timeout_seconds=int(row.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),

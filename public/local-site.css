@@ -3300,8 +3300,10 @@ body.play-body {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 10px;
   font-weight: 800;
+  flex: 0 0 auto;
   min-height: 34px;
   padding: 0 28px 0 12px;
+  width: auto;
 }
 
 .run-heatmap__format[hidden] {
@@ -3319,10 +3321,12 @@ body.play-body {
   border-radius: 999px;
   color: #e8ebff;
   cursor: pointer;
+  flex: 0 0 auto;
   font-size: 10px;
   font-weight: 800;
   min-height: 34px;
   padding: 0 13px;
+  white-space: nowrap;
 }
 
 .run-heatmap__export:hover:not(:disabled) {
@@ -3333,6 +3337,122 @@ body.play-body {
 .run-heatmap__export:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.run-board-state-chart {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(101, 243, 212, 0.08), transparent 38%),
+    rgba(3, 6, 16, 0.66);
+  margin-bottom: 18px;
+}
+
+.run-board-state-chart[hidden] {
+  display: none;
+}
+
+.run-board-state-chart .run-metric-chart__head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.run-board-state-chart__title {
+  color: #65f3d4;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.run-board-state-chart p {
+  color: var(--muted, #9aa3c7);
+  font-size: 9px;
+  margin: 4px 0 0;
+}
+
+.run-board-state-chart__controls {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.run-board-state-chart__scope,
+.run-board-state-chart__custom-window {
+  background: rgba(12, 17, 38, 0.88);
+  border: 1px solid rgba(124, 143, 255, 0.28);
+  border-radius: 999px;
+  color: #e8ebff;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 800;
+  min-height: 32px;
+}
+
+.run-board-state-chart__scope {
+  box-sizing: border-box;
+  cursor: pointer;
+  flex: 0 0 auto;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 28px 0 11px;
+  width: auto;
+}
+
+#run-board-state-basis {
+  min-width: 184px;
+}
+
+#run-board-state-scope {
+  min-width: 140px;
+}
+
+.run-board-state-chart__custom-window {
+  align-items: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+}
+
+.run-board-state-chart__custom-window[hidden] {
+  display: none;
+}
+
+.run-board-state-chart__custom-window input {
+  background: rgba(3, 6, 16, 0.72);
+  border: 0;
+  border-radius: 999px;
+  color: #65f3d4;
+  font: inherit;
+  height: 22px;
+  min-height: 22px;
+  outline: 0;
+  padding: 0 4px;
+  text-align: center;
+  width: 48px;
+}
+
+.run-board-state-chart__custom-window input:focus {
+  box-shadow: 0 0 0 1px rgba(101, 243, 212, 0.7);
+}
+
+.run-board-state-chart__canvas {
+  height: 190px;
+}
+
+#run-board-state-latest {
+  color: #d9fff6;
+  flex: 0 0 auto;
+  min-width: 52px;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .run-heatmap__viewport {
@@ -3895,6 +4015,34 @@ html.has-run-world-map {
   overflow-anchor: none;
   padding-right: 4px;
   scrollbar-color: rgba(124, 143, 255, 0.34) transparent;
+}
+
+.agent-feed__load-more {
+  align-items: center;
+  background: rgba(12, 18, 43, 0.9);
+  border: 1px solid rgba(124, 143, 255, 0.28);
+  border-radius: 10px;
+  color: #dfe4ff;
+  display: flex;
+  flex: 0 0 auto;
+  font: 700 12px var(--font-mono, ui-monospace, monospace);
+  justify-content: space-between;
+  min-height: 42px;
+  padding: 9px 13px;
+  text-align: left;
+}
+
+.agent-feed__load-more:hover,
+.agent-feed__load-more:focus-visible {
+  background: rgba(21, 30, 66, 0.96);
+  border-color: rgba(52, 231, 240, 0.58);
+  outline: none;
+}
+
+.agent-feed__load-more small {
+  color: var(--muted, #9aa3c7);
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .agent-feed__row {
@@ -4865,6 +5013,50 @@ html.has-run-world-map {
   gap: 6px;
 }
 
+.identity-seed-field {
+  display: grid;
+  flex: 1 0 100%;
+  gap: 5px;
+  grid-template-columns: minmax(100px, 0.3fr) minmax(150px, 1fr);
+}
+
+.identity-seed-field[hidden] {
+  display: none;
+}
+
+.identity-seed-field > span {
+  align-self: center;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.identity-seed-field input {
+  background: rgba(2, 5, 14, 0.86);
+  border: 1px solid rgba(124, 143, 255, 0.32);
+  border-radius: 7px;
+  color: var(--ink, #e7eaff);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  min-width: 0;
+  padding: 8px 9px;
+  width: 100%;
+}
+
+.identity-seed-field input:focus {
+  border-color: var(--cyan, #34e7f0);
+  box-shadow: 0 0 0 2px rgba(52, 231, 240, 0.12);
+  outline: none;
+}
+
+.identity-seed-field small {
+  color: var(--muted, #9aa3c7);
+  font-size: 10px;
+  grid-column: 2;
+}
+
 .json-mode-info-wrap {
   display: inline-flex;
   position: relative;
@@ -5071,38 +5263,11 @@ html.has-run-world-map {
   width: 100%;
 }
 
-.budget-policy-layout {
-  align-items: end;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1.2fr) minmax(180px, 0.8fr);
-  margin-top: auto;
-  width: 100%;
-}
-
-.budget-policy-layout--prime {
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.9fr);
-}
-
-#local-settings .setting-card--budget {
-  grid-column: span 2;
-}
-
-.quit-policy-control {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.quit-policy-control__label {
-  color: var(--muted, #9aa3c7);
-  font-size: 11px;
-  font-weight: 600;
-}
-
 .quit-policy-picker.animated-segmented {
   border-radius: 8px;
+  margin-top: auto;
   min-height: 46px;
+  width: 100%;
 }
 
 .quit-policy-picker .segmented__glider {
@@ -5577,15 +5742,6 @@ html.has-run-world-map {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .setting-card--budget,
-  #local-settings .setting-card--budget {
-    grid-column: 1 / -1;
-  }
-
-  #prime-settings .setting-card--budget {
-    grid-column: auto;
-  }
-
   .run-card__main {
     grid-template-columns: minmax(0, 1fr) auto;
   }
@@ -5609,9 +5765,12 @@ html.has-run-world-map {
 }
 
 @media (max-width: 620px) {
-  .budget-policy-layout,
-  .budget-policy-layout--prime {
+  .identity-seed-field {
     grid-template-columns: 1fr;
+  }
+
+  .identity-seed-field small {
+    grid-column: 1;
   }
 }
 
@@ -5655,7 +5814,6 @@ html.has-run-world-map {
     grid-template-columns: 1fr;
   }
 
-  .setting-card--budget,
   .model-folder.is-open {
     grid-column: 1;
   }

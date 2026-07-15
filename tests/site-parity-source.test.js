@@ -61,6 +61,10 @@ assert.match(pages, /rel="preload" as="image" href="\/logos\/claude\.png"[^>]*fe
 assert.match(pages, /rel="preload" as="image" href="\/logos\/prime\.png"[^>]*fetchpriority="high"/);
 assert.doesNotMatch(agentScript, /logos\/(?:codex|claude|prime)\.png" alt="" loading="lazy"/);
 assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 3);
+assert.match(agentScript, /id: "codex",\s*name: "Codex",\s*enabled: false/);
+assert.match(agentScript, /id: "claude",\s*name: "Claude Code",\s*enabled: false/);
+assert.match(agentScript, /id: "prime",\s*name: "Prime Intellect",\s*enabled: true/);
+assert.match(agentScript, /PROVIDERS\.filter\(\(provider\) => provider\.enabled\)\.map/);
 assert.match(pages, /window\.__PLAY_WORLD_DATA__/);
 assert.match(pages, /maze-frame is-loading/);
 assert.match(pages, /class="maze-load-label">Loading</);

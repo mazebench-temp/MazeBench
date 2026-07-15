@@ -396,7 +396,85 @@ function extractAsciiFrames(row) {
   const info = row.info || {};
   const replay = row.maze_replay || info.maze_replay || {};
   const frames = row.maze_ascii_frames || info.maze_ascii_frames || replay.ascii_frames;
-  return Array.isArray(frames) ? frames.map((frame) => String(frame || "")) : [];
+  if (Array.isArray(frames) && frames.some((frame) => String(frame || "").trim())) {
+    return frames.map((frame) => String(frame || ""));
+  }
+
+  const extractBoard = (content) => {
+    const match = messageContentToText(content).match(/```(?:text)?\r?\n([\s\S]*?)```/i);
+    return match ? match[1].replace(/\s+$/, "") : "";
+  };
+  const nodeMessages = (Array.isArray(row.nodes) ? row.nodes : [])
+    .map((node) => node?.message)
+    .filter(Boolean);
+  const messages = nodeMessages.length
+    ? nodeMessages
+    : [
+        ...(Array.isArray(row.prompt) ? row.prompt : []),
+        ...(Array.isArray(row.completion) ? row.completion : [])
+      ];
+  const initialBoard =
+    String(replay.initial?.level || "") ||
+    messages
+      .filter((message) => message?.role === "user")
+      .map((message) => extractBoard(message.content))
+      .find(Boolean) ||
+    "";
+  const actionRecords = (Array.isArray(row.maze_actions)
+    ? row.maze_actions
+    : Array.isArray(info.maze_actions)
+      ? info.maze_actions
+      : Array.isArray(replay.actions)
+        ? replay.actions
+        : [])
+    .filter((record) => record && record.valid !== false && String(record.command || "").trim());
+
+  // Hosted Prime rows can carry the initial prompt plus post-action boards on
+  // each action record. Prefer those when present because they include the
+  // terminal observation after the final action too.
+  if (initialBoard && actionRecords.some((record) => String(record.status?.level || "").trim())) {
+    let currentBoard = initialBoard;
+    return [
+      initialBoard,
+      ...actionRecords.map((record) => {
+        currentBoard = String(record.status?.level || "").trimEnd() || currentBoard;
+        return currentBoard;
+      })
+    ];
+  }
+
+  // Local Prime results retain the exact model-facing observations in rollout
+  // conversation nodes rather than maze_ascii_frames. Pair every valid model
+  // action with the user board that preceded it, then shift by one so replay
+  // action N displays the observation delivered before action N+1. The last
+  // board is held for the tail because no later model observation exists.
+  let latestBoard = "";
+  const preActionBoards = [];
+  for (const message of messages) {
+    if (message?.role === "user") {
+      latestBoard = extractBoard(message.content) || latestBoard;
+      continue;
+    }
+    if (
+      message?.role === "assistant" &&
+      latestBoard &&
+      extractCommandFromAssistantText(messageContentToText(message.content))
+    ) {
+      preActionBoards.push(latestBoard);
+    }
+  }
+  if (!preActionBoards.length) return [];
+
+  const actionCount = extractActions(row).length || preActionBoards.length;
+  const recovered = [preActionBoards[0]];
+  for (let index = 0; index < actionCount; index += 1) {
+    recovered.push(
+      preActionBoards[index + 1] ||
+      preActionBoards[Math.min(index, preActionBoards.length - 1)] ||
+      recovered[recovered.length - 1]
+    );
+  }
+  return recovered;
 }
 
 function extractExpectedVisualStates(row) {
@@ -2733,6 +2811,9 @@ async function main() {
   console.log(`Wrote ${written.actionsPath}`);
 
   if (options.video) {
+    if (options.asciiSideBySide && !asciiFrames.some((frame) => String(frame || "").trim())) {
+      throw new Error("ASCII side-by-side video requested, but no model-facing ASCII observations were found");
+    }
     console.log("Rendering maze replay video...");
     let rendered;
     try {
@@ -2803,6 +2884,7 @@ if (require.main === module) {
 
 module.exports = {
   defaultReplayOptions,
+  extractAsciiFrames,
   humanSize,
   nativeFrameCountIsAcceptable,
   renderReplayVideo,

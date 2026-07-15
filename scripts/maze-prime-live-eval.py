@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,8 @@ def _export_synchronized_actions(trace) -> None:
             {
                 "turn": action.get("turn"),
                 "command_text": action.get("command") or action.get("raw_response") or "",
+                "valid": action.get("valid", True),
+                "error": action.get("error"),
                 "status": action.get("status") or {},
             },
         )
@@ -75,12 +78,59 @@ def _content_text(content) -> str:
     return "\n".join(parts)
 
 
+def _reasoning_value_text(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if isinstance(value, list):
+        return [text for part in value for text in _reasoning_value_text(part)]
+    if not isinstance(value, dict):
+        return []
+    parts: list[str] = []
+    for key in ("text", "thinking", "summary", "reasoning", "reasoning_content"):
+        parts.extend(_reasoning_value_text(value.get(key)))
+    return parts
+
+
+def _provider_state_reasoning(provider_state) -> str:
+    if provider_state is None:
+        return ""
+    items = provider_state if isinstance(provider_state, list) else [provider_state]
+    parts: list[str] = []
+    for item in items:
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").lower()
+        explicitly_reasoning = any(
+            key in item for key in ("thinking", "summary", "reasoning", "reasoning_content")
+        )
+        if not explicitly_reasoning and not any(marker in kind for marker in ("reasoning", "thinking")):
+            continue
+        if any(marker in kind for marker in ("encrypted", "redacted")):
+            continue
+        keys = ("summary", "content", "text", "thinking", "reasoning", "reasoning_content") if kind else (
+            "summary", "thinking", "reasoning", "reasoning_content"
+        )
+        for key in keys:
+            parts.extend(_reasoning_value_text(item.get(key)))
+    return "\n".join(dict.fromkeys(part.strip() for part in parts if part.strip()))
+
+
 def _response_reasoning(response) -> str:
-    reasoning = str(response.message.reasoning_content or "").strip()
+    message = getattr(response, "message", None)
+    reasoning = str(getattr(message, "reasoning_content", "") or "").strip()
+    if reasoning:
+        return reasoning
+    reasoning = _provider_state_reasoning(getattr(message, "provider_state", None))
     if reasoning:
         return reasoning
     parts: list[str] = []
-    for block in response.message.thinking_blocks or []:
+    for block in getattr(message, "thinking_blocks", None) or []:
         if hasattr(block, "model_dump"):
             block = block.model_dump()
         if isinstance(block, dict):
@@ -94,34 +144,41 @@ def _response_reasoning(response) -> str:
 
 def _commit_with_live_usage(self: PendingTurn, response) -> None:
     _original_commit(self, response)
-    _export_synchronized_actions(self.trace)
-    reasoning = _response_reasoning(response)
-    if LIVE_REASONING_PATH and reasoning:
-        _append_jsonl(
-            LIVE_REASONING_PATH,
-            {
-                "move": self.trace.num_turns,
-                "action": _content_text(response.message.content).strip(),
-                "reasoning": reasoning,
-                "recorded_at": time.time(),
-            },
-        )
-    usage = response.usage
-    if not LIVE_USAGE_PATH or usage is None:
-        return
+    # Telemetry must never turn a successfully committed model response into an
+    # HTTP 500. Provider response schemas legitimately omit optional reasoning
+    # fields, and the maze rollout must continue when that happens.
+    try:
+        _export_synchronized_actions(self.trace)
+        message = getattr(response, "message", None)
+        reasoning = _response_reasoning(response)
+        if LIVE_REASONING_PATH and reasoning:
+            _append_jsonl(
+                LIVE_REASONING_PATH,
+                {
+                    "move": self.trace.num_turns,
+                    "action": _content_text(getattr(message, "content", "")).strip(),
+                    "reasoning": reasoning,
+                    "recorded_at": time.time(),
+                },
+            )
+        usage = getattr(response, "usage", None)
+        if not LIVE_USAGE_PATH or usage is None:
+            return
 
-    record = {
-        "trace_id": self.trace.id,
-        "turn": self.trace.num_turns,
-        "prompt_tokens": int(usage.prompt_tokens or 0),
-        "cached_input_tokens": int(usage.cached_input_tokens or 0),
-        "completion_tokens": int(usage.completion_tokens or 0),
-        "reasoning_tokens": int(usage.reasoning_tokens or 0),
-        "input_tokens": int(usage.input_tokens),
-        "total_tokens": int(usage.total_tokens),
-        "recorded_at": time.time(),
-    }
-    _append_jsonl(LIVE_USAGE_PATH, record)
+        record = {
+            "trace_id": self.trace.id,
+            "turn": self.trace.num_turns,
+            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "cached_input_tokens": int(getattr(usage, "cached_input_tokens", 0) or 0),
+            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            "reasoning_tokens": int(getattr(usage, "reasoning_tokens", 0) or 0),
+            "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            "recorded_at": time.time(),
+        }
+        _append_jsonl(LIVE_USAGE_PATH, record)
+    except Exception as error:
+        print(f"[mazebench] live telemetry skipped: {error}", file=sys.stderr)
 
 
 PendingTurn.commit = _commit_with_live_usage

@@ -9,8 +9,10 @@ const terminalScript = path.join(ROOT_DIR, "scripts", "maze-terminal.js");
 const bridgeScript = path.join(ROOT_DIR, "scripts", "maze-bridge.js");
 const codexPlayScript = path.join(ROOT_DIR, "scripts", "codex-play.js");
 const modelReplScript = path.join(ROOT_DIR, "scripts", "maze-model-repl.js");
+const { extractAsciiFrames } = require(path.join(ROOT_DIR, "scripts", "maze-export-replay.js"));
 const {
   applyMove,
+  boardStateHash,
   buildJsonObservation,
   buildScorecard,
   cameraDirectionForInteractiveKey,
@@ -26,6 +28,49 @@ const {
   undoMove
 } = require(terminalScript);
 const mazeEngine = loadMazeEngine();
+
+{
+  const board = (name) => `maze level_HxI | view=top-diagonal yaw=0\n${name}`;
+  const fenced = (name) => `Observation\n\n\`\`\`text\n${board(name)}\n\`\`\``;
+  const localPrimeRow = {
+    info: {
+      maze_actions: ["up", "down", "left"].map((command, index) => ({
+        command,
+        status: { turn: index + 1 },
+        valid: true
+      }))
+    },
+    nodes: [
+      { message: { role: "user", content: fenced("BOARD-0") } },
+      { message: { role: "assistant", content: "up" } },
+      { message: { role: "user", content: fenced("BOARD-1") } },
+      { message: { role: "assistant", content: "down" } },
+      { message: { role: "assistant", content: "left" } }
+    ]
+  };
+  assert.deepEqual(extractAsciiFrames(localPrimeRow), [
+    board("BOARD-0"),
+    board("BOARD-1"),
+    board("BOARD-1"),
+    board("BOARD-1")
+  ]);
+
+  const hostedPrimeRow = {
+    prompt: [{ role: "user", content: fenced("HOSTED-0") }],
+    info: {
+      maze_actions: [
+        { command: "up", status: { level: board("HOSTED-1") }, valid: true },
+        { command: "down", status: { level: board("HOSTED-2") }, valid: true }
+      ],
+      maze_replay: {}
+    }
+  };
+  assert.deepEqual(extractAsciiFrames(hostedPrimeRow), [
+    board("HOSTED-0"),
+    board("HOSTED-1"),
+    board("HOSTED-2")
+  ]);
+}
 
 {
   const config = JSON.parse(
@@ -153,6 +198,35 @@ function syntheticFloor(width, height) {
       underlay: null,
       raised: false
     }))
+  );
+}
+
+{
+  const playData = {
+    actors: [{ type: "player", x: 0, y: 0, elevation: 0, removed: false }],
+    gameId: "maze",
+    height: 1,
+    levelId: "board_state_hash",
+    terrain: syntheticFloor(2, 1),
+    width: 2
+  };
+  const context = syntheticContext(playData, { pitch: 0, yaw: 0 });
+  const initialHash = boardStateHash(context, new Set());
+  context.options.pitch = 4;
+  context.options.yaw = 3;
+  assert.equal(
+    boardStateHash(context, new Set()),
+    initialHash,
+    "camera changes do not create new canonical board states"
+  );
+  context.state.actorX[0] = 1;
+  assert.notEqual(boardStateHash(context, new Set()), initialHash, "actor x/y/z changes alter the hash");
+  context.state.actorX[0] = 0;
+  assert.equal(boardStateHash(context, new Set()), initialHash, "restoring every object restores the hash");
+  assert.notEqual(
+    boardStateHash(context, new Set(["level_AxA:gem:1,1,0"])),
+    initialHash,
+    "world-level collected objects are part of canonical state"
   );
 }
 
@@ -648,6 +722,88 @@ function syntheticFloor(width, height) {
 }
 
 {
+  const playData = {
+    actors: [
+      { type: "gem", x: 0, y: 0, removed: false, elevation: 0, imageUrl: null },
+      { type: "player", x: 1, y: 0, removed: false, elevation: 0, imageUrl: null },
+      { type: "box", x: 2, y: 0, removed: false, elevation: 0, imageUrl: null }
+    ],
+    gameId: "maze",
+    height: 1,
+    levelId: "hidden_ascii_glyphs",
+    terrain: syntheticFloor(3, 1),
+    width: 3
+  };
+  const engine = mazeEngine.createEngine(playData);
+  const renderHidden = (hideNamesSeed, pitch = 0) => body(renderScreen({
+    engine,
+    level: { id: playData.levelId },
+    options: { pitch, yaw: 0, hideNames: true, hideNamesSeed },
+    playData,
+    state: engine.cloneState(engine.initialState)
+  }));
+  const hiddenA = renderHidden("ascii-run-a");
+  const hiddenAAgain = renderHidden("ascii-run-a");
+  const hiddenB = renderHidden("ascii-run-b");
+
+  assert.equal(hiddenA, hiddenAAgain, "a run keeps one stable ASCII glyph map");
+  assert.notEqual(hiddenA, hiddenB, "different runs receive different ASCII glyph maps");
+  assert.match(hiddenA, /P/);
+  assert.match(hiddenA, /G/);
+  assert.doesNotMatch(hiddenA, /[pg]/, "top faces reserve uppercase P/G for player and gem");
+
+  const hiddenSide = renderHidden("ascii-run-a", 4);
+  assert.match(hiddenSide, /p/);
+  assert.match(hiddenSide, /g/);
+  assert.doesNotMatch(hiddenSide, /[PG]/, "side faces reserve lowercase p/g for player and gem");
+}
+
+{
+  const terrain = syntheticFloor(3, 1);
+  terrain[0][0] = { type: "hole" };
+  terrain[0][1] = { type: "empty" };
+  const playData = {
+    actors: [],
+    gameId: "maze",
+    height: 1,
+    levelId: "hidden_ascii_edge_hole",
+    terrain,
+    width: 3
+  };
+  const hiddenRows = bodyRows(renderScreen(syntheticContext(playData, {
+    hideNames: true,
+    hideNamesSeed: "edge-hole-seed",
+    pitch: 0
+  })));
+
+  assert.equal(hiddenRows.length, 4);
+  assert.equal(
+    hiddenRows.every((row) => row.length === 12),
+    true,
+    "hidden ASCII keeps a hole on the board edge instead of trimming it"
+  );
+  assert.doesNotMatch(hiddenRows.join("\n"), / /, "every in-board space receives a glyph");
+  hiddenRows.forEach((row) => {
+    const holeGlyph = row[0];
+    const emptyGlyph = row[4];
+    const floorGlyph = row[8];
+    assert.equal(row.slice(0, 4), holeGlyph.repeat(4));
+    assert.equal(row.slice(4, 8), emptyGlyph.repeat(4));
+    assert.equal(row.slice(8, 12), floorGlyph.repeat(4));
+    assert.equal(new Set([holeGlyph, emptyGlyph, floorGlyph]).size, 3);
+  });
+
+  const sideRows = bodyRows(renderScreen(syntheticContext(playData, {
+    hideNames: true,
+    hideNamesSeed: "edge-hole-seed",
+    pitch: 4
+  })));
+  assert.equal(sideRows.length, 1);
+  assert.equal(sideRows[0].length, 12, "side view also keeps edge holes");
+  assert.doesNotMatch(sideRows[0], / /);
+}
+
+{
   const output = renderSynthetic({
     actors: [],
     gameId: "maze",
@@ -1089,7 +1245,8 @@ function syntheticFloor(width, height) {
       "--level", "level_HxI",
       "--json-observation",
       "--omniscient",
-      "--hide-names"
+      "--hide-names",
+      "--hide-names-seed", "user-selected-seed"
     ]);
     const observed = runCodexPlay(["observe", "--state", stateFile]);
     const session = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -1099,8 +1256,7 @@ function syntheticFloor(width, height) {
     assert.equal(initial.json_observation.omniscient, true);
     assert.equal(initial.json_observation.hide_names, true);
     assert.deepEqual(initial.json_observation.objects, observed.json_observation.objects);
-    assert.equal(typeof session.hideNamesSeed, "string");
-    assert.equal(session.hideNamesSeed.length, 32);
+    assert.equal(session.hideNamesSeed, "user-selected-seed");
   } finally {
     fs.rmSync(outDir, { recursive: true, force: true });
   }

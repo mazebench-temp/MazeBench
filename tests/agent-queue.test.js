@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createAgentRunService } = require("../server/agent-runs");
+const { createAgentRunService, replayMessageForCommandText } = require("../server/agent-runs");
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-agent-queue-"));
 const scriptsDir = path.join(rootDir, "scripts");
@@ -45,11 +45,21 @@ fs.writeFileSync(
 const args = process.argv.slice(2);
 const omniscient = args.includes("--omniscient");
 const hideNames = args.includes("--hide-names");
+const modeIndex = args.indexOf("--observation-mode");
+const observationMode = modeIndex >= 0 ? args[modeIndex + 1] : "text";
+let boardState = 0;
 readline.createInterface({ input: process.stdin, terminal: false }).on("line", (line) => {
   const message = JSON.parse(line);
+  if (["move", "goto_level", "reset_level", "undo"].includes(message.command)) boardState += 1;
   process.stdout.write(JSON.stringify(message.command === "close"
     ? { ok: true, action: "close" }
-    : { ok: true, action: message.command, json_observation: { mode: "json", omniscient, hide_names: hideNames, objects: [] } }) + "\\n");
+    : {
+        ok: true,
+        action: message.command,
+        board_state_hash: "state-" + boardState,
+        level: observationMode === "text" ? "ASCII:" + message.command : undefined,
+        json_observation: { mode: "json", omniscient, hide_names: hideNames, objects: [] }
+      }) + "\\n");
 });
 `,
   "utf8"
@@ -85,7 +95,19 @@ const launchedIds = [];
 
 (async () => {
 try {
-  const [hostedPrime] = service.launchRuns({
+  assert.deepEqual(replayMessageForCommandText("up"), { command: "move", direction: "up" });
+  assert.deepEqual(replayMessageForCommandText("rotate camera left"), {
+    command: "rotate_camera",
+    direction: "left"
+  });
+  assert.deepEqual(replayMessageForCommandText("go to level H I"), {
+    command: "goto_level",
+    x: "H",
+    y: "I"
+  });
+  assert.equal(replayMessageForCommandText("not a command"), null);
+
+  const [livePrime] = service.launchRuns({
     kind: "prime",
     model_name: "Qwen/Qwen3.5-0.8B",
     max_turns: 5,
@@ -94,16 +116,129 @@ try {
     allow_quit: false,
     video: false
   });
+  launchedIds.push(livePrime.id);
+  const livePrimeMeta = loadJson(
+    path.join(rootDir, "outputs", "maze-local", "site", livePrime.id, "run.json")
+  );
+  assert.equal(livePrimeMeta.prime_execution, "local");
+  assert.equal(livePrimeMeta.moves, 5);
+  assert.equal(livePrimeMeta.allow_quit, false);
+  assert.doesNotMatch(livePrimeMeta.command, /--hosted/);
+  assert.match(livePrimeMeta.command, /--model Qwen\/Qwen3\.5-0\.8B/);
+  assert.match(livePrimeMeta.note, /every model turn/);
+  const livePrimeRunDir = path.join(rootDir, "outputs", "maze-local", "site", livePrime.id);
+  fs.writeFileSync(
+    path.join(livePrimeRunDir, "actions.jsonl"),
+    `${JSON.stringify({
+      turn: 1,
+      command_text: "up",
+      valid: true,
+      status: { current_room: "level_HxI" }
+    })}\n`
+  );
+  fs.writeFileSync(
+    path.join(livePrimeRunDir, "prime-usage.jsonl"),
+    `${JSON.stringify({
+      turn: 1,
+      input_tokens: 10,
+      completion_tokens: 2,
+      recorded_at: Date.now() / 1000
+    })}\n`
+  );
+  const livePrimeProgress = service.getRunProgress(livePrime.id);
+  assert.equal(livePrimeProgress.actions[0].level, "ASCII:observe");
+  assert.equal(livePrimeProgress.initial_board_state_hash, "state-0");
+  assert.equal(livePrimeProgress.actions[0].board_state_hash, "state-1");
+  assert.equal(livePrimeProgress.run.inference.state, "in_flight");
+  assert.equal(livePrimeProgress.run.inference.action, 2);
+  assert.equal(service.stopRun(livePrime.id).status, "stopped");
+  service.deleteRun(livePrime.id);
+
+  const failedPrimeId = "prime-rollout-failure-test";
+  const livePrimeDir = path.join(rootDir, "outputs", "maze-local", "site", failedPrimeId);
+  fs.mkdirSync(livePrimeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(livePrimeDir, "run.json"),
+    `${JSON.stringify({
+      id: failedPrimeId,
+      kind: "prime",
+      created_at: new Date().toISOString(),
+      status: "finished",
+      model: "prime",
+      model_name: "failure-test",
+      game_id: "maze",
+      level_id: "level_HxI",
+      moves: 1,
+      gem_total: 1
+    }, null, 2)}\n`
+  );
+  fs.writeFileSync(
+    path.join(livePrimeDir, "prime-evaluation-samples.json"),
+    `${JSON.stringify({
+      samples: [{
+        info: {
+          stop_condition: "has_error",
+          error: { error_chain_str: "ModelError -> HTTP 422" }
+        }
+      }]
+    }, null, 2)}\n`
+  );
+  const failedPrimeSummary = service.summarizeRun(failedPrimeId);
+  assert.equal(failedPrimeSummary.status, "failed");
+  assert.equal(failedPrimeSummary.rollout_error, "ModelError -> HTTP 422");
+  assert.equal(failedPrimeSummary.prime_evaluation_status, "FAILED");
+  service.deleteRun(failedPrimeId);
+
+  const primeVideoId = "prime-video-input-test";
+  const primeVideoDir = path.join(rootDir, "outputs", "maze-local", "site", primeVideoId);
+  const primeVideoResults = path.join(primeVideoDir, "eval-output", "results.jsonl");
+  fs.mkdirSync(path.dirname(primeVideoResults), { recursive: true });
+  fs.writeFileSync(primeVideoResults, "{}\n");
+  fs.writeFileSync(
+    path.join(primeVideoDir, "run.json"),
+    `${JSON.stringify({
+      id: primeVideoId,
+      kind: "prime",
+      created_at: new Date().toISOString(),
+      status: "finished",
+      model: "prime",
+      model_name: "video-test",
+      game_id: "maze",
+      level_id: "level_HxI",
+      moves: 1,
+      mode: "text",
+      gem_total: 1
+    }, null, 2)}\n`
+  );
+  fs.writeFileSync(
+    path.join(primeVideoDir, "actions.jsonl"),
+    `${JSON.stringify({ turn: 1, command_text: "up", status: {} })}\n`
+  );
+  const primeVideo = service.generateRunVideo(primeVideoId);
+  assert.equal(primeVideo.video_status, "rendering");
+  const primeVideoArgsDeadline = Date.now() + 3000;
+  while (!fs.existsSync(path.join(primeVideoDir, "video-args.json")) && Date.now() < primeVideoArgsDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const primeVideoArgs = loadJson(path.join(primeVideoDir, "video-args.json"), []);
+  assert.equal(primeVideoArgs[0], primeVideoResults);
+  service.cancelRunVideo(primeVideoId);
+  service.deleteRun(primeVideoId);
+
+  const [hostedPrime] = service.launchRuns({
+    kind: "prime",
+    model_name: "hosted-test",
+    max_turns: 1,
+    hosted: true,
+    video: false
+  });
   launchedIds.push(hostedPrime.id);
   const hostedPrimeMeta = loadJson(
     path.join(rootDir, "outputs", "maze-local", "site", hostedPrime.id, "run.json")
   );
   assert.equal(hostedPrimeMeta.prime_execution, "hosted");
-  assert.equal(hostedPrimeMeta.moves, 5);
-  assert.equal(hostedPrimeMeta.allow_quit, false);
   assert.match(hostedPrimeMeta.command, /--hosted/);
-  assert.match(hostedPrimeMeta.command, /--model Qwen\/Qwen3\.5-0\.8B/);
-  assert.equal(service.stopRun(hostedPrime.id).status, "stopped");
+  service.stopRun(hostedPrime.id);
   service.deleteRun(hostedPrime.id);
 
   const [visionPrime] = service.launchRuns({
@@ -130,19 +265,23 @@ try {
     mode: "json",
     omniscient: true,
     hide_names: true,
+    hide_names_seed: "repeatable-prime-seed",
     video: false
   });
   launchedIds.push(jsonPrime.id);
   const jsonPrimeMeta = loadJson(
     path.join(rootDir, "outputs", "maze-local", "site", jsonPrime.id, "run.json")
   );
-  assert.equal(jsonPrimeMeta.prime_execution, "hosted");
+  assert.equal(jsonPrimeMeta.prime_execution, "local");
   assert.equal(jsonPrimeMeta.mode, "json");
   assert.equal(jsonPrimeMeta.omniscient, true);
   assert.equal(jsonPrimeMeta.hide_names, true);
+  assert.equal(jsonPrimeMeta.hide_names_seed, "repeatable-prime-seed");
+  assert.equal(jsonPrimeMeta.launch_params.hide_names_seed, "repeatable-prime-seed");
   assert.match(jsonPrimeMeta.command, /--observation-mode json/);
   assert.match(jsonPrimeMeta.command, /--omniscient/);
   assert.match(jsonPrimeMeta.command, /--hide-names/);
+  assert.match(jsonPrimeMeta.command, /--hide-names-seed repeatable-prime-seed/);
   service.stopRun(jsonPrime.id);
   service.deleteRun(jsonPrime.id);
 
@@ -155,6 +294,7 @@ try {
     mode: "json",
     omniscient: true,
     hide_names: true,
+    hide_names_seed: "repeatable-local-seed",
     container: false,
     video: false
   });
@@ -165,9 +305,12 @@ try {
   assert.equal(jsonLocalMeta.mode, "json");
   assert.equal(jsonLocalMeta.omniscient, true);
   assert.equal(jsonLocalMeta.hide_names, true);
+  assert.equal(jsonLocalMeta.hide_names_seed, "repeatable-local-seed");
+  assert.equal(jsonLocalMeta.launch_params.hide_names_seed, "repeatable-local-seed");
   assert.match(jsonLocalMeta.command, /mode=json/);
   assert.match(jsonLocalMeta.command, /omniscient=true/);
   assert.match(jsonLocalMeta.command, /hide_names=true/);
+  assert.match(jsonLocalMeta.command, /hide_names_seed=repeatable-local-seed/);
   const jsonLocalDir = path.join(rootDir, "outputs", "maze-local", "site", jsonLocal.id);
   fs.writeFileSync(path.join(jsonLocalDir, "session.json"), JSON.stringify({
     actions: [],
@@ -187,6 +330,23 @@ try {
     hide_names: true,
     objects: []
   });
+  const cachedActionsPath = path.join(jsonLocalDir, "actions.jsonl");
+  fs.writeFileSync(cachedActionsPath, `${JSON.stringify({
+    turn: 1,
+    command_text: "up",
+    status: { current_room: "level_HxI" }
+  })}\n`);
+  assert.equal(service.getRunProgress(jsonLocal.id).actions[0].command_text, "up");
+  const replacementActionsPath = `${cachedActionsPath}.replacement`;
+  fs.writeFileSync(replacementActionsPath, `${JSON.stringify({
+    turn: 1,
+    command_text: "right",
+    status: { current_room: "level_HxI", level: "A MUCH LARGER ATOMIC REPLACEMENT" }
+  })}\n`);
+  fs.renameSync(replacementActionsPath, cachedActionsPath);
+  const replacedActions = service.getRunProgress(jsonLocal.id).actions;
+  assert.equal(replacedActions.length, 1, "atomic action-file replacement must not append cached rows");
+  assert.equal(replacedActions[0].command_text, "right");
   service.stopRun(jsonLocal.id);
   service.deleteRun(jsonLocal.id);
 
@@ -199,6 +359,7 @@ try {
     moves: 1,
     allow_quit: false,
     mode: "text",
+    hide_names: true,
     container: false,
     tools: false,
     tool_use: "read-only",
@@ -211,13 +372,15 @@ try {
   );
   assert.equal(hostSwarmMeta.tool_use, "read-only");
   assert.equal(hostSwarmMeta.tools, false);
-  assert.equal(hostSwarmMeta.swarm, true);
+  assert.equal(hostSwarmMeta.swarm, false, "game-only mode must disable provider workers");
   assert.equal(hostSwarmMeta.container, false);
   assert.equal(hostSwarmMeta.allow_quit, false);
+  assert.equal(hostSwarmMeta.hide_names_seed, "1");
+  assert.equal(hostSwarmMeta.launch_params.hide_names_seed, hostSwarmMeta.hide_names_seed);
   assert.equal(hostSwarmMeta.launch_params.allow_quit, false);
   assert.match(hostSwarmMeta.command, /tool_use=read-only/);
   assert.match(hostSwarmMeta.command, /allow_quit=false/);
-  assert.match(hostSwarmMeta.command, /swarm=true/);
+  assert.match(hostSwarmMeta.command, /swarm=false/);
   const retargeted = service.setRunMoveTarget(hostReadOnlySwarm.id, 100_000);
   assert.equal(retargeted.moves, 100_000);
   const retargetedMeta = loadJson(
@@ -271,7 +434,7 @@ try {
     JSON.stringify({ player: { elevation: 3, x: 4, y: 12 } })
   );
   const swarmProgress = service.getRunProgress(hostReadOnlySwarm.id);
-  assert.deepEqual(swarmProgress.initial_player, { x: 4, y: 12 });
+  assert.deepEqual(swarmProgress.initial_player, { elevation: 3, x: 4, y: 12 });
   assert.equal(swarmProgress.swarm_views.length, 1);
   assert.equal(swarmProgress.swarm_views[0].id, "scout_one");
   assert.equal(swarmProgress.swarm_views[0].room, "level_GxH");

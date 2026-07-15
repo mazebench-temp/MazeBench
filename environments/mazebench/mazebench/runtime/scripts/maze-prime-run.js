@@ -16,7 +16,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawn, spawnSync } = require("node:child_process");
+const { execFile, spawn, spawnSync } = require("node:child_process");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const EXPORT_REPLAY = path.join(ROOT_DIR, "scripts", "maze-export-replay.js");
@@ -37,6 +37,7 @@ function parseArgs(argv) {
     observationMode: "ascii",
     omniscient: false,
     hideNames: false,
+    hideNamesSeed: "1",
     outDir: "",
     reasoning: "",
     runId: "",
@@ -69,6 +70,7 @@ function parseArgs(argv) {
     }
     else if (arg === "--omniscient") opts.omniscient = true;
     else if (arg === "--hide-names") opts.hideNames = true;
+    else if (arg === "--hide-names-seed") opts.hideNamesSeed = String(next() || "").trim().slice(0, 128);
     else if (arg === "--reasoning") opts.reasoning = String(next() || "").trim();
     else if (arg === "--no-quit") opts.allowQuit = false;
     else if (arg === "--no-video") opts.video = false;
@@ -89,6 +91,13 @@ function writeJsonAtomic(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  fs.renameSync(temporary, filePath);
+}
+
+function writeTextAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, value, "utf8");
   fs.renameSync(temporary, filePath);
 }
 
@@ -120,17 +129,21 @@ function updateHostedState(opts, patch) {
 }
 
 function writeInitialStatus(opts) {
+  const terminalArgs = [
+    TERMINAL,
+    "--json",
+    "--once",
+    "--level",
+    opts.levelId,
+    "--game-won-gem-count",
+    String(opts.gameWonGemCount)
+  ];
+  if (opts.observationMode === "ascii" && opts.hideNames) {
+    terminalArgs.push("--hide-names", "--hide-names-seed", opts.hideNamesSeed || "1");
+  }
   const result = spawnSync(
     process.execPath,
-    [
-      TERMINAL,
-      "--json",
-      "--once",
-      "--level",
-      opts.levelId,
-      "--game-won-gem-count",
-      String(opts.gameWonGemCount)
-    ],
+    terminalArgs,
     { cwd: ROOT_DIR, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
   );
   if (result.status !== 0) return;
@@ -138,6 +151,7 @@ function writeInitialStatus(opts) {
     const payload = JSON.parse(result.stdout);
     writeJsonAtomic(path.join(opts.outDir, "initial-status.json"), {
       allowed_commands: payload.allowedCommands || [],
+      board_state_hash: payload.boardStateHash || null,
       current_room: payload.levelId || opts.levelId,
       current_view: payload.view || "top-diagonal",
       gem_count: 0,
@@ -165,9 +179,15 @@ function hostedEvalArgs(opts) {
   };
   if (opts.observationMode === "json") {
     envArgs.omniscient = opts.omniscient;
-    envArgs.hide_names = opts.hideNames;
   }
-  const samplingArgs = { max_tokens: 64 };
+  if (opts.observationMode !== "vision" && opts.hideNames) {
+    envArgs.hide_names = true;
+    if (opts.hideNamesSeed) envArgs.hide_names_seed = opts.hideNamesSeed;
+  }
+  // Reasoning models spend this budget on reasoning_content before emitting the
+  // one-line command. A 64-token cap can therefore produce a null command and
+  // poison the next chat request even though the requested action is tiny.
+  const samplingArgs = { max_tokens: 512 };
   if (opts.reasoning) samplingArgs.reasoning_effort = opts.reasoning;
   const evalName = `MazeBench Agent ${opts.runId || path.basename(opts.outDir)}`;
   const args = [
@@ -210,6 +230,32 @@ function primeJson(args) {
     throw new Error(stripAnsi(result.stderr || result.stdout) || `prime ${args.join(" ")} failed`);
   }
   return parseJsonOutput(result.stdout);
+}
+
+function primeJsonAsync(args) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "prime",
+      [...args, "--output", "json", "--plain"],
+      {
+        cwd: ROOT_DIR,
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 60_000
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stripAnsi(stderr || stdout) || `prime ${args.join(" ")} failed`));
+          return;
+        }
+        try {
+          resolve(parseJsonOutput(stdout));
+        } catch (parseError) {
+          reject(parseError);
+        }
+      }
+    );
+  });
 }
 
 function nestedField(value, key, depth = 0) {
@@ -281,6 +327,45 @@ function writeHostedResults(opts, samplesPayload) {
   return resultsPath;
 }
 
+function writeHostedLiveArtifacts(opts, samplesPayload) {
+  const samples = Array.isArray(samplesPayload?.samples) ? samplesPayload.samples : [];
+  if (samples.length === 0) return { moves: 0, resultsPath: "" };
+  const resultsPath = writeHostedResults(opts, samplesPayload);
+  const moves = writeMoveArtifacts(resultsPath, opts.outDir);
+  return { moves, resultsPath };
+}
+
+function hostedRolloutError(samplesPayload) {
+  const samples = Array.isArray(samplesPayload?.samples) ? samplesPayload.samples : [];
+  for (const sample of samples) {
+    const info = sample?.info || {};
+    const error = info.error;
+    if (info.stop_condition !== "has_error" && !error) continue;
+    return String(
+      error?.error_chain_str ||
+      error?.message ||
+      error?.error ||
+      "The hosted rollout stopped with an error."
+    ).trim();
+  }
+  return "";
+}
+
+function localRolloutError(resultsPath) {
+  if (!resultsPath || !fs.existsSync(resultsPath)) return "";
+  const firstLine = fs.readFileSync(resultsPath, "utf8").split(/\r?\n/).find((line) => line.trim());
+  if (!firstLine) return "The local Prime evaluation produced no result row.";
+  const row = JSON.parse(firstLine);
+  const errors = Array.isArray(row.errors) ? row.errors : [];
+  if (!errors.length && !["error", "has_error"].includes(String(row.stop_condition || ""))) return "";
+  const error = errors[errors.length - 1] || {};
+  const traceback = String(error.traceback || "");
+  const providerMatches = [...traceback.matchAll(/openai\.([A-Za-z]+Error):\s*([^\n]+)/g)];
+  const providerError = providerMatches[providerMatches.length - 1];
+  if (providerError) return `${providerError[1]}: ${providerError[2]}`;
+  return [error.type, error.message].filter(Boolean).join(": ") || "The local Prime rollout stopped with an error.";
+}
+
 function runHostedEval(opts) {
   writeInitialStatus(opts);
   const argv = hostedEvalArgs(opts);
@@ -291,6 +376,43 @@ function runHostedEval(opts) {
     const child = spawn("prime", argv, { cwd: ROOT_DIR, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let combined = "";
     let evaluationId = "";
+    let samplePollTimer = null;
+    let samplePollInFlight = null;
+    let lastSamplePollError = "";
+    const pollHostedSamples = () => {
+      if (!evaluationId || samplePollInFlight) return samplePollInFlight;
+      samplePollInFlight = primeJsonAsync(["eval", "samples", evaluationId])
+        .then((samples) => {
+          const { moves } = writeHostedLiveArtifacts(opts, samples);
+          updateHostedState(opts, {
+            evaluation_id: evaluationId,
+            live_action_count: moves,
+            status: "RUNNING"
+          });
+          lastSamplePollError = "";
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message !== lastSamplePollError) {
+            console.error(`[mazebench] waiting for hosted sample stream: ${message}`);
+            lastSamplePollError = message;
+          }
+        })
+        .finally(() => {
+          samplePollInFlight = null;
+        });
+      return samplePollInFlight;
+    };
+    const startHostedSamplePolling = () => {
+      if (samplePollTimer) return;
+      void pollHostedSamples();
+      samplePollTimer = setInterval(pollHostedSamples, 2_000);
+    };
+    const stopHostedSamplePolling = async () => {
+      if (samplePollTimer) clearInterval(samplePollTimer);
+      samplePollTimer = null;
+      if (samplePollInFlight) await samplePollInFlight;
+    };
     const consume = (chunk, stream) => {
       const text = chunk.toString();
       stream.write(text);
@@ -304,6 +426,7 @@ function runHostedEval(opts) {
             status: "RUNNING",
             viewer_url: `https://app.primeintellect.ai/dashboard/evaluations/${evaluationId}`
           });
+          startHostedSamplePolling();
         }
       }
     };
@@ -313,7 +436,8 @@ function runHostedEval(opts) {
       updateHostedState(opts, { status: "FAILED", error: error.message });
       resolve(127);
     });
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
+      await stopHostedSamplePolling();
       if (!evaluationId) {
         updateHostedState(opts, {
           status: code === 0 ? "COMPLETED" : "FAILED",
@@ -325,14 +449,23 @@ function runHostedEval(opts) {
       try {
         const evaluation = primeJson(["eval", "get", evaluationId]);
         const samples = primeJson(["eval", "samples", evaluationId]);
-        writeHostedResults(opts, samples);
+        const { moves } = writeHostedLiveArtifacts(opts, samples);
+        const rolloutError = hostedRolloutError(samples);
         updateHostedState(opts, {
           ...evaluation,
           evaluation_id: evaluationId,
-          status: evaluation.status || (code === 0 ? "COMPLETED" : "FAILED"),
+          live_action_count: moves,
+          status: rolloutError ? "FAILED" : evaluation.status || (code === 0 ? "COMPLETED" : "FAILED"),
+          rollout_error: rolloutError || null,
           viewer_url: evaluation.viewer_url || `https://app.primeintellect.ai/dashboard/evaluations/${evaluationId}`
         });
-        resolve(String(evaluation.status || "").toUpperCase() === "COMPLETED" ? 0 : code == null ? 1 : code);
+        resolve(
+          !rolloutError && String(evaluation.status || "").toUpperCase() === "COMPLETED"
+            ? 0
+            : code == null
+              ? 1
+              : code || 1
+        );
       } catch (error) {
         updateHostedState(opts, { status: "FAILED", error: error.message });
         console.error(`[mazebench] could not import hosted evaluation ${evaluationId}: ${error.message}`);
@@ -369,8 +502,18 @@ function runEval(opts) {
     "1",
     "--taskset.num-examples",
     "1",
-    "--max-turns",
+    "--taskset.start-level-id",
+    opts.levelId,
+    "--taskset.game-won-gem-count",
+    String(opts.gameWonGemCount),
+    "--taskset.max-actions",
     String(opts.maxTurns),
+    "--max-turns",
+    // Verifiers counts every sampled graph branch against max_turns. Provider
+    // continuation-state retokenization can fork the graph without advancing
+    // the user simulator, so keep this as a safety ceiling and let the
+    // environment's exact max_actions value enforce the requested move budget.
+    String(Math.max(opts.maxTurns + 16, opts.maxTurns * 4)),
     "--rich",
     "False",
     "-o",
@@ -382,7 +525,10 @@ function runEval(opts) {
   } else if (opts.observationMode === "json") {
     argv.push("--taskset.observation-mode", "json");
     if (opts.omniscient) argv.push("--taskset.omniscient", "True");
-    if (opts.hideNames) argv.push("--taskset.hide-names", "True");
+  }
+  if (!opts.vision && opts.hideNames) {
+    argv.push("--taskset.hide-names", "True");
+    if (opts.hideNamesSeed) argv.push("--taskset.hide-names-seed", opts.hideNamesSeed);
   }
 
   if (!opts.allowQuit) {
@@ -463,6 +609,41 @@ function messageText(content) {
   return content == null ? "" : String(content);
 }
 
+function reasoningValueText(value) {
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (Array.isArray(value)) return value.flatMap(reasoningValueText);
+  if (!value || typeof value !== "object") return [];
+
+  return ["text", "thinking", "summary", "reasoning", "reasoning_content"]
+    .flatMap((key) => reasoningValueText(value[key]));
+}
+
+// Verifiers normally normalizes provider-specific fields into
+// reasoning_content. Preserve a direct fallback for trace formats that retain
+// only provider_state (Responses summaries, reasoning_details, thinking blocks).
+function providerReasoningText(providerState) {
+  const items = Array.isArray(providerState) ? providerState : providerState ? [providerState] : [];
+  const parts = [];
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const type = String(item.type || "").toLowerCase();
+    const explicitlyReasoning = ["thinking", "summary", "reasoning", "reasoning_content"]
+      .some((key) => Object.hasOwn(item, key));
+    if (!explicitlyReasoning && !type.includes("reasoning") && !type.includes("thinking")) continue;
+    if (type.includes("encrypted") || type.includes("redacted")) continue;
+
+    const keys = type
+      ? ["summary", "content", "text", "thinking", "reasoning", "reasoning_content"]
+      : ["summary", "thinking", "reasoning", "reasoning_content"];
+    for (const key of keys) {
+      parts.push(...reasoningValueText(item[key]));
+    }
+  }
+
+  return [...new Set(parts.filter(Boolean))].join("\n");
+}
+
 // The observation embeds the ASCII maze in a ```text … ``` fence; pull it out so
 // the run page can show exactly the board the model read. In vision mode there
 // is no fence (the board is an image), so this returns "".
@@ -488,9 +669,10 @@ function conversationTurns(row) {
     if (message.role === "user") {
       lastObservation = messageText(message.content);
     } else if (message.role === "assistant") {
+      const normalizedReasoning = String(messageText(message.reasoning_content) || "").trim();
       turns.push({
         board: extractBoard(lastObservation),
-        reasoning: String(messageText(message.reasoning_content) || "").trim(),
+        reasoning: normalizedReasoning || providerReasoningText(message.provider_state),
         action: String(messageText(message.content) || "").trim()
       });
     }
@@ -536,7 +718,14 @@ function writeMoveArtifacts(resultsPath, outDir) {
     const commandText = String(action.command || action.raw_response || detail.action || "").trim();
 
     const timestamp = action.timestamp || action.created_at || detail.timestamp || null;
-    actionLines.push(JSON.stringify({ turn: action.turn, timestamp, command_text: commandText, status }));
+    actionLines.push(JSON.stringify({
+      turn: action.turn,
+      timestamp,
+      command_text: commandText,
+      valid: action.valid !== false,
+      error: action.error || null,
+      status
+    }));
 
     if (detail.reasoning) {
       reasoning.push({
@@ -552,21 +741,36 @@ function writeMoveArtifacts(resultsPath, outDir) {
     }
   });
 
-  fs.writeFileSync(path.join(outDir, "actions.jsonl"), actionLines.length ? `${actionLines.join("\n")}\n` : "");
-
-  if (reasoning.length) {
-    fs.writeFileSync(path.join(outDir, "reasoning.json"), `${JSON.stringify(reasoning, null, 2)}\n`);
-  }
+  writeTextAtomic(
+    path.join(outDir, "actions.jsonl"),
+    actionLines.length ? `${actionLines.join("\n")}\n` : ""
+  );
+  writeTextAtomic(
+    path.join(outDir, "reasoning.json"),
+    reasoning.length ? `${JSON.stringify(reasoning, null, 2)}\n` : "[]\n"
+  );
 
   return actionLines.length;
 }
 
-function runReplayExport(resultsPath, outDir, opts) {
-  const argv = [EXPORT_REPLAY, resultsPath, "--out-dir", outDir, "--draft", "--width", "640", "--height", "640"];
+function replayExportArgs(resultsPath, outDir, opts) {
+  const argv = [EXPORT_REPLAY, resultsPath, "--out-dir", outDir, "--draft"];
+
+  if (opts.observationMode === "ascii") {
+    argv.push("--width", "1280", "--height", "720", "--ascii-side-by-side");
+  } else {
+    argv.push("--width", "640", "--height", "640");
+  }
 
   if (!opts.video) {
     argv.push("--no-video");
   }
+
+  return argv;
+}
+
+function runReplayExport(resultsPath, outDir, opts) {
+  const argv = replayExportArgs(resultsPath, outDir, opts);
 
   console.log("[mazebench] node scripts/maze-export-replay.js <results> --out-dir <run> --draft");
 
@@ -596,6 +800,12 @@ async function main() {
     process.exit(0);
   }
 
+  const rolloutError = localRolloutError(resultsPath);
+  if (rolloutError) {
+    console.error(`[mazebench] rollout failed: ${rolloutError}`);
+    process.exit(1);
+  }
+
   try {
     const moves = writeMoveArtifacts(resultsPath, opts.outDir);
     console.log(`[mazebench] wrote ${moves} move${moves === 1 ? "" : "s"} (board + reasoning) from the eval`);
@@ -622,8 +832,14 @@ if (require.main === module) {
 }
 
 module.exports = {
+  conversationTurns,
   hostedEvalArgs,
+  hostedRolloutError,
   hostedSampleToResultRow,
+  localRolloutError,
   parseArgs,
+  providerReasoningText,
+  replayExportArgs,
+  writeHostedLiveArtifacts,
   writeHostedResults
 };

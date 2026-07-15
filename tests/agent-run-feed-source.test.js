@@ -19,6 +19,8 @@ assert.match(runScript, /new Blob\(\[.*JSON\.stringify\(payload, null, 2\)/s);
 assert.match(runScript, /reasoning: state\.reasoning\.get\(turn\) \|\| null/);
 assert.match(runScript, /data-feed-expand=/);
 assert.match(runScript, /function isMultiAgentRun\(\)/);
+assert.match(runScript, /Invalid: \$\{invalidReason\}/);
+assert.match(runScript, /Run failed — \$\{rolloutError\}/);
 assert.match(runScript, /const agentBadge = multiAgentRun && activeAgents/);
 assert.match(runScript, /<span class="agent-feed__num"[^>]*>\$\{escapeText\(num\)\}<\/span>\s*<strong class="agent-feed__action">[\s\S]*?<\/strong>\s*<button type="button" class="agent-feed__jump" data-jump-turn="\$\{escapeText\(num\)\}">Jump to Action \$\{escapeText\(num\)\}<\/button>/);
 assert.match(siteTheme, /\.run-feed-toolbar \{/);

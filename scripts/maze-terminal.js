@@ -179,6 +179,12 @@ const JSON_OBJECT_NAME_UNIVERSE = Object.freeze([
   "weightless_box"
 ]);
 const HIDDEN_NAME_ALPHABET = Array.from("ABCDEFGHJKLMNOQRSTUVWXYZabcdefghijklmnoqrstuvwxyz");
+const HIDDEN_ASCII_FIXED_GLYPHS = new Map([
+  ["P", "P"],
+  ["p", "p"],
+  ["G", "G"],
+  ["g", "g"]
+]);
 
 function assertUniqueGlyphPairs(groups) {
   const used = new Map();
@@ -220,10 +226,52 @@ assertUniqueGlyphPairs({
   WEIGHTLESS_BOX_GLYPHS
 });
 
+const HIDDEN_ASCII_GLYPH_UNIVERSE = Object.freeze(
+  Array.from(new Set(
+    [
+      ACTOR_GLYPHS,
+      BLOCK_ASSET_GLYPHS,
+      CLONE_GLYPHS,
+      ICE_SLOPE_DIRECTION_GLYPHS,
+      ORANGE_BUTTON_GLYPHS,
+      PLAYER_LIFT_GLYPHS,
+      PUNCHER_DIRECTION_GLYPHS,
+      TERRAIN_GLYPHS,
+      UNKNOWN_GLYPHS,
+      WEIGHTLESS_BOX_GLYPHS
+    ]
+      .flatMap((group) => Object.values(group))
+      .flatMap((glyphs) => Object.values(glyphs))
+      .filter((glyph) => glyph !== " " && !HIDDEN_ASCII_FIXED_GLYPHS.has(glyph))
+  )).sort()
+);
+const HIDDEN_ASCII_BLANK_GLYPH = "?";
+
+function hiddenAsciiGlyphMap(seed) {
+  const normalizedSeed = String(seed || "1");
+  const sourceGlyphs = [" ", ...HIDDEN_ASCII_GLYPH_UNIVERSE];
+  const targetGlyphs = [...HIDDEN_ASCII_GLYPH_UNIVERSE, HIDDEN_ASCII_BLANK_GLYPH];
+  const shuffled = targetGlyphs.sort((left, right) => {
+    const leftHash = crypto.createHash("sha256").update(`${normalizedSeed}:ascii:${left}`).digest("hex");
+    const rightHash = crypto.createHash("sha256").update(`${normalizedSeed}:ascii:${right}`).digest("hex");
+    return leftHash.localeCompare(rightHash) || left.localeCompare(right);
+  });
+  return new Map(sourceGlyphs.map((glyph, index) => [glyph, shuffled[index]]));
+}
+
+function hideAsciiGlyphNames(text, seed) {
+  const mapping = hiddenAsciiGlyphMap(seed);
+  return Array.from(String(text || ""), (glyph) =>
+    HIDDEN_ASCII_FIXED_GLYPHS.get(glyph) || mapping.get(glyph) || glyph
+  ).join("");
+}
+
 function parseArgs(argv) {
   const options = {
     gameId: "maze",
     gameWonGemCount: GAME_WON_GEM_COUNT,
+    hideNames: false,
+    hideNamesSeed: "1",
     json: false,
     levelId: "level_HxI",
     maxExpandedStates: 1000000,
@@ -256,6 +304,10 @@ function parseArgs(argv) {
     } else if (arg === "--json") {
       options.json = true;
       options.once = true;
+    } else if (arg === "--hide-names") {
+      options.hideNames = true;
+    } else if (arg === "--hide-names-seed") {
+      options.hideNamesSeed = next() || "1";
     } else if (arg === "--solve") {
       options.solve = true;
     } else if (arg === "--max-expanded-states") {
@@ -1811,6 +1863,20 @@ function markBlankOwnerRect(canvas, ownerCanvas, left, top, width, height, owner
   }
 }
 
+function revealBlankOwnerGlyphs(canvas, ownerCanvas, ownerIds, glyph) {
+  if (!ownerCanvas || ownerIds.size === 0) {
+    return;
+  }
+
+  for (let y = 0; y < canvas.length; y += 1) {
+    for (let x = 0; x < canvas[y].length; x += 1) {
+      if (canvas[y][x] === " " && ownerIds.has(ownerCanvas[y][x])) {
+        canvas[y][x] = glyph;
+      }
+    }
+  }
+}
+
 function drawTerrainTopForLevel(
   canvas,
   block,
@@ -1966,9 +2032,10 @@ function renderAsciiSideScene(playData, engine, state, options, trackOwners = fa
   const width = dimensions.width * TILE_GRANULARITY;
   const height = baseline + 1;
   const canvas = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
-  const ownerCanvas = trackOwners
+  const ownerCanvas = trackOwners || options.hideNames === true
     ? Array.from({ length: height }, () => Array.from({ length: width }, () => ""))
     : null;
+  const holeObjectIds = new Set();
   const actorsByCell = actorCells(playData, engine, state, yaw);
 
   for (let displayY = dimensions.height - 1; displayY >= 0; displayY -= 1) {
@@ -1984,6 +2051,23 @@ function renderAsciiSideScene(playData, engine, state, options, trackOwners = fa
         y,
         orangeButtonsPressed
       );
+
+      semanticTerrainLayersAt(playData, state, typeNames, x, y)
+        .map((layer, layerIndex) => ({ layer, layerIndex }))
+        .filter(({ layer }) => layer.type === "hole")
+        .forEach(({ layer, layerIndex }) => {
+          const ownerId = terrainObjectId(x, y, layerIndex);
+          holeObjectIds.add(ownerId);
+          markBlankOwnerRect(
+            canvas,
+            ownerCanvas,
+            screenX,
+            baseline - (layer.elevation ?? 0) * TILE_GRANULARITY,
+            TILE_GRANULARITY,
+            1,
+            ownerId
+          );
+        });
 
       blocks.forEach((block) => {
         if (block.surfaceOnly) {
@@ -2035,6 +2119,8 @@ function renderAsciiSideScene(playData, engine, state, options, trackOwners = fa
     }
   }
 
+  revealBlankOwnerGlyphs(canvas, ownerCanvas, holeObjectIds, TERRAIN_GLYPHS.hole.side);
+
   return {
     text: trimCanvasRows(canvas.map((row) => row.join(""))),
     visibleObjectIds: visibleObjectIdsFromOwnerCanvas(ownerCanvas)
@@ -2067,9 +2153,10 @@ function renderAsciiLayeredScene(playData, engine, state, options, trackOwners =
     Math.max(1, sideRows) +
     2;
   const canvas = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
-  const ownerCanvas = trackOwners
+  const ownerCanvas = trackOwners || options.hideNames === true
     ? Array.from({ length: height }, () => Array.from({ length: width }, () => ""))
     : null;
+  const holeObjectIds = new Set();
   const actorsByRow = actorRows(playData, engine, state, yaw);
   const maxSceneHeight = Math.max(maxTerrainHeight, maxActorHeight);
 
@@ -2097,6 +2184,10 @@ function renderAsciiLayeredScene(playData, engine, state, options, trackOwners =
           .forEach(({ layer, layerIndex }) => {
             const elevation = layer.elevation ?? 0;
             if (elevation === level) {
+              const ownerId = terrainObjectId(x, y, layerIndex);
+              if (layer.type === "hole") {
+                holeObjectIds.add(ownerId);
+              }
               markBlankOwnerRect(
                 canvas,
                 ownerCanvas,
@@ -2104,7 +2195,7 @@ function renderAsciiLayeredScene(playData, engine, state, options, trackOwners =
                 baseY - elevation * sideRows,
                 TILE_GRANULARITY,
                 topRows,
-                terrainObjectId(x, y, layerIndex)
+                ownerId
               );
             }
           });
@@ -2197,6 +2288,8 @@ function renderAsciiLayeredScene(playData, engine, state, options, trackOwners =
     }
   }
 
+  revealBlankOwnerGlyphs(canvas, ownerCanvas, holeObjectIds, TERRAIN_GLYPHS.hole.top);
+
   return {
     text: trimCanvasRows(canvas.map((row) => row.join(""))),
     visibleObjectIds: visibleObjectIdsFromOwnerCanvas(ownerCanvas)
@@ -2204,11 +2297,14 @@ function renderAsciiLayeredScene(playData, engine, state, options, trackOwners =
 }
 
 function renderAsciiDetailed(playData, engine, state, options, trackOwners = false) {
-  if (clampPitch(options.pitch) === MAX_PITCH) {
-    return renderAsciiSideScene(playData, engine, state, options, trackOwners);
-  }
+  const rendered = clampPitch(options.pitch) === MAX_PITCH
+    ? renderAsciiSideScene(playData, engine, state, options, trackOwners)
+    : renderAsciiLayeredScene(playData, engine, state, options, trackOwners);
 
-  return renderAsciiLayeredScene(playData, engine, state, options, trackOwners);
+  if (options.hideNames === true) {
+    rendered.text = hideAsciiGlyphNames(rendered.text, options.hideNamesSeed);
+  }
+  return rendered;
 }
 
 function renderAscii(playData, engine, state, options) {
@@ -2318,7 +2414,7 @@ function jsonObservationObjects(context) {
 }
 
 function hiddenObjectNameMap(seed) {
-  const normalizedSeed = String(seed || "mazebench-json");
+  const normalizedSeed = String(seed || "1");
   const names = JSON_OBJECT_NAME_UNIVERSE.slice().sort((left, right) => {
     const leftHash = crypto.createHash("sha256").update(`${normalizedSeed}:${left}`).digest("hex");
     const rightHash = crypto.createHash("sha256").update(`${normalizedSeed}:${right}`).digest("hex");
@@ -2347,7 +2443,7 @@ function buildJsonObservation(context, observationOptions = {}) {
   applyCollectedGemsToContext(context);
   const omniscient = observationOptions.omniscient === true;
   const hideNames = observationOptions.hideNames === true;
-  const hideNamesSeed = String(observationOptions.hideNamesSeed || "mazebench-json");
+  const hideNamesSeed = String(observationOptions.hideNamesSeed || "1");
   const visibleObjectIds = omniscient
     ? null
     : renderAsciiDetailed(
@@ -2926,6 +3022,33 @@ function renderScreen(context) {
   return `${header}\n${renderAscii(playData, engine, state, options)}`;
 }
 
+// Hash only authoritative game state. Camera pitch/yaw and rendered glyphs are
+// deliberately excluded: rotating the view does not create a new board state.
+// Actor elevation is the z coordinate; the terrain/lift arrays cover mutable
+// board objects whose positions are implicit in their stable cell indexes.
+function boardStateHash(context, collectedGemIds = context?.stats?.collectedGemIds) {
+  const state = context?.state || {};
+  const engine = context?.engine || {};
+  const playData = context?.playData || {};
+  const actorCount = Math.max(0, Number(engine.actorCount) || 0);
+  const payload = {
+    version: 1,
+    game: playData.gameId || context?.game?.id || "maze",
+    level: context?.level?.id || playData.levelId || "",
+    actors: Array.from({ length: actorCount }, (_, index) => [
+      engine.actorTypes?.[index] || playData.actors?.[index]?.type || "unknown",
+      Number(state.actorX?.[index]) || 0,
+      Number(state.actorY?.[index]) || 0,
+      Number(state.actorElevation?.[index]) || 0,
+      state.actorRemoved?.[index] ? 1 : 0
+    ]),
+    terrain: Array.from(state.terrain || []),
+    lifts: Array.from(state.liftRaised || []),
+    collected_gems: Array.from(collectedGemIds || [], String).sort()
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
 async function buildJsonPayload(context) {
   applyCollectedGemsToContext(context);
   const player = activePlayerEntry(context);
@@ -2938,6 +3061,7 @@ async function buildJsonPayload(context) {
     height: context.playData.height,
     inputMoves: context.options.moves || "",
     levelId: context.level.id,
+    boardStateHash: boardStateHash(context),
     pitch: context.options.pitch,
     player,
     playerDead,
@@ -3472,6 +3596,7 @@ if (require.main === module) {
 
 module.exports = {
   applyMove,
+  boardStateHash,
   buildJsonObservation,
   buildJsonPayload,
   buildScorecard,

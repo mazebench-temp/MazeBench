@@ -57,6 +57,15 @@
   const heatmapSummary = document.getElementById("run-heatmap-summary");
   const heatmapLegend = document.getElementById("run-heatmap-legend");
   const heatmapEmpty = document.getElementById("run-heatmap-empty");
+  const boardStateChart = document.getElementById("run-board-state-chart");
+  const boardStateCanvas = document.getElementById("run-board-state-canvas");
+  const boardStateLatest = document.getElementById("run-board-state-latest");
+  const boardStateTooltip = document.getElementById("run-board-state-tooltip");
+  const boardStateDescription = document.getElementById("run-board-state-description");
+  const boardStateBasis = document.getElementById("run-board-state-basis");
+  const boardStateScope = document.getElementById("run-board-state-scope");
+  const boardStateCustomWindow = document.getElementById("run-board-state-custom-window");
+  const boardStateWindowInput = document.getElementById("run-board-state-window");
   let heatmapExportFormat = document.getElementById("run-heatmap-export-format");
   let heatmapExportButton = document.getElementById("run-heatmap-export");
   const swarmSection = document.getElementById("run-swarm-section");
@@ -149,6 +158,10 @@
 
   if (isPrime && stopButton) stopButton.textContent = "Cancel Run";
 
+  const FEED_RENDER_BATCH = 200;
+  const BOARD_STATE_NOVELTY_WINDOW = 50;
+  const BOARD_STATE_CUSTOM_WINDOW_DEFAULT = 100;
+  const BOARD_STATE_CUSTOM_WINDOW_MAX = 10000;
   const state = {
     afterTurn: 0,
     logOffset: 0,
@@ -158,6 +171,7 @@
     reasoning: new Map(), // move# -> reasoning text
     agentCounts: new Map(), // move# -> agents active when the move was made
     tokenCounts: new Map(), // move# -> lead + worker tokens attributed to the move
+    tokenUsagePoints: new Map(), // move# -> context chart point
     swarmAgents: { running: 0, ran: 0 },
     instanceActivity: { active: 0, instances: 0, auxiliary_actions: 0, auxiliary_action_attempts: 0 },
     expandedInstance: "",
@@ -189,9 +203,14 @@
     tokenSignature: "",
     explorationSignature: "",
     initialPlayer: initial.initial_player || null,
+    initialBoardStateHash: String(initial.initial_board_state_hash || initial.board_state_hash || ""),
     initialRoom: String(initial.level_id || ""),
     heatmapDirty: true,
     heatmapData: null,
+    boardStatePoints: [],
+    boardStateMetricBasis: "state",
+    boardStateMetricMode: "last-50",
+    boardStateCustomWindow: BOARD_STATE_CUSTOM_WINDOW_DEFAULT,
     heatmapExporting: false,
     worldMapSignature: "",
     swarmSignature: "",
@@ -200,6 +219,7 @@
     renderedFeedVersion: -1,
     feedQuery: "",
     renderedFeedQuery: "",
+    feedRenderLimit: FEED_RENDER_BATCH,
     expandedReasoning: new Set()
   };
 
@@ -824,16 +844,18 @@
       ["Budget", budgetLabel],
       ["Observation", observation, observation === "Vision"],
       ["Reasoning", reasoning ? titleCase(reasoning) : "Off"],
-      ["Allow quit", allowQuit ? "Yes" : "No"]
+      ["Allow model to give up", allowQuit ? "Yes" : "No"]
     ];
 
-    if (String(observation).toLowerCase() === "json") {
+    if (["ascii", "json"].includes(String(observation).toLowerCase())) {
       const omniscient = configuredFlag(params, "omniscient", run.omniscient);
       const hideNames = configuredFlag(params, "hide_names", run.hide_names);
-      items.push(
-        ["JSON visibility", omniscient ? "Omniscient" : "Visible only", omniscient],
-        ["Object names", hideNames ? "Hidden" : "Literal", hideNames]
-      );
+      if (String(observation).toLowerCase() === "json") {
+        items.push(["JSON visibility", omniscient ? "Omniscient" : "Visible only", omniscient]);
+      }
+      items.push([observation === "ASCII" ? "Glyph identities" : "Object names", hideNames ? "Hidden" : "Literal", hideNames]);
+      const hideNamesSeed = String(configuredValue(params, "hide_names_seed", run.hide_names_seed || "")).trim();
+      if (hideNames && hideNamesSeed) items.push(["Identity seed", hideNamesSeed]);
     }
 
     if (!prime) {
@@ -846,7 +868,7 @@
       const swarm = configuredFlag(params, "swarm", run.swarm);
       items.push(
         ["Isolation", container ? "Docker" : "Host access"],
-        ["Tool use", toolUse === "offline" ? "Offline tools" : "Read only"],
+        ["Tool use", toolUse === "offline" ? "[CLI] Tools" : "No Tools"],
         ["Orchestration", swarm ? "Swarm" : "Single", swarm]
       );
     } else if (run.prime_execution) {
@@ -930,6 +952,9 @@
     const total = Math.max(1, Number(progress.total) || Number(run.moves) || 1);
     const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
     const eta = Number(progress.eta_ms);
+    const inference = run.inference && typeof run.inference === "object" ? run.inference : null;
+    const inferenceAction = Math.max(1, Number(inference?.action) || current + 1);
+    const inferenceElapsed = Math.max(0, Number(inference?.elapsed_ms) || 0);
     const etaLabel =
       run.status === "waiting"
         ? "Waiting"
@@ -947,6 +972,8 @@
               ? "Stopped"
               : run.status === "failed"
                 ? "Failed"
+                : inference?.state === "in_flight"
+                  ? `Model request ${inferenceAction} in flight · ${formatDuration(inferenceElapsed)}`
                 : Number.isFinite(eta) && current > 0
                   ? eta <= 0
                     ? "Finishing…"
@@ -1118,6 +1145,14 @@
         state.tokenCounts.set(action, tokens);
         agentCountsChanged = true;
       }
+      const context = Number(point.context_tokens) || 0;
+      if (context > 0) {
+        state.tokenUsagePoints.set(action, {
+          action,
+          context,
+          compacted: Boolean(point.compacted)
+        });
+      }
     });
     state.swarmAgents = {
       running: Math.max(0, Math.floor(Number(usage?.agents_running) || 0)),
@@ -1170,13 +1205,7 @@
     tokenNote.hidden = !usage?.note;
     tokenNote.textContent = usage?.note || "";
 
-    const points = (Array.isArray(usage?.actions) ? usage.actions : [])
-      .map((point, index) => ({
-        action: point.action || index + 1,
-        context: Number(point.context_tokens) || 0,
-        compacted: Boolean(point.compacted)
-      }))
-      .filter((point) => point.context > 0);
+    const points = [...state.tokenUsagePoints.values()].sort((left, right) => left.action - right.action);
     state.contextPoints = points;
     if (!points.length) {
       tokenChart.hidden = true;
@@ -1208,13 +1237,17 @@
     const plotHeight = height - padding.top - padding.bottom;
     const firstAction = points[0].action;
     const lastAction = points[points.length - 1].action;
+    const minimum = key === "rooms" ? 1 : 0;
     const maxValue = Math.max(1, ...points.map((point) => point[key]));
-    const ceiling = maxValue <= 4 ? maxValue : Math.ceil(maxValue * 1.05);
-    const tickCount = Math.min(4, Math.max(1, ceiling));
+    const rawCeiling = maxValue <= 4 ? maxValue : Math.ceil(maxValue * 1.05);
+    const ceiling = Math.max(minimum + 1, rawCeiling);
+    const valueRange = ceiling - minimum;
+    const tickCount = Math.min(4, Math.max(1, valueRange));
     const x = (action) => padding.left + (lastAction === firstAction
       ? plotWidth / 2
       : ((action - firstAction) / (lastAction - firstAction)) * plotWidth);
-    const y = (value) => padding.top + plotHeight - (value / ceiling) * plotHeight;
+    const y = (value) => padding.top + plotHeight -
+      ((Math.max(minimum, value) - minimum) / valueRange) * plotHeight;
 
     context.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
     context.textBaseline = "middle";
@@ -1228,7 +1261,11 @@
       context.stroke();
       context.fillStyle = "rgba(154, 163, 199, 0.76)";
       context.textAlign = "right";
-      context.fillText(String(Math.round(ceiling * (1 - index / tickCount))), padding.left - 8, lineY);
+      context.fillText(
+        String(Math.round(ceiling - valueRange * (index / tickCount))),
+        padding.left - 8,
+        lineY
+      );
     }
 
     const fill = context.createLinearGradient(0, padding.top, 0, padding.top + plotHeight);
@@ -1310,11 +1347,239 @@
       });
   }
 
+  function boardStateWindowSize(value) {
+    return Math.min(
+      BOARD_STATE_CUSTOM_WINDOW_MAX,
+      Math.max(1, Math.round(Number(value) || BOARD_STATE_CUSTOM_WINDOW_DEFAULT))
+    );
+  }
+
+  function boardStateMetricSettings() {
+    if (state.boardStateMetricMode === "cumulative") {
+      return { basis: state.boardStateMetricBasis, mode: "cumulative", windowLimit: null };
+    }
+    return {
+      basis: state.boardStateMetricBasis,
+      mode: "rolling",
+      windowLimit: state.boardStateMetricMode === "last-n"
+        ? boardStateWindowSize(state.boardStateCustomWindow)
+        : BOARD_STATE_NOVELTY_WINDOW
+    };
+  }
+
+  function playerWorldPositionKey(player, roomValue) {
+    const position = heatmapPosition(player);
+    if (!position) return "";
+    const roomId = levelId(roomValue) || state.initialRoom;
+    const mapped = runWorldMapLevels().find((level) => level.id === roomId);
+    const match = levelLabel(roomId).match(/^([A-Z])x([A-Z])$/i);
+    const columnIndex = mapped?.columnIndex ?? worldAxisIndex(match?.[1]);
+    const rowIndex = mapped?.rowIndex ?? worldAxisIndex(match?.[2]);
+    const elevation = Number.isFinite(position.elevation) ? position.elevation : 0;
+    return columnIndex >= 0 && rowIndex >= 0
+      ? `${columnIndex * 16 + position.x},${rowIndex * 16 + position.y},${elevation}`
+      : `${roomId}:${position.x},${position.y},${elevation}`;
+  }
+
+  function boardStateNoveltyPoints() {
+    const settings = boardStateMetricSettings();
+    const timeline = [];
+    [...state.moves.entries()]
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .forEach(([action, move]) => {
+        const key = settings.basis === "position"
+          ? playerWorldPositionKey(move.player, move.roomId || move.room)
+          : move.boardStateHash;
+        if (key) timeline.push({ action: Number(action), key });
+      });
+
+    const seen = new Set();
+    const points = [];
+    let cumulativeNovel = 0;
+    let cumulativeTotal = 0;
+    const initialKey = settings.basis === "position"
+      ? playerWorldPositionKey(state.initialPlayer, state.initialRoom)
+      : state.initialBoardStateHash;
+    if (initialKey) {
+      seen.add(initialKey);
+      cumulativeNovel = 1;
+      cumulativeTotal = 1;
+      if (settings.mode === "cumulative") {
+        points.push({
+          action: 0,
+          basis: settings.basis,
+          duplicate: false,
+          mode: settings.mode,
+          novel: cumulativeNovel,
+          percentage: 100,
+          repeats: 0,
+          windowSize: cumulativeTotal
+        });
+      }
+    }
+    const noveltyWindow = [];
+    let novelInWindow = 0;
+    timeline.forEach((entry) => {
+      const duplicate = seen.has(entry.key);
+      seen.add(entry.key);
+      const novel = duplicate ? 0 : 1;
+      cumulativeNovel += novel;
+      cumulativeTotal += 1;
+
+      if (settings.mode === "cumulative") {
+        points.push({
+          action: entry.action,
+          basis: settings.basis,
+          duplicate,
+          mode: settings.mode,
+          novel: cumulativeNovel,
+          percentage: cumulativeNovel / cumulativeTotal * 100,
+          repeats: cumulativeTotal - cumulativeNovel,
+          windowSize: cumulativeTotal
+        });
+        return;
+      }
+
+      noveltyWindow.push(novel);
+      novelInWindow += novel;
+      if (noveltyWindow.length > settings.windowLimit) {
+        novelInWindow -= noveltyWindow.shift();
+      }
+      const windowSize = noveltyWindow.length;
+      points.push({
+        action: entry.action,
+        basis: settings.basis,
+        duplicate,
+        mode: settings.mode,
+        novel: novelInWindow,
+        percentage: novelInWindow / windowSize * 100,
+        repeats: windowSize - novelInWindow,
+        windowSize
+      });
+    });
+    return points;
+  }
+
+  function drawBoardStateChart() {
+    const points = state.boardStatePoints;
+    if (!boardStateCanvas || !points.length || boardStateChart?.hidden) return;
+    const width = Math.max(280, Math.floor(boardStateCanvas.clientWidth));
+    const height = Math.max(170, Math.floor(boardStateCanvas.clientHeight));
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    boardStateCanvas.width = Math.floor(width * ratio);
+    boardStateCanvas.height = Math.floor(height * ratio);
+    const context = boardStateCanvas.getContext("2d");
+    if (!context) return;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    const padding = { top: 15, right: 15, bottom: 28, left: 48 };
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const firstAction = points[0].action;
+    const lastAction = points[points.length - 1].action;
+    const minimumPercentage = Math.min(...points.map((point) => point.percentage));
+    const floor = Math.max(0, Math.min(90, Math.floor((minimumPercentage - 5) / 10) * 10));
+    const range = Math.max(10, 100 - floor);
+    const x = (action) => padding.left + (lastAction === firstAction
+      ? plotWidth / 2
+      : ((action - firstAction) / (lastAction - firstAction)) * plotWidth);
+    const y = (percentage) => padding.top + plotHeight - ((percentage - floor) / range) * plotHeight;
+
+    context.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
+    context.textBaseline = "middle";
+    for (let index = 0; index <= 4; index += 1) {
+      const percentage = 100 - range * (index / 4);
+      const lineY = padding.top + plotHeight * (index / 4);
+      context.strokeStyle = "rgba(124, 143, 255, 0.11)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(padding.left, lineY);
+      context.lineTo(width - padding.right, lineY);
+      context.stroke();
+      context.fillStyle = "rgba(154, 163, 199, 0.76)";
+      context.textAlign = "right";
+      context.fillText(`${Math.round(percentage)}%`, padding.left - 8, lineY);
+    }
+
+    const fill = context.createLinearGradient(0, padding.top, 0, padding.top + plotHeight);
+    fill.addColorStop(0, "rgba(101, 243, 212, 0.22)");
+    fill.addColorStop(1, "rgba(101, 243, 212, 0)");
+    context.beginPath();
+    points.forEach((point, index) => {
+      if (index === 0) context.moveTo(x(point.action), y(point.percentage));
+      else context.lineTo(x(point.action), y(point.percentage));
+    });
+    context.lineTo(x(lastAction), padding.top + plotHeight);
+    context.lineTo(x(firstAction), padding.top + plotHeight);
+    context.closePath();
+    context.fillStyle = fill;
+    context.fill();
+
+    context.beginPath();
+    points.forEach((point, index) => {
+      if (index === 0) context.moveTo(x(point.action), y(point.percentage));
+      else context.lineTo(x(point.action), y(point.percentage));
+    });
+    context.strokeStyle = "#65f3d4";
+    context.lineWidth = 2.25;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.shadowColor = "rgba(101, 243, 212, 0.34)";
+    context.shadowBlur = 8;
+    context.stroke();
+    context.shadowBlur = 0;
+
+    const targets = points.map((point) => ({
+      ...point,
+      x: x(point.action),
+      y: y(point.percentage)
+    }));
+    boardStateCanvas._replayJumpTargets = targets;
+
+    const actionLabels = [...new Set([firstAction, Math.round((firstAction + lastAction) / 2), lastAction])];
+    context.fillStyle = "rgba(154, 163, 199, 0.76)";
+    context.textBaseline = "alphabetic";
+    actionLabels.forEach((action, index) => {
+      context.textAlign = index === 0 ? "left" : index === actionLabels.length - 1 ? "right" : "center";
+      context.fillText(String(action), x(action), height - 7);
+    });
+  }
+
+  function renderBoardStateChart() {
+    if (!boardStateChart || !boardStateCanvas || !boardStateLatest) return;
+    const settings = boardStateMetricSettings();
+    const points = boardStateNoveltyPoints();
+    state.boardStatePoints = points;
+    boardStateChart.hidden = points.length === 0;
+    if (!points.length) return;
+    const latest = points[points.length - 1];
+    const subject = settings.basis === "position" ? "player world positions" : "board states";
+    boardStateLatest.textContent = `${latest.percentage.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+    if (boardStateDescription) {
+      boardStateDescription.textContent = settings.mode === "cumulative"
+        ? `All observed ${subject} from the start of the run; camera angle excluded.`
+        : `Globally new ${subject} among the latest ${settings.windowLimit.toLocaleString()} moves; camera angle excluded.`;
+    }
+    boardStateCanvas.setAttribute(
+      "aria-label",
+      settings.mode === "cumulative"
+        ? `${latest.percentage.toFixed(1)} percent cumulative ${subject} novelty after action ${latest.action}; ${latest.novel} unique and ${latest.repeats} repeat observations among ${latest.windowSize} total observations`
+        : `${latest.percentage.toFixed(1)} percent ${subject} novelty over the last ${latest.windowSize} moves after action ${latest.action}; ${latest.novel} globally new and ${latest.repeats} repeat observations in the window`
+    );
+    requestAnimationFrame(drawBoardStateChart);
+  }
+
   function heatmapPosition(player) {
     const x = Number(player?.x);
     const y = Number(player?.y);
+    const elevation = Number(player?.elevation);
     return Number.isFinite(x) && Number.isFinite(y)
-      ? { x: Math.round(x), y: Math.round(y) }
+      ? {
+          x: Math.round(x),
+          y: Math.round(y),
+          elevation: Number.isFinite(elevation) ? elevation : 0
+        }
       : null;
   }
 
@@ -1884,6 +2149,7 @@
   function renderHeatmap() {
     if (!heatmapSection || !state.heatmapDirty) return;
     state.heatmapDirty = false;
+    renderBoardStateChart();
     const data = heatmapVisitData();
     state.heatmapData = data;
     const available = Boolean(data);
@@ -2200,6 +2466,7 @@
   window.addEventListener("resize", () => {
     requestAnimationFrame(() => {
       drawExplorationCharts();
+      drawBoardStateChart();
       drawHeatmap();
       if (roomsMapDialog?.hidden === false) renderRunWorldMap({ force: true });
     });
@@ -2228,6 +2495,54 @@
   heatmapCanvas?.addEventListener("pointerleave", () => {
     if (heatmapTooltip) heatmapTooltip.hidden = true;
   });
+  boardStateCanvas?.addEventListener("pointermove", (event) => {
+    const target = metricJumpAt(boardStateCanvas, event);
+    boardStateCanvas.classList.toggle("has-jump-target", Boolean(target));
+    if (!target || !boardStateTooltip) {
+      if (boardStateTooltip) boardStateTooltip.hidden = true;
+      return;
+    }
+    const cardBounds = boardStateChart.getBoundingClientRect();
+    const observation = target.basis === "position" ? "position" : "state";
+    const stateText = target.duplicate ? `repeat ${observation}` : `globally new ${observation}`;
+    const scopeText = target.mode === "cumulative"
+      ? `${target.windowSize.toLocaleString()} observed state${target.windowSize === 1 ? "" : "s"}`
+      : `${target.windowSize.toLocaleString()} move${target.windowSize === 1 ? "" : "s"}`;
+    boardStateTooltip.textContent = `Action ${target.action.toLocaleString()} · ${target.percentage.toFixed(1)}% novel over ${scopeText} · ${target.repeats.toLocaleString()} repeat${target.repeats === 1 ? "" : "s"} · ${stateText}`;
+    boardStateTooltip.style.left = `${event.clientX - cardBounds.left}px`;
+    boardStateTooltip.style.top = `${event.clientY - cardBounds.top}px`;
+    boardStateTooltip.hidden = false;
+  });
+  boardStateCanvas?.addEventListener("pointerleave", () => {
+    boardStateCanvas.classList.remove("has-jump-target");
+    if (boardStateTooltip) boardStateTooltip.hidden = true;
+  });
+  boardStateCanvas?.addEventListener("click", (event) => {
+    const target = metricJumpAt(boardStateCanvas, event);
+    if (target) void jumpToPrimaryFrame(target.action);
+  });
+  boardStateScope?.addEventListener("change", () => {
+    state.boardStateMetricMode = boardStateScope.value;
+    if (boardStateCustomWindow) boardStateCustomWindow.hidden = state.boardStateMetricMode !== "last-n";
+    renderBoardStateChart();
+    if (state.boardStateMetricMode === "last-n") {
+      requestAnimationFrame(() => boardStateWindowInput?.select());
+    }
+  });
+  boardStateBasis?.addEventListener("change", () => {
+    state.boardStateMetricBasis = boardStateBasis.value;
+    renderBoardStateChart();
+  });
+  boardStateWindowInput?.addEventListener("input", () => {
+    if (!boardStateWindowInput.value) return;
+    state.boardStateCustomWindow = boardStateWindowSize(boardStateWindowInput.value);
+    renderBoardStateChart();
+  });
+  boardStateWindowInput?.addEventListener("change", () => {
+    state.boardStateCustomWindow = boardStateWindowSize(boardStateWindowInput.value);
+    boardStateWindowInput.value = String(state.boardStateCustomWindow);
+    renderBoardStateChart();
+  });
   heatmapExportFormat?.addEventListener("change", updateHeatmapExportControl);
   heatmapExportButton?.addEventListener("click", () => {
     void exportSelectedHeatmapFormat();
@@ -2237,13 +2552,16 @@
 
   function ingestActions(actions) {
     for (const action of actions) {
+      const invalidReason = String(action.error || (!String(action.command_text || "").trim() ? "empty response" : "")).trim();
       const flags = [
+        action.valid === false || invalidReason ? "invalid" : null,
         action.moved === false ? "blocked" : null,
         action.player_dead ? "died" : null,
         action.solved ? "SOLVED" : null
       ].filter(Boolean);
       const nextMove = {
-        action: action.command_text,
+        action: invalidReason ? `Invalid: ${invalidReason}` : action.command_text,
+        boardStateHash: String(action.board_state_hash || ""),
         room: levelLabel(action.current_room),
         roomId: levelId(action.current_room),
         gems: action.gem_count ?? 0,
@@ -2259,6 +2577,7 @@
         previousMove.gems !== nextMove.gems ||
         previousMove.player?.x !== nextMove.player?.x ||
         previousMove.player?.y !== nextMove.player?.y ||
+        previousMove.boardStateHash !== nextMove.boardStateHash ||
         previousMove.timestamp !== nextMove.timestamp ||
         previousMove.flags.join("|") !== nextMove.flags.join("|")
       ) {
@@ -2425,12 +2744,18 @@
       );
       return terms.every((term) => text.includes(term));
     });
+    const hiddenMoveCount = Math.max(0, moveNums.length - state.feedRenderLimit);
+    const renderedMoveNums = hiddenMoveCount > 0 ? moveNums.slice(-state.feedRenderLimit) : moveNums;
     if (feedExportButton) feedExportButton.disabled = allMoveNums.length === 0;
     if (feedResult) {
       feedResult.textContent = terms.length
-        ? `${moveNums.length.toLocaleString()} of ${allMoveNums.length.toLocaleString()} moves`
+        ? hiddenMoveCount
+          ? `${renderedMoveNums.length.toLocaleString()} of ${moveNums.length.toLocaleString()} matching moves shown`
+          : `${moveNums.length.toLocaleString()} of ${allMoveNums.length.toLocaleString()} moves`
         : allMoveNums.length
-          ? `${allMoveNums.length.toLocaleString()} move${allMoveNums.length === 1 ? "" : "s"}`
+          ? hiddenMoveCount
+            ? `${renderedMoveNums.length.toLocaleString()} of ${allMoveNums.length.toLocaleString()} moves shown`
+            : `${allMoveNums.length.toLocaleString()} move${allMoveNums.length === 1 ? "" : "s"}`
           : "Waiting for moves";
     }
     if (!allMoveNums.length) {
@@ -2465,7 +2790,13 @@
       }
     }
 
-    feedEl.innerHTML = moveNums
+    const loadMore = hiddenMoveCount
+      ? `<button class="agent-feed__load-more" type="button" data-feed-load-more>
+          Show previous ${Math.min(FEED_RENDER_BATCH, hiddenMoveCount).toLocaleString()} moves
+          <small>${hiddenMoveCount.toLocaleString()} older move${hiddenMoveCount === 1 ? "" : "s"} not rendered</small>
+        </button>`
+      : "";
+    feedEl.innerHTML = loadMore + renderedMoveNums
       .map((num) => {
         const move = state.moves.get(num);
         const reasoning = state.reasoning.get(num);
@@ -2551,6 +2882,7 @@
   let feedSearchFrame = 0;
   feedSearch?.addEventListener("input", () => {
     state.feedQuery = feedSearch.value;
+    state.feedRenderLimit = FEED_RENDER_BATCH;
     feedSearchClear.hidden = !state.feedQuery;
     cancelAnimationFrame(feedSearchFrame);
     feedSearchFrame = requestAnimationFrame(() => renderFeed({ resetScroll: true }));
@@ -2560,6 +2892,7 @@
       event.preventDefault();
       feedSearch.value = "";
       state.feedQuery = "";
+      state.feedRenderLimit = FEED_RENDER_BATCH;
       feedSearchClear.hidden = true;
       renderFeed({ resetScroll: true });
     }
@@ -2567,12 +2900,20 @@
   feedSearchClear?.addEventListener("click", () => {
     feedSearch.value = "";
     state.feedQuery = "";
+    state.feedRenderLimit = FEED_RENDER_BATCH;
     feedSearchClear.hidden = true;
     feedSearch.focus();
     renderFeed({ resetScroll: true });
   });
   feedExportButton?.addEventListener("click", exportFeedJson);
   feedEl?.addEventListener("click", (event) => {
+    const loadMore = event.target.closest("[data-feed-load-more]");
+    if (loadMore) {
+      state.feedRenderLimit += FEED_RENDER_BATCH;
+      state.renderedFeedVersion = -1;
+      renderFeed();
+      return;
+    }
     const frame = event.target.closest("[data-jump-turn]");
     if (frame) {
       event.preventDefault();
@@ -2802,6 +3143,11 @@
       if (!response.ok) throw new Error(`progress failed (${response.status})`);
       const progress = await response.json();
       state.run = progress.run;
+      const initialBoardStateHash = String(progress.initial_board_state_hash || "");
+      if (initialBoardStateHash && initialBoardStateHash !== state.initialBoardStateHash) {
+        state.initialBoardStateHash = initialBoardStateHash;
+        state.heatmapDirty = true;
+      }
       const initialPlayer = heatmapPosition(progress.initial_player);
       if (
         initialPlayer &&
@@ -2912,9 +3258,12 @@
         // Keep polling slowly so the page reflects a resume from elsewhere.
         state.timer = setTimeout(poll, 4000);
       } else {
+        const rolloutError = String(progress.run.rollout_error || "").trim();
         setStatus(
-          progress.run.status !== "finished"
-            ? `Run ${progress.run.status}.`
+          progress.run.status === "failed" && rolloutError
+            ? `Run failed — ${rolloutError}.`
+            : progress.run.status !== "finished"
+              ? `Run ${progress.run.status}.`
             : isPrime
               ? `${progress.run.complete ? "Eval complete" : "Eval ended"} — ${progress.run.turns || 0} move${progress.run.turns === 1 ? "" : "s"}${
                   progress.run.has_video ? ", replay video above" : ""

@@ -19,8 +19,9 @@ for (const label of [
   "Budget",
   "Observation",
   "Reasoning",
-  "Allow quit",
+  "Allow model to give up",
   "Fast mode",
+  "Identity seed",
   "Isolation",
   "Tool use",
   "Orchestration"
@@ -43,11 +44,18 @@ for (const pickerId of ["mode-picker", "prime-mode-picker"]) {
 assert.match(pages, /class="json-mode-info"[^>]+aria-label="About Omniscient mode"/);
 assert.match(agentScript, /picker\.classList\.toggle\("is-second", mode === "text"\)/);
 assert.match(agentScript, /picker\.classList\.toggle\("is-third", mode === "json"\)/);
-assert.match(agentScript, /tweenResize\(card, \(\) => \{\s*options\.hidden = !show;/);
+assert.match(agentScript, /tweenResize\(card, \(\) => \{\s*options\.hidden = !showIdentityOptions;/);
+assert.match(agentScript, /tweenResize\(card,[\s\S]*?field\.hidden = !showIdentityOptions \|\| !state\.hideNames;[\s\S]*?\}, 440\);/);
 assert.match(siteTheme, /\.json-mode-info__tooltip \{/);
 assert.match(pages, /data-json-option="hideNames"/);
+assert.equal((pages.match(/data-hide-names-seed/g) || []).length >= 4, true);
+assert.equal((pages.match(/data-hide-names-seed[^>]+value="1"/g) || []).length, 2);
+assert.doesNotMatch(pages, /Same seed, same mapping/);
+assert.match(agentScript, /hideNamesSeed: "1"/);
 assert.match(agentScript, /omniscient: state\.mode === "json" && state\.omniscient/);
-assert.match(agentScript, /hide_names: state\.mode === "json" && state\.hideNames/);
+assert.match(agentScript, /hide_names: state\.mode !== "vision" && state\.hideNames/);
+assert.match(agentScript, /hide_names_seed: state\.mode !== "vision" && state\.hideNames/);
+assert.match(runScript, /configuredValue\(params, "hide_names_seed", run\.hide_names_seed/);
 assert.match(runScript, /function showJsonObservation\(observation, turn = null\)/);
 assert.match(pages, /ASCII view — the model does not see this/);
 assert.match(pages, /JSON observation — this is what the model sees/);
@@ -57,7 +65,15 @@ assert.match(runScript, /liveGrid\?\.classList\.add\("is-json-mode"\)/);
 assert.match(runScript, /function refreshLatestJsonObservation\(\)/);
 assert.match(siteTheme, /\.run-live__grid\.is-json-mode \{[\s\S]*?repeat\(3/);
 assert.match(runScript, /\["JSON visibility"/);
-assert.match(runScript, /\["Object names"/);
+assert.match(runScript, /"Object names"/);
+assert.match(runScript, /"Glyph identities"/);
+assert.match(pages, /No Tools/);
+assert.match(pages, /<span class="segmented__icon">CLI<\/span><span>Tools<\/span>/);
+assert.doesNotMatch(pages, /Offline Tools/);
+assert.equal((pages.match(/setting-card--give-up/g) || []).length, 2);
+assert.equal((pages.match(/<span>Allow model to give up<\/span>/g) || []).length, 2);
+assert.doesNotMatch(pages, /quit-policy-control__label/);
+assert.match(runScript, /No Tools/);
 assert.match(runScript, /run\.model === "codex" && Object\.prototype\.hasOwnProperty\.call\(params, "codex_fast"\)/);
 assert.doesNotMatch(runScript, /`run \$\{run\.id\}`/);
 assert.match(runScript, /class="run-config__item\$\{active \? " is-active" : ""\}"/);

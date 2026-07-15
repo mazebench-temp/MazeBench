@@ -85,6 +85,46 @@ try {
   assert(instanceEvents.some((entry) => entry.type === "instance.created" && entry.instance_id === "scout-branch"));
   assert(instanceEvents.some((entry) => entry.type === "instance.action" && entry.instance_id === "scout-branch" && entry.applied));
 
+  const restrictedDir = path.join(runDir, "restricted");
+  fs.mkdirSync(restrictedDir, { recursive: true });
+  const restrictedRequests = [
+    { jsonrpc: "2.0", id: 90, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 91, method: "tools/list", params: {} },
+    { jsonrpc: "2.0", id: 92, method: "tools/call", params: { name: "game_start", arguments: {} } },
+    { jsonrpc: "2.0", id: 93, method: "tools/call", params: { name: "game_observe", arguments: { clone_id: "scout" } } },
+    { jsonrpc: "2.0", id: 94, method: "tools/call", params: { name: "maze_workers", arguments: {} } },
+    { jsonrpc: "2.0", id: 95, method: "tools/call", params: { name: "game_action", arguments: { action: "right", clone_id: "scout" } } },
+    { jsonrpc: "2.0", id: 96, method: "tools/call", params: { name: "game_scorecard", arguments: {} } }
+  ];
+  const restrictedResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
+    cwd: rootDir,
+    encoding: "utf8",
+    input: `${restrictedRequests.map((request) => JSON.stringify(request)).join("\n")}\n`,
+    env: {
+      ...process.env,
+      MAZEBENCH_REPO_ROOT: rootDir,
+      MAZEBENCH_RUN_DIR: restrictedDir,
+      MAZEBENCH_SESSION_FILE: path.join(restrictedDir, "session.json"),
+      MAZEBENCH_RESTRICTED_MODE: "1",
+      MAZEBENCH_MOVE_BUDGET: "1"
+    }
+  });
+  assert.equal(restrictedResult.status, 0, restrictedResult.stderr);
+  const restrictedResponses = restrictedResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(restrictedResponses.find((response) => response.id === 90)?.result?.serverInfo?.name, "game");
+  const restrictedTools = restrictedResponses.find((response) => response.id === 91)?.result?.tools || [];
+  assert.deepEqual(
+    restrictedTools.map((tool) => tool.name),
+    ["game_start", "game_observe", "game_action", "game_scorecard"]
+  );
+  assert.doesNotMatch(JSON.stringify(restrictedTools), /MazeBench|clone_id|worker/i);
+  assert(restrictedResponses.find((response) => response.id === 92)?.result?.structuredContent?.current_room);
+  assert(restrictedResponses.find((response) => response.id === 96)?.result?.structuredContent?.scorecard);
+  for (const id of [93, 94, 95]) {
+    assert(restrictedResponses.find((response) => response.id === id)?.error, `restricted request ${id} must fail closed`);
+  }
+
   const noQuitDir = path.join(runDir, "no-quit");
   fs.mkdirSync(noQuitDir, { recursive: true });
   const noQuitRequests = [
@@ -160,7 +200,8 @@ try {
       MAZEBENCH_SESSION_FILE: path.join(jsonDir, "session.json"),
       MAZEBENCH_MODE: "json",
       MAZEBENCH_OMNISCIENT: "1",
-      MAZEBENCH_HIDE_NAMES: "1"
+      MAZEBENCH_HIDE_NAMES: "1",
+      MAZEBENCH_HIDE_NAMES_SEED: "mcp-repeatable-seed"
     }
   });
   assert.equal(jsonResult.status, 0, jsonResult.stderr);
@@ -171,6 +212,10 @@ try {
   assert.equal(jsonStatus.json_observation.omniscient, true);
   assert.equal(jsonStatus.json_observation.hide_names, true);
   assert.equal(jsonStatus.json_observation.objects.player.length > 0, true);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(jsonDir, "session.json"), "utf8")).hideNamesSeed,
+    "mcp-repeatable-seed"
+  );
 
   const unlimitedDir = path.join(runDir, "unlimited");
   fs.mkdirSync(unlimitedDir, { recursive: true });

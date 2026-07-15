@@ -13,18 +13,21 @@
     {
       id: "codex",
       name: "Codex",
+      enabled: false,
       envKey: "codex",
       logo: '<img src="/logos/codex.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     },
     {
       id: "claude",
       name: "Claude Code",
+      enabled: false,
       envKey: "claude",
       logo: '<img src="/logos/claude.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     },
     {
       id: "prime",
       name: "Prime Intellect",
+      enabled: true,
       envKey: "prime",
       logo: '<img src="/logos/prime.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     }
@@ -87,6 +90,7 @@
     mode: null,
     omniscient: false,
     hideNames: false,
+    hideNamesSeed: "1",
     isolation: null,
     toolUse: null,
     orchestration: null,
@@ -368,7 +372,7 @@
 
   function renderProviders(selectionFrom = null) {
     const host = document.getElementById("provider-picker");
-    host.innerHTML = PROVIDERS.map((provider) => {
+    host.innerHTML = PROVIDERS.filter((provider) => provider.enabled).map((provider) => {
       const availability = providerAvailability(provider.id);
       const statusClass = availability.checking ? "is-checking" : availability.available ? "is-ok" : "is-missing";
       const statusLabel = availability.checking ? "CHECKING" : availability.available ? "ACTIVE" : "INACTIVE";
@@ -961,13 +965,16 @@
 
     setCardVisibility(localSettings?.querySelector(".setting-card--access"), hasObservation);
     setCardVisibility(localSettings?.querySelector(".setting-card--tool-use"), hasObservation && hasAccess);
-    setCardVisibility(localSettings?.querySelector(".setting-card--orchestration"), hasObservation && hasAccess && hasToolUse);
+    setCardVisibility(localSettings?.querySelector(".setting-card--orchestration"), hasObservation && hasAccess && state.toolUse === "offline");
     setCardVisibility(localSettings?.querySelector(".setting-card--budget"), hasObservation && hasAccess && hasToolUse && hasOrchestration);
+    setCardVisibility(localSettings?.querySelector(".setting-card--give-up"), hasObservation && hasAccess && hasToolUse && hasOrchestration);
     setCardVisibility(primeSettings?.querySelector(".setting-card--budget"), hasObservation);
+    setCardVisibility(primeSettings?.querySelector(".setting-card--give-up"), hasObservation);
   }
 
   function setMode(mode, syncSteps = true) {
     state.mode = mode;
+    const showIdentityOptions = mode === "json" || mode === "text";
     document.querySelectorAll(".segmented__option[data-mode]").forEach((option) => {
       const selected = option.dataset.mode === mode;
       option.classList.toggle("is-selected", selected);
@@ -979,10 +986,15 @@
       picker.classList.toggle("is-third", mode === "json");
     });
     document.querySelectorAll(".json-mode-options").forEach((options) => {
-      const show = mode === "json";
       const card = options.closest(".setting-card--observation");
       tweenResize(card, () => {
-        options.hidden = !show;
+        options.hidden = !showIdentityOptions;
+        options.querySelectorAll('[data-json-option="omniscient"]').forEach((input) => {
+          input.closest(".json-mode-option").hidden = mode !== "json";
+        });
+        options.querySelectorAll("[data-hide-names-seed-wrap]").forEach((field) => {
+          field.hidden = !showIdentityOptions || !state.hideNames;
+        });
       }, 440);
     });
     document.querySelectorAll('[data-json-option="omniscient"]').forEach((input) => {
@@ -990,6 +1002,9 @@
     });
     document.querySelectorAll('[data-json-option="hideNames"]').forEach((input) => {
       input.checked = state.hideNames;
+    });
+    document.querySelectorAll("[data-hide-names-seed]").forEach((input) => {
+      if (input.value !== state.hideNamesSeed) input.value = state.hideNamesSeed;
     });
     syncRunSettingCards();
     if (syncSteps) syncComposerSteps();
@@ -1007,6 +1022,15 @@
       if (input.dataset.jsonOption === "omniscient") state.omniscient = input.checked;
       if (input.dataset.jsonOption === "hideNames") state.hideNames = input.checked;
       setMode(state.mode, false);
+    });
+  });
+
+  document.querySelectorAll("[data-hide-names-seed]").forEach((input) => {
+    input.addEventListener("input", () => {
+      state.hideNamesSeed = input.value.slice(0, 128);
+      document.querySelectorAll("[data-hide-names-seed]").forEach((peer) => {
+        if (peer !== input) peer.value = state.hideNamesSeed;
+      });
     });
   });
 
@@ -1087,7 +1111,7 @@
     if (!state.isolation) return;
     const next = value === "read-only" || value === "offline" ? value : null;
     if (state.toolUse !== next) {
-      state.orchestration = null;
+      state.orchestration = next === "read-only" ? "single" : null;
     }
     state.toolUse = next;
     syncToolUsePicker();
@@ -1109,7 +1133,9 @@
 
   function setOrchestration(value, syncSteps = true) {
     if (!state.isolation || !state.toolUse) return;
-    state.orchestration = value === "single" || value === "swarm" ? value : null;
+    state.orchestration = state.toolUse === "read-only"
+      ? "single"
+      : value === "single" || value === "swarm" ? value : null;
     syncOrchestrationPicker();
     syncRunSettingCards();
     if (syncSteps) syncComposerSteps();
@@ -1288,7 +1314,8 @@
             mode: state.mode,
             vision: state.mode === "vision",
             omniscient: state.mode === "json" && state.omniscient,
-            hide_names: state.mode === "json" && state.hideNames,
+            hide_names: state.mode !== "vision" && state.hideNames,
+            hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
             reasoning: state.reasoning,
             allow_quit: state.allowQuit,
             video: false
@@ -1303,7 +1330,8 @@
             allow_quit: state.allowQuit,
             mode: state.mode,
             omniscient: state.mode === "json" && state.omniscient,
-            hide_names: state.mode === "json" && state.hideNames,
+            hide_names: state.mode !== "vision" && state.hideNames,
+            hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
             vision_view: "",
             model_name: resolvedModelName(),
             reasoning: state.provider === "codex" || state.provider === "claude" ? state.reasoning : "",

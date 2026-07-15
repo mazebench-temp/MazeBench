@@ -6,12 +6,16 @@ const root = path.join(__dirname, "..");
 const runScript = fs.readFileSync(path.join(root, "public", "agent-run.js"), "utf8");
 const siteTheme = fs.readFileSync(path.join(root, "public", "local-site.css"), "utf8");
 const pages = fs.readFileSync(path.join(root, "server", "pages.js"), "utf8");
+const agentRuns = fs.readFileSync(path.join(root, "server", "agent-runs.js"), "utf8");
 
 assert.match(runScript, /type="number" min="1" max="60" step="1"[^>]+data-replay-rate/);
 assert.match(runScript, />FPS<\/span>/);
 assert.doesNotMatch(runScript, /<select data-replay-rate/);
 assert.match(runScript, /function updateReplayControlsInPlace\(container, viewId\)/);
 assert.match(runScript, /function fitAsciiBoard\(\)/);
+assert.match(runScript, /Model request \$\{inferenceAction\} in flight/);
+assert.match(agentRuns, /function reconstructAsciiObservation\(/);
+assert.match(agentRuns, /latest\.level = reconstructAsciiObservation/);
 assert.match(runScript, /--run-ascii-font-size/);
 assert.match(runScript, /function resolveReplayFrame\(turn\)/);
 assert.match(runScript, /rendered view catching up/);
@@ -49,10 +53,17 @@ assert.match(runScript, /void jumpToPrimaryFrame\(Number\(frame\.dataset\.jumpTu
 assert.match(runScript, /canvas\._replayJumpTargets = jumpTargets/);
 assert.match(runScript, /function wireMetricChart\(canvas\)/);
 assert.match(runScript, /void jumpToPrimaryFrame\(target\.action\)/);
+assert.match(runScript, /const minimum = key === "rooms" \? 1 : 0;/);
+assert.match(runScript, /ceiling - valueRange \* \(index \/ tickCount\)/);
 assert.match(pages, /id="run-rooms-latest" class="run-metric-chart__latest"/);
 assert.match(pages, /id="run-gems-latest" class="run-metric-chart__latest"/);
 assert.match(pages, /id="run-rooms-chart-tooltip" class="run-metric-chart__tooltip" role="tooltip" hidden/);
 assert.match(pages, /id="run-gems-chart-tooltip" class="run-metric-chart__tooltip" role="tooltip" hidden/);
+assert.equal(
+  (pages.match(/id="run-main-replay-controls"/g) || []).length,
+  2,
+  "Prime and local run layouts must both expose ASCII playback controls"
+);
 assert.match(runScript, /function showMetricTooltip\(canvas, target, event\)/);
 assert.match(runScript, /tooltip\.textContent = `Frame \$\{target\.action\.toLocaleString\(\)\} · \$\{noun\}`/);
 assert.match(siteTheme, /\.run-metric-chart__canvas\.has-jump-target/);

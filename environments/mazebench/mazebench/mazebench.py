@@ -6,7 +6,6 @@ import json
 import os
 import re
 import select
-import secrets
 import signal
 import shlex
 import subprocess
@@ -75,6 +74,36 @@ DEFAULT_ROOM_REWARD_WEIGHT = env_float("MAZEBENCH_ROOM_REWARD_WEIGHT", 0.1)
 DEFAULT_PUSH_REWARD_WEIGHT = env_float("MAZEBENCH_PUSH_REWARD_WEIGHT", 0.05)
 REPO_ROOT_ENV = "MAZEBENCH_REPO_ROOT"
 INFO_KEY = "mazebench"
+LIVE_ACTIONS_PATH_ENV = "MAZEBENCH_LIVE_ACTIONS_PATH"
+
+
+def write_live_actions(actions: list[dict[str, Any]]) -> None:
+    path = str(os.environ.get(LIVE_ACTIONS_PATH_ENV) or "").strip()
+    if not path:
+        return
+    records: list[str] = []
+    for action in actions:
+        try:
+            turn = int(action.get("turn"))
+        except (TypeError, ValueError):
+            continue
+        records.append(
+            json.dumps(
+                {
+                    "turn": turn,
+                    "command_text": action.get("command") or action.get("raw_response") or "",
+                    "valid": action.get("valid", True),
+                    "error": action.get("error"),
+                    "status": action.get("status") or {},
+                },
+                separators=(",", ":"),
+            )
+        )
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_text("\n".join(records) + ("\n" if records else ""), encoding="utf-8")
+    os.replace(temporary, target)
 
 
 def load_game_won_gem_count() -> int:
@@ -636,11 +665,11 @@ class MazeSession:
                 str(int(yaw)),
             ]
         if observation_mode == "json":
-            command.extend(["--observation-mode", "json", "--hide-names-seed", hide_names_seed])
+            command.extend(["--observation-mode", "json"])
             if omniscient:
                 command.append("--omniscient")
-            if hide_names:
-                command.append("--hide-names")
+        if observation_mode != "vision" and hide_names:
+            command.extend(["--hide-names", "--hide-names-seed", hide_names_seed])
         self.process = subprocess.Popen(
             command,
             cwd=self.repo_root,
@@ -1016,6 +1045,7 @@ def slim_status(status: dict[str, Any] | None) -> dict[str, Any]:
         "action",
         "action_count",
         "allowed_commands",
+        "board_state_hash",
         "collected_gems",
         "collected_this_action",
         "current_room",
@@ -1026,6 +1056,7 @@ def slim_status(status: dict[str, Any] | None) -> dict[str, Any]:
         "game_won",
         "gem_count",
         "json_observation",
+        "level",
         "moved",
         "novel_push_count",
         "novel_pushes_this_action",
@@ -1107,7 +1138,7 @@ class MazeBenchTask(vf.Task):
     observation_mode: Literal["ascii", "json", "vision"] = DEFAULT_OBSERVATION_MODE
     omniscient: bool = False
     hide_names: bool = False
-    hide_names_seed: str = ""
+    hide_names_seed: str = "1"
     repo_root: str = ""
     target_gems: int = DEFAULT_TARGET_GEMS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
@@ -1140,6 +1171,7 @@ class MazeBenchConfig(vf.TasksetConfig):
     observation_mode: Literal["ascii", "json", "vision"] = DEFAULT_OBSERVATION_MODE
     omniscient: bool = False
     hide_names: bool = False
+    hide_names_seed: str = "1"
     repo_root: str | None = None
     target_gems: int = DEFAULT_TARGET_GEMS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
@@ -1186,6 +1218,9 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
             yaw=task.yaw,
         )
         atexit.register(self.close_session)
+
+    def export_live_actions(self) -> None:
+        write_live_actions(list(self.state.maze_actions or []))
 
     async def vision_frame_data_url(self) -> str:
         task = self.task
@@ -1366,6 +1401,8 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                 )
             result_text = action_result_text(error=str(error))
 
+        self.export_live_actions()
+
         self.update_terminal_flags(status)
         if (self.state.game_lost or self.state.game_won) and not status.get("scorecard"):
             status = apply_quit_policy(
@@ -1424,7 +1461,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig, MazeBenchState
                 observation_mode=self.config.observation_mode,
                 omniscient=bool(self.config.omniscient),
                 hide_names=bool(self.config.hide_names),
-                hide_names_seed=secrets.token_hex(16),
+                hide_names_seed=str(self.config.hide_names_seed).strip()[:128] or "1",
                 repo_root=str(row["repo_root"]),
                 target_gems=int(row["target_gems"]),
                 timeout_seconds=int(row["timeout_seconds"]),

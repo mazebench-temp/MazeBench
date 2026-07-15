@@ -4,6 +4,7 @@ const readline = require("node:readline");
 
 const {
   applyMove,
+  boardStateHash,
   buildJsonObservation,
   buildScorecard,
   createTerminalContext,
@@ -82,7 +83,7 @@ function parseArgs(argv) {
     observationMode: "text",
     omniscient: false,
     hideNames: false,
-    hideNamesSeed: "mazebench-json",
+    hideNamesSeed: "1",
     pitch: 1,
     yaw: 0
   };
@@ -110,7 +111,7 @@ function parseArgs(argv) {
     } else if (arg === "--hide-names") {
       options.hideNames = true;
     } else if (arg === "--hide-names-seed") {
-      options.hideNamesSeed = next() || "mazebench-json";
+      options.hideNamesSeed = next() || "1";
     } else if (arg === "--help" || arg === "-h") {
       process.stdout.write(`Usage: node scripts/maze-bridge.js [options]
 
@@ -124,9 +125,9 @@ Options:
   --observation-mode <text|json>
                      Choose the model-facing board representation.
   --omniscient       Include every room object in JSON observations.
-  --hide-names       Replace JSON object names (except player/gem) with letters.
+  --hide-names       Randomize ASCII glyphs or JSON names except player/gem.
   --hide-names-seed <value>
-                     Stable per-run seed for hidden object names.
+                     Stable per-run seed for hidden glyphs or names.
 
 Commands are JSON lines on stdin:
   {"command":"observe"}
@@ -444,6 +445,7 @@ function sessionSnapshot(session, extra = {}) {
     ok: true,
     action_count: session.actionCount,
     allowed_commands: allowedCommandsForContext(context),
+    board_state_hash: boardStateHash(context, session.collectedGemIds),
     collected_gems: Array.from(session.collectedGemIds),
     current_room: context.level.id,
     current_view: currentView,
@@ -480,6 +482,8 @@ function createSession(options) {
     levelId: options.levelId,
     moves: "",
     once: true,
+    hideNames: options.hideNames,
+    hideNamesSeed: options.hideNamesSeed,
     pitch: options.pitch,
     yaw: options.yaw
   });

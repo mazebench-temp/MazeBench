@@ -87,7 +87,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css?v=20260710-card-parity-1">
-    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-choice-97">
+    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-layout-99">
     ${extraHeadHtml}`
     })}
   </head>
@@ -250,7 +250,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css?v=${PLAY_ASSET_VERSION}">
-    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-choice-97">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-layout-99">`;
   }
 
   function renderPlayPage(game, level) {
@@ -460,7 +460,7 @@ function createPageRenderer({
     ${includeRuntimeStyles ? '<link rel="stylesheet" href="/styles.css">' : ""}
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-choice-97">' : ""}`;
+    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260714-heatmap-export-layout-99">' : ""}`;
   }
 
   function renderAuthorPage(game, level) {
@@ -912,7 +912,8 @@ function createPageRenderer({
                 </div>
                 <div id="json-mode-options" class="json-mode-options" hidden>
                   <div class="json-mode-option"><label class="switch"><input type="checkbox" data-json-option="omniscient"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Omniscient</span></label><span class="json-mode-info-wrap"><button class="json-mode-info" type="button" aria-label="About Omniscient mode" aria-describedby="omniscient-mode-tip">i</button><span id="omniscient-mode-tip" class="json-mode-info__tooltip" role="tooltip">Omniscient mode reveals all blocks, even ones obstructed from view</span></span></div>
-                  <label class="switch"><input type="checkbox" data-json-option="hideNames"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Hide names</span></label>
+                  <label class="switch"><input type="checkbox" data-json-option="hideNames"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Hide identities</span></label>
+                  <label class="identity-seed-field" data-hide-names-seed-wrap hidden><span>Identity seed</span><input type="text" data-hide-names-seed maxlength="128" value="1" placeholder="1" autocomplete="off" spellcheck="false"></label>
                 </div>
               </article>
               <article class="setting-card setting-card--access is-gated" inert aria-hidden="true">
@@ -929,8 +930,8 @@ function createPageRenderer({
                 <div class="setting-card__head"><span>Tool-use</span></div>
                 <div class="animated-segmented" id="tool-use-picker" role="radiogroup" aria-label="Tool-use">
                   <span class="segmented__glider" aria-hidden="true"></span>
-                  <button type="button" class="segmented__option" data-tool-use="read-only" aria-pressed="false"><span class="segmented__icon">RO</span><span>Read only</span></button>
-                  <button type="button" class="segmented__option" data-tool-use="offline" aria-pressed="false"><span class="segmented__icon">CLI</span><span>Offline tools</span></button>
+                  <button type="button" class="segmented__option" data-tool-use="read-only" aria-pressed="false"><span class="segmented__icon">NO</span><span>No Tools</span></button>
+                  <button type="button" class="segmented__option" data-tool-use="offline" aria-pressed="false"><span class="segmented__icon">CLI</span><span>Tools</span></button>
                 </div>
               </article>
               <article class="setting-card setting-card--orchestration is-gated" inert aria-hidden="true">
@@ -943,19 +944,17 @@ function createPageRenderer({
               </article>
               <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <div class="budget-policy-layout">
-                  <div class="budget-limit-control">
-                    <label class="field setting-card__field setting-card__field--budget"><span>Move limit</span><input id="run-moves" type="number" min="0" max="500" value="0" inputmode="numeric"></label>
-                    <button id="run-unlimited" class="budget-unlimited" type="button" aria-pressed="false"><span aria-hidden="true">∞</span> Unlimited</button>
-                  </div>
-                  <div class="quit-policy-control">
-                    <span class="quit-policy-control__label">Allow quit</span>
-                    <div class="animated-segmented quit-policy-picker" role="radiogroup" aria-label="Allow the model to quit">
-                      <span class="segmented__glider" aria-hidden="true"></span>
-                      <button type="button" class="segmented__option" data-allow-quit="true" aria-pressed="false"><span>Yes</span></button>
-                      <button type="button" class="segmented__option" data-allow-quit="false" aria-pressed="false"><span>No</span></button>
-                    </div>
-                  </div>
+                <div class="budget-limit-control">
+                  <label class="field setting-card__field setting-card__field--budget"><span>Move limit</span><input id="run-moves" type="number" min="0" max="500" value="0" inputmode="numeric"></label>
+                  <button id="run-unlimited" class="budget-unlimited" type="button" aria-pressed="false"><span aria-hidden="true">∞</span> Unlimited</button>
+                </div>
+              </article>
+              <article class="setting-card setting-card--give-up is-gated" inert aria-hidden="true">
+                <div class="setting-card__head"><span>Allow model to give up</span></div>
+                <div class="animated-segmented quit-policy-picker" role="radiogroup" aria-label="Allow model to give up">
+                  <span class="segmented__glider" aria-hidden="true"></span>
+                  <button type="button" class="segmented__option" data-allow-quit="true" aria-pressed="false"><span>Yes</span></button>
+                  <button type="button" class="segmented__option" data-allow-quit="false" aria-pressed="false"><span>No</span></button>
                 </div>
               </article>
               </div>
@@ -970,22 +969,21 @@ function createPageRenderer({
                 </div>
                 <div id="prime-json-mode-options" class="json-mode-options" hidden>
                   <div class="json-mode-option"><label class="switch"><input type="checkbox" data-json-option="omniscient"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Omniscient</span></label><span class="json-mode-info-wrap"><button class="json-mode-info" type="button" aria-label="About Omniscient mode" aria-describedby="prime-omniscient-mode-tip">i</button><span id="prime-omniscient-mode-tip" class="json-mode-info__tooltip" role="tooltip">Omniscient mode reveals all blocks, even ones obstructed from view</span></span></div>
-                  <label class="switch"><input type="checkbox" data-json-option="hideNames"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Hide names</span></label>
+                  <label class="switch"><input type="checkbox" data-json-option="hideNames"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Hide identities</span></label>
+                  <label class="identity-seed-field" data-hide-names-seed-wrap hidden><span>Identity seed</span><input type="text" data-hide-names-seed maxlength="128" value="1" placeholder="1" autocomplete="off" spellcheck="false"></label>
                 </div>
                 <p id="prime-vision-note" class="muted" hidden></p>
               </article>
               <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <div class="budget-policy-layout budget-policy-layout--prime">
-                  <label class="field"><span>Max turns</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
-                  <div class="quit-policy-control">
-                    <span class="quit-policy-control__label">Allow quit</span>
-                    <div class="animated-segmented quit-policy-picker" role="radiogroup" aria-label="Allow the model to quit">
-                      <span class="segmented__glider" aria-hidden="true"></span>
-                      <button type="button" class="segmented__option" data-allow-quit="true" aria-pressed="false"><span>Yes</span></button>
-                      <button type="button" class="segmented__option" data-allow-quit="false" aria-pressed="false"><span>No</span></button>
-                    </div>
-                  </div>
+                <label class="field setting-card__field"><span>Max turns</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
+              </article>
+              <article class="setting-card setting-card--give-up is-gated" inert aria-hidden="true">
+                <div class="setting-card__head"><span>Allow model to give up</span></div>
+                <div class="animated-segmented quit-policy-picker" role="radiogroup" aria-label="Allow model to give up">
+                  <span class="segmented__glider" aria-hidden="true"></span>
+                  <button type="button" class="segmented__option" data-allow-quit="true" aria-pressed="false"><span>Yes</span></button>
+                  <button type="button" class="segmented__option" data-allow-quit="false" aria-pressed="false"><span>No</span></button>
                 </div>
               </article>
               </div>
@@ -1148,6 +1146,32 @@ function createPageRenderer({
           </div>
         </section>`;
     const heatmapSection = `<section class="panel run-heatmap" id="run-heatmap-section">
+          <div id="run-board-state-chart" class="run-metric-chart run-board-state-chart" hidden>
+            <div class="run-metric-chart__head">
+              <div>
+                <h3 class="run-board-state-chart__title">Novelty rate</h3>
+                <p id="run-board-state-description">A state is new only on its first appearance in the run; camera angle excluded.</p>
+              </div>
+              <div class="run-board-state-chart__controls">
+                <select id="run-board-state-basis" class="run-board-state-chart__scope" aria-label="Novelty chart observation">
+                  <option value="state" selected>Board state</option>
+                  <option value="position">Player world position</option>
+                </select>
+                <select id="run-board-state-scope" class="run-board-state-chart__scope" aria-label="State novelty chart range">
+                  <option value="cumulative">Cumulative</option>
+                  <option value="last-50" selected>Last 50 moves</option>
+                  <option value="last-n">Last N moves</option>
+                </select>
+                <label id="run-board-state-custom-window" class="run-board-state-chart__custom-window" hidden>
+                  <span>N =</span>
+                  <input id="run-board-state-window" type="number" min="1" max="10000" step="1" value="100" aria-label="Custom novelty window in moves">
+                </label>
+                <strong id="run-board-state-latest">—</strong>
+              </div>
+            </div>
+            <canvas id="run-board-state-canvas" class="run-metric-chart__canvas run-board-state-chart__canvas" role="img" aria-label="Rolling state novelty rate by action"></canvas>
+            <div id="run-board-state-tooltip" class="run-metric-chart__tooltip" role="tooltip" hidden></div>
+          </div>
           <div class="run-heatmap__head">
             <h2>Heatmap</h2>
             <div class="run-heatmap__actions">
@@ -1189,15 +1213,16 @@ function createPageRenderer({
           </div>
           <div id="run-feed" class="agent-feed" aria-label="Moves and reasoning log"></div>
         </section>`;
-    // Hosted Prime Evaluations expose lifecycle/log state immediately and their
-    // scored sample after the rollout completes. Move zero is local; the move
-    // feed and replay sync back from that scored sample at completion.
+    // Agent Runner's default Prime path evaluates locally against Prime
+    // inference, so its board and move artifacts arrive after every turn.
+    // Explicit hosted runs still sync whatever samples Prime publishes.
     const mazeSections = isPrime
       ? `<section class="panel" id="run-see-section">
           <h2>What the agent sees</h2>
           ${boardWrap}
           ${jsonWrap}
-          <p id="run-see-empty" class="muted">Move zero is ready locally. Scored moves and replay appear when Prime finalizes the evaluation sample.</p>
+          <div class="replay-controls replay-controls--main" id="run-main-replay-controls"></div>
+          <p id="run-see-empty" class="muted">Waiting for the model's first observation…</p>
         </section>
 
         ${replaySection}
@@ -1289,7 +1314,7 @@ function createPageRenderer({
           <pre id="run-log" class="agent-log"></pre>
         </section>
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260714-heatmap-export-choice-97" defer></script>`
+        <script src="/agent-run.js?v=20260714-prime-live-errors-98" defer></script>`
     });
   }
 
