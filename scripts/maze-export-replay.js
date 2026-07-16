@@ -34,13 +34,13 @@ function normalizedGemCollectionIds(values) {
 }
 
 function usage() {
-  return `Usage: npm run maze:replay -- [results-dir | results.jsonl | session.json | session-dir] [options]
+  return `Usage: npm run maze:replay -- [results-dir | results.jsonl | traces.jsonl | session.json | session-dir] [options]
 
 Creates maze_scorecard.json, maze_actions.txt, and maze_replay.mp4 from a mazebench
-eval (results.jsonl) or from a local agent run (session.json written by codex-play.js).
+eval rollout JSONL or from a local agent run (session.json written by codex-play.js).
 
 Options:
-  --index <n>          Rollout row to export from results.jsonl. Default: 0.
+  --index <n>          Rollout row to export from results/traces JSONL. Default: 0.
   --action-limit <n>   Render only the first n actions (useful for replay QA).
   --out-dir <path>     Directory for exported artifacts. Default: eval results dir.
   --video              Render maze_replay.mp4. Enabled by default.
@@ -275,7 +275,7 @@ function findResultsFiles(dir, depth = 0, found = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const entryPath = path.join(dir, entry.name);
 
-    if (entry.isFile() && entry.name === "results.jsonl") {
+    if (entry.isFile() && ["results.jsonl", "traces.jsonl"].includes(entry.name)) {
       found.push(entryPath);
     } else if (entry.isDirectory()) {
       findResultsFiles(entryPath, depth + 1, found);
@@ -289,7 +289,7 @@ function latestResultsPath() {
   const candidates = findResultsFiles(DEFAULT_RESULTS_ROOT);
 
   if (candidates.length === 0) {
-    throw new Error(`No results.jsonl files found under ${DEFAULT_RESULTS_ROOT}`);
+    throw new Error(`No rollout JSONL files found under ${DEFAULT_RESULTS_ROOT}`);
   }
 
   candidates.sort((a, b) => fileMtimeMs(b) - fileMtimeMs(a));
@@ -302,17 +302,22 @@ function resolveInput(input) {
 
   if (stats.isDirectory()) {
     const resultsPath = path.join(resolvedInput, "results.jsonl");
+    const tracesPath = path.join(resolvedInput, "traces.jsonl");
     const sessionPath = path.join(resolvedInput, "session.json");
 
     if (fs.existsSync(resultsPath)) {
       return { mode: "results", resultsDir: resolvedInput, resultsPath };
     }
 
+    if (fs.existsSync(tracesPath)) {
+      return { mode: "results", resultsDir: resolvedInput, resultsPath: tracesPath };
+    }
+
     if (fs.existsSync(sessionPath)) {
       return { mode: "session", sessionDir: resolvedInput, sessionPath };
     }
 
-    throw new Error(`No results.jsonl or session.json found in ${resolvedInput}`);
+    throw new Error(`No results.jsonl, traces.jsonl, or session.json found in ${resolvedInput}`);
   }
 
   if (path.basename(resolvedInput) === "session.json") {

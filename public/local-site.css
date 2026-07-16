@@ -4541,6 +4541,30 @@ html.has-run-world-map {
 }
 
 /* Keep the provider selector's visual identity, with slightly firmer geometry. */
+.harness-execution {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  margin: 0 auto 14px;
+  max-width: 820px;
+}
+
+.harness-execution__label {
+  color: var(--muted, #9aa3c7);
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.harness-execution__picker {
+  flex: 0 1 430px;
+  min-height: 52px;
+}
+
 .agent-composer .provider-grid {
   background: rgba(2, 5, 14, 0.9);
   border: 1px solid rgba(124, 143, 255, 0.26);
@@ -5123,6 +5147,15 @@ html.has-run-world-map {
 }
 
 @media (max-width: 600px) {
+  .harness-execution {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .harness-execution__picker {
+    flex-basis: auto;
+  }
+
   .json-mode-info__tooltip {
     bottom: calc(100% + 8px);
     left: 50%;

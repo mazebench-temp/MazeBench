@@ -833,9 +833,17 @@ function createPageRenderer({
           <section class="composer-section composer-section--agent">
             <div class="composer-section-title">
               <span class="composer-step">01</span>
-              <div><h3>Pick a provider</h3></div>
+              <div><h3>Harness</h3><p id="execution-note" class="muted">Prime supplies inference; choose an optional coding harness.</p></div>
             </div>
-            <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent provider"></div>
+            <div class="harness-execution">
+              <span class="harness-execution__label">Run through</span>
+              <div id="execution-picker" class="animated-segmented harness-execution__picker" role="radiogroup" aria-label="Execution provider">
+                <span class="segmented__glider" aria-hidden="true"></span>
+                <button type="button" class="segmented__option" data-execution="prime" aria-pressed="true"><span class="segmented__icon">PI</span><span>Prime</span></button>
+                <button type="button" class="segmented__option" data-execution="local" aria-pressed="false"><span class="segmented__icon">ME</span><span>Local subscription</span></button>
+              </div>
+            </div>
+            <div id="provider-picker" class="provider-grid" role="radiogroup" aria-label="Agent harness"></div>
           </section>
 
           <section class="composer-section composer-section--model" hidden>
@@ -976,7 +984,7 @@ function createPageRenderer({
               </article>
               <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
-                <label class="field setting-card__field"><span>Max turns</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
+                <label class="field setting-card__field"><span>Action limit</span><input id="run-prime-turns" type="number" min="0" max="200" value="0" inputmode="numeric"></label>
               </article>
               <article class="setting-card setting-card--give-up is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Allow model to give up</span></div>
@@ -1040,7 +1048,7 @@ function createPageRenderer({
           <div class="build-modal__dialog provider-setup-modal__dialog">
             <div class="provider-setup-modal__head">
               <span id="provider-setup-logo" class="provider-setup-modal__logo" aria-hidden="true"></span>
-              <div><span class="provider-setup-modal__eyebrow">Setup needed</span><h2 id="provider-setup-title">Provider inactive</h2></div>
+              <div><span class="provider-setup-modal__eyebrow">Setup needed</span><h2 id="provider-setup-title">Prime inactive</h2></div>
             </div>
             <p id="provider-setup-message" class="provider-setup-modal__message"></p>
             <pre class="provider-setup-modal__command"><code id="provider-setup-command"></code></pre>
@@ -1051,7 +1059,7 @@ function createPageRenderer({
           </div>
         </div>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260712-provider-logos-68" defer></script>`
+        <script src="/agent.js?v=20260716-local-subscriptions-1" defer></script>`
     });
   }
 

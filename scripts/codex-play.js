@@ -79,6 +79,7 @@ function parseArgs(argv) {
     else if (arg === "--view") options.view = next();
     else if (arg === "--yaw") options.yaw = next();
     else if (arg === "--game-won-gem-count") options.gameWonGemCount = next();
+    else if (arg === "--max-actions") options.maxActions = next();
     else if (arg === "--node-bin") options.nodeBin = next();
     else if (arg === "--vision") options.vision = true;
     else if (arg === "--json-observation") options.observationMode = "json";
@@ -120,6 +121,7 @@ start options:
   --view <name>             top | top-diagonal | diagonal | side-diagonal | side
   --yaw <0-3>               camera yaw
   --game-won-gem-count <n>  unique gems for game_won (default 100)
+  --max-actions <n>          hard action budget enforced by the helper
   --vision                  render a PNG each turn; output includes frame_image
                             (path) and drops the ASCII board
   --json-observation        return a structured JSON room observation instead
@@ -221,6 +223,14 @@ function normalizeAction(words) {
 function printStatus(response) {
   const value = response.status || response;
   console.log(JSON.stringify(value, null, 2));
+}
+
+function emitTelemetry(record, { omitLevel = false } = {}) {
+  const telemetryRecord = omitLevel
+    ? { ...record, status: { ...(record.status || {}), level: undefined } }
+    : record;
+  const payload = Buffer.from(JSON.stringify(telemetryRecord), "utf8").toString("base64url");
+  console.log(`MAZEBENCH_EVENT_V1:${payload}`);
 }
 
 function canonicalActionText(message) {
@@ -585,6 +595,7 @@ async function main() {
       createdAt: new Date().toISOString(),
       gameId: String(options.game || "maze").trim() || "maze",
       gameWonGemCount: positiveInt(options.gameWonGemCount, 100),
+      maxActions: positiveInt(options.maxActions, 100),
       levelId: normalizeLevelId(options.level),
       nodeBin: options.nodeBin || process.execPath,
       observationMode,
@@ -648,6 +659,11 @@ async function main() {
   }
 
   if (command === "action") {
+    if (session.actions.length >= positiveInt(session.maxActions, 100)) {
+      throw new Error(
+        `MazeBench action budget exhausted (${session.actions.length}/${positiveInt(session.maxActions, 100)}). Run scorecard and finish.`
+      );
+    }
     const message = normalizeAction(options.positional);
     if (message.command === "quit" && session.allowQuit === false) {
       throw new Error("Quit is disabled by the user for this run. Continue playing until the budget is exhausted or the user stops the run.");
@@ -661,6 +677,8 @@ async function main() {
       turn: session.actions.length + 1,
       timestamp: new Date().toISOString(),
       command_text: options.positional.join(" ").trim(),
+      valid: true,
+      error: null,
       message,
       status
     };
@@ -669,6 +687,7 @@ async function main() {
     writeJson(options.state, session);
     fs.appendFileSync(path.join(path.dirname(options.state), "actions.jsonl"), `${JSON.stringify(record)}\n`);
     if (!(await emitStatus(session, response, session.actions.length, options.state))) process.exitCode = 1;
+    emitTelemetry(record, { omitLevel: session.vision });
     return;
   }
 

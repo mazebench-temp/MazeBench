@@ -9,44 +9,40 @@
   const statusEl = document.getElementById("agent-status");
   const runsEl = document.getElementById("agent-runs");
 
-  const PROVIDERS = [
+  // Harnesses are a small data registry on purpose: Prime can add another
+  // built-in harness without changing the model or run-settings flow.
+  const HARNESSES = [
+    {
+      id: "none",
+      name: "None",
+      logo: '<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="18" fill="none" stroke="currentColor" stroke-width="3"></circle><path d="M12 36 36 12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path></svg>'
+    },
     {
       id: "codex",
       name: "Codex",
-      enabled: false,
-      envKey: "codex",
       logo: '<img src="/logos/codex.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     },
     {
-      id: "claude",
+      id: "claude-code",
       name: "Claude Code",
-      enabled: false,
-      envKey: "claude",
       logo: '<img src="/logos/claude.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
-    },
-    {
-      id: "prime",
-      name: "Prime Intellect",
-      enabled: true,
-      envKey: "prime",
-      logo: '<img src="/logos/prime.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     }
   ];
-  const PROVIDER_SETUP = {
+  const PRIME_SETUP = {
+    docs: "https://docs.primeintellect.ai/cli-reference/introduction",
+    install: "uv tool install -U prime\nprime login",
+    login: "prime login"
+  };
+  const LOCAL_SETUP = {
     codex: {
-      docs: "https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started",
-      install: "npm install -g @openai/codex\ncodex --login",
-      login: "codex --login"
+      docs: "https://developers.openai.com/codex/cli/",
+      install: "npm install -g @openai/codex\ncodex login",
+      login: "codex login"
     },
-    claude: {
+    "claude-code": {
       docs: "https://docs.anthropic.com/en/docs/claude-code/getting-started",
-      install: "npm install -g @anthropic-ai/claude-code\nclaude",
-      login: "claude"
-    },
-    prime: {
-      docs: "https://docs.primeintellect.ai/cli-reference/introduction",
-      install: "uv tool install -U prime\nprime login",
-      login: "prime login"
+      install: "npm install -g @anthropic-ai/claude-code\nclaude auth login",
+      login: "claude auth login"
     }
   };
   const RUN_COMPANY_NAMES = {
@@ -80,7 +76,8 @@
   const selectionTargets = new WeakMap();
 
   const state = {
-    provider: null,
+    execution: "prime",
+    harness: null,
     modelId: null,
     customModel: "",
     reasoning: null,
@@ -321,10 +318,10 @@
 
   function composerSettingsReady() {
     return Boolean(
-      state.provider &&
+      state.harness &&
       state.modelId &&
       state.reasoningChosen &&
-      (state.provider === "prime" || state.worldId)
+      (state.execution === "prime" || state.worldId)
     );
   }
 
@@ -332,14 +329,13 @@
     return Boolean(
       composerSettingsReady() &&
       state.mode &&
-      (state.provider === "prime" ||
-        (state.isolation && state.toolUse && state.orchestration))
+      (state.execution === "prime" || (state.isolation && state.toolUse && state.orchestration))
     );
   }
 
   function moveBudget() {
-    if (state.provider !== "prime" && state.unlimited) return 500;
-    const input = document.getElementById(state.provider === "prime" ? "run-prime-turns" : "run-moves");
+    if (state.execution === "local" && state.unlimited) return 500;
+    const input = document.getElementById(state.execution === "prime" ? "run-prime-turns" : "run-moves");
     return Math.max(0, Math.floor(Number(input?.value) || 0));
   }
 
@@ -348,14 +344,14 @@
   }
 
   function syncComposerSteps(animate = true) {
-    const hasProvider = Boolean(state.provider);
+    const hasHarness = Boolean(state.harness);
     const hasModel = Boolean(state.modelId);
-    const showTarget = hasProvider && hasModel && state.reasoningChosen && state.provider !== "prime";
+    const showTarget = hasHarness && hasModel && state.reasoningChosen && state.execution === "local";
     const showSettings = composerSettingsReady();
     const showRun = runReady();
     const visibility = [
-      [document.querySelector(".composer-section--model"), hasProvider],
-      [document.querySelector(".composer-section--reasoning"), hasProvider && hasModel],
+      [document.querySelector(".composer-section--model"), hasHarness],
+      [document.querySelector(".composer-section--reasoning"), hasHarness && hasModel],
       [document.getElementById("world-section"), showTarget],
       [document.querySelector(".composer-section--settings"), showSettings],
       [document.querySelector(".composer-section--run"), showRun]
@@ -368,65 +364,148 @@
     });
   }
 
-  // ---- provider picker ----------------------------------------------------
+  // ---- harness picker -----------------------------------------------------
 
-  function renderProviders(selectionFrom = null) {
+  function localProviderId(harnessId = state.harness) {
+    if (harnessId === "codex") return "codex";
+    if (harnessId === "claude-code") return "claude";
+    return "";
+  }
+
+  function catalogKey(harnessId = state.harness, execution = state.execution) {
+    return `${execution}:${harnessId || "none"}`;
+  }
+
+  function renderExecutionPicker() {
+    const picker = document.getElementById("execution-picker");
+    picker?.querySelectorAll("[data-execution]").forEach((option) => {
+      const selected = option.dataset.execution === state.execution;
+      option.classList.toggle("is-selected", selected);
+      option.setAttribute("aria-pressed", String(selected));
+    });
+    picker?.classList.toggle("has-selection", true);
+    picker?.classList.toggle("is-second", state.execution === "local");
+    const note = document.getElementById("execution-note");
+    if (note) {
+      note.textContent = state.execution === "prime"
+        ? "Prime supplies inference; choose an optional coding harness."
+        : "Runs the signed-in CLI on this machine and uses your Codex or Claude subscription limits.";
+    }
+  }
+
+  function setExecution(value) {
+    const next = value === "local" ? "local" : "prime";
+    if (state.execution === next) return;
+    state.execution = next;
+    if (next === "local" && state.harness === "none") state.harness = null;
+    if (state.harness && !harnessAvailability(state.harness).available) state.harness = null;
+    state.modelId = null;
+    state.customModel = "";
+    state.modelQuery = "";
+    state.reasoning = null;
+    state.reasoningChosen = false;
+    state.worldId = null;
+    state.levelId = null;
+    resetRunOptions();
+    renderExecutionPicker();
+    renderHarnesses();
+    renderWorlds(null, false);
+    renderLevelSummary();
+    tweenResize(document.querySelector(".settings-stage"), () => {
+      document.getElementById("local-settings").hidden = next !== "local";
+      document.getElementById("prime-settings").hidden = next !== "prime";
+    }, 440);
+    tweenResize(document.querySelector(".model-browser"), renderModels, 440);
+    syncComposerSteps();
+    if (state.harness && harnessAvailability(state.harness).available) {
+      loadModels(state.harness, { fresh: !state.catalogs[catalogKey()] });
+    }
+  }
+
+  function renderHarnesses(selectionFrom = null) {
     const host = document.getElementById("provider-picker");
-    host.innerHTML = PROVIDERS.filter((provider) => provider.enabled).map((provider) => {
-      const availability = providerAvailability(provider.id);
+    const harnesses = state.execution === "local"
+      ? HARNESSES.filter((harness) => harness.id !== "none")
+      : HARNESSES;
+    host.innerHTML = harnesses.map((harness) => {
+      const availability = harnessAvailability(harness.id);
       const statusClass = availability.checking ? "is-checking" : availability.available ? "is-ok" : "is-missing";
       const statusLabel = availability.checking ? "CHECKING" : availability.available ? "ACTIVE" : "INACTIVE";
-      return `<button type="button" class="provider-card${state.provider === provider.id ? " is-selected" : ""}"
-          data-provider="${provider.id}" role="radio" aria-checked="${state.provider === provider.id}">
-        <span class="provider-card__logo">${provider.logo}</span>
-        <span class="provider-card__name">${escapeText(provider.name)}</span>
+      return `<button type="button" class="provider-card${state.harness === harness.id ? " is-selected" : ""}"
+          data-harness="${harness.id}" role="radio" aria-checked="${state.harness === harness.id}">
+        <span class="provider-card__logo">${harness.logo}</span>
+        <span class="provider-card__name">${escapeText(harness.name)}</span>
         <span class="provider-card__avail ${statusClass}">${statusLabel}</span>
       </button>`;
     }).join("");
 
     host.querySelectorAll(".provider-card").forEach((card) => {
-      card.addEventListener("click", () => selectProvider(card.dataset.provider));
+      card.addEventListener("click", () => selectHarness(card.dataset.harness));
     });
-    renderSelectionSlider(host, ".provider-card.is-selected", selectionFrom, "provider");
+    renderSelectionSlider(host, ".provider-card.is-selected", selectionFrom, "harness");
   }
 
-  function providerAvailability(providerId) {
+  function harnessAvailability(harnessId = state.harness) {
     const env = data.environment || {};
     if (env.checking || !Object.keys(env).length) {
       return { checking: true, available: false, installed: false, authenticated: false };
     }
-    const provider = PROVIDERS.find((entry) => entry.id === providerId);
-    const installed = env[`${providerId}_installed`] ?? Boolean(env[provider?.envKey]);
-    const authenticated = env[`${providerId}_authenticated`] ?? Boolean(env[provider?.envKey]);
-    const runtimeReady = providerId !== "prime" || Boolean(env.uv);
+    if (state.execution === "local") {
+      const provider = localProviderId(harnessId);
+      if (!provider) return { checking: false, available: false, installed: false, authenticated: false };
+      const installed = env[`${provider}_installed`] ?? Boolean(env[provider]);
+      const authenticated = env[`${provider}_authenticated`] ?? Boolean(env[provider]);
+      const subscription = env[`${provider}_subscription`] ?? Boolean(env[provider]);
+      return {
+        checking: false,
+        available: Boolean(env[provider]) && Boolean(subscription),
+        installed: Boolean(installed),
+        authenticated: Boolean(authenticated),
+        subscription: Boolean(subscription),
+        authMethod: env[`${provider}_auth_method`] || ""
+      };
+    }
+    const installed = env.prime_installed ?? Boolean(env.prime);
+    const authenticated = env.prime_authenticated ?? Boolean(env.prime);
+    const runtimeReady = Boolean(env.uv);
     return {
       checking: false,
-      available: Boolean(env[provider?.envKey]) && runtimeReady,
+      available: Boolean(env.prime) && runtimeReady,
       installed: Boolean(installed),
       authenticated: Boolean(authenticated),
       runtimeReady
     };
   }
 
-  function showProviderSetup(providerId) {
-    const provider = PROVIDERS.find((entry) => entry.id === providerId);
-    const setup = PROVIDER_SETUP[providerId];
-    const availability = providerAvailability(providerId);
+  function showHarnessSetup(harnessId = state.harness) {
+    const availability = harnessAvailability(harnessId);
     const modal = document.getElementById("provider-setup-modal");
-    if (!provider || !setup || !modal) return;
-    document.getElementById("provider-setup-logo").innerHTML = provider.logo;
-    document.getElementById("provider-setup-title").textContent = `${provider.name} is inactive`;
-    const missingRuntime = providerId === "prime" && availability.installed && availability.authenticated && !availability.runtimeReady;
+    if (!modal) return;
+    const local = state.execution === "local";
+    const harness = HARNESSES.find((entry) => entry.id === harnessId);
+    const setup = local ? LOCAL_SETUP[harnessId] : PRIME_SETUP;
+    document.getElementById("provider-setup-logo").innerHTML = local
+      ? harness?.logo || ""
+      : '<img src="/logos/prime.png" alt="" width="128" height="128">';
+    document.getElementById("provider-setup-title").textContent = local
+      ? `${harness?.name || "Local CLI"} subscription is inactive`
+      : "Prime Intellect is inactive";
+    const missingRuntime = !local && availability.installed && availability.authenticated && !availability.runtimeReady;
+    const wrongLocalAuth = local && availability.authenticated && !availability.subscription;
     document.getElementById("provider-setup-message").textContent = !availability.installed
-      ? `Install ${provider.name}, then sign in once from your terminal.`
+      ? `Install ${local ? harness?.name || "the CLI" : "Prime Intellect"}, then sign in once from your terminal.`
+      : wrongLocalAuth
+        ? `${harness?.name} is signed in with ${availability.authMethod || "non-subscription credentials"}. Sign out, then sign in with your subscription account.`
       : !availability.authenticated
-        ? `${provider.name} is installed. Sign in once from your terminal, then refresh this page.`
+        ? `${local ? harness?.name : "Prime Intellect"} is installed. Sign in once from your terminal, then refresh this page.`
         : missingRuntime
           ? "Prime is ready, but MazeBench also needs uv installed to run verifiers."
-          : `Finish ${provider.name} setup in your terminal, then refresh this page.`;
+          : `Finish ${local ? harness?.name : "Prime Intellect"} setup in your terminal, then refresh this page.`;
     document.getElementById("provider-setup-command").textContent = missingRuntime
       ? "curl -LsSf https://astral.sh/uv/install.sh | sh"
-      : availability.installed ? setup.login : setup.install;
+      : wrongLocalAuth
+        ? `${harnessId === "codex" ? "codex logout" : "claude auth logout"}\n${setup.login}`
+        : availability.installed ? setup.login : setup.install;
     document.getElementById("provider-setup-docs").href = setup.docs;
     modal.hidden = false;
     window.requestAnimationFrame(() => modal.classList.add("open"));
@@ -441,20 +520,20 @@
     }, 180);
   }
 
-  function selectProvider(providerId) {
-    const availability = providerAvailability(providerId);
+  function selectHarness(harnessId) {
+    const availability = harnessAvailability(harnessId);
     if (availability.checking) {
-      setStatus("Checking provider setup…");
+      setStatus(`Checking ${state.execution === "prime" ? "Prime" : "local subscription"} setup…`);
       return;
     }
     if (!availability.available) {
-      showProviderSetup(providerId);
+      showHarnessSetup(harnessId);
       return;
     }
-    if (state.provider === providerId) return;
+    if (state.harness === harnessId) return;
     const providerHost = document.getElementById("provider-picker");
     const providerSelectionFrom = selectedRect(providerHost, ".provider-card.is-selected");
-    state.provider = providerId;
+    state.harness = harnessId;
     state.modelId = null;
     state.customModel = "";
     state.modelQuery = "";
@@ -470,34 +549,37 @@
     document.getElementById("run-codex-fast").checked = false;
 
     providerHost.querySelectorAll(".provider-card").forEach((card) => {
-      const selected = card.dataset.provider === providerId;
+      const selected = card.dataset.harness === harnessId;
       card.classList.toggle("is-selected", selected);
       card.setAttribute("aria-checked", String(selected));
     });
-    renderSelectionSlider(providerHost, ".provider-card.is-selected", providerSelectionFrom, "provider");
+    renderSelectionSlider(providerHost, ".provider-card.is-selected", providerSelectionFrom, "harness");
 
-    const isPrime = providerId === "prime";
     tweenResize(document.querySelector(".settings-stage"), () => {
-      document.getElementById("local-settings").hidden = isPrime;
-      document.getElementById("prime-settings").hidden = !isPrime;
+      document.getElementById("local-settings").hidden = state.execution !== "local";
+      document.getElementById("prime-settings").hidden = state.execution !== "prime";
     }, 440);
     tweenResize(document.querySelector(".model-browser"), () => {
       renderModels();
     }, 440);
     syncComposerSteps();
-    loadModels(providerId, { fresh: providerId === "codex" || !state.catalogs[providerId] });
+    loadModels(harnessId, {
+      fresh: (state.execution === "local" && harnessId === "codex") || !state.catalogs[catalogKey(harnessId)]
+    });
   }
 
   // ---- model picker ---------------------------------------------------------
 
-  async function loadModels(providerId, { fresh = false } = {}) {
-    const existing = state.catalogs[providerId];
+  async function loadModels(harnessId, { fresh = false } = {}) {
+    const execution = state.execution;
+    const key = catalogKey(harnessId, execution);
+    const existing = state.catalogs[key];
     if (existing?.models?.length && !fresh) {
       return;
     }
 
-    const requestId = (state.catalogRequests[providerId] || 0) + 1;
-    state.catalogRequests[providerId] = requestId;
+    const requestId = (state.catalogRequests[key] || 0) + 1;
+    state.catalogRequests[key] = requestId;
 
     const host = document.getElementById("model-picker");
     tweenResize(document.querySelector(".model-browser"), () => {
@@ -510,28 +592,35 @@
     }
 
     try {
-      const suffix = fresh ? `?refresh=1&t=${Date.now()}` : "";
-      const catalog = await api(`${data.modelsApiBase}/${encodeURIComponent(providerId)}${suffix}`);
-      if (state.catalogRequests[providerId] !== requestId) return;
-      state.catalogs[providerId] = catalog;
+      const provider = execution === "prime" ? "prime" : localProviderId(harnessId);
+      const query = new URLSearchParams();
+      if (execution === "prime") query.set("harness", harnessId);
+      if (fresh) {
+        query.set("refresh", "1");
+        query.set("t", String(Date.now()));
+      }
+      const suffix = query.size ? `?${query}` : "";
+      const catalog = await api(`${data.modelsApiBase}/${encodeURIComponent(provider)}${suffix}`);
+      if (state.catalogRequests[key] !== requestId) return;
+      state.catalogs[key] = catalog;
     } catch (error) {
-      if (state.catalogRequests[providerId] !== requestId) return;
+      if (state.catalogRequests[key] !== requestId) return;
       // A transient request failure must never erase a catalog that was
       // already rendered successfully.
       if (!existing?.models?.length) {
-        state.catalogs[providerId] = { models: [], note: error.message };
+        state.catalogs[key] = { models: [], note: error.message };
       }
     } finally {
-      if (refreshButton && state.catalogRequests[providerId] === requestId) {
+      if (refreshButton && state.catalogRequests[key] === requestId) {
         refreshButton.disabled = false;
         refreshButton.textContent = "↻ Refresh";
       }
     }
 
-    if (state.provider === providerId) {
+    if (state.execution === execution && state.harness === harnessId) {
       await waitForVisibilityTween(document.querySelector(".composer-section--model"));
-      if (state.provider !== providerId) return;
-      const models = state.catalogs[providerId]?.models || [];
+      if (state.execution !== execution || state.harness !== harnessId) return;
+      const models = state.catalogs[key]?.models || [];
       if (state.modelId !== "__custom__" && !models.some((model) => model.id === state.modelId)) {
         state.modelId = null;
       }
@@ -542,7 +631,7 @@
   }
 
   function selectedModel() {
-    const catalog = state.catalogs[state.provider] || { models: [] };
+    const catalog = state.catalogs[catalogKey()] || { models: [] };
     return catalog.models.find((model) => model.id === state.modelId) || null;
   }
 
@@ -618,7 +707,7 @@
     const noteEl = document.getElementById("model-note");
     const metaEl = document.getElementById("model-meta");
     const searchWrap = document.getElementById("model-search");
-    const catalog = state.catalogs[state.provider];
+    const catalog = state.catalogs[catalogKey()];
 
     if (!catalog) {
       host.innerHTML = MODELS_LOADING_MARKUP;
@@ -629,12 +718,18 @@
       return;
     }
 
-    const showCatalogNote = Boolean(catalog.note) && !catalog.models.length;
+    const showCatalogNote = Boolean(catalog.note) && (
+      !catalog.models.length || (state.execution === "prime" && state.harness !== "none")
+    );
     noteEl.textContent = showCatalogNote ? catalog.note : "";
     noteEl.hidden = !showCatalogNote;
     metaEl.textContent = [catalog.source, catalogTime(catalog)].filter(Boolean).join(" · ");
 
     const customChip = { id: "__custom__", label: "Custom…", description: "type any model id" };
+    const allowCustomModel = state.execution === "local" || state.harness === "none";
+    const customMarkup = allowCustomModel
+      ? `<div class="model-custom-row">${modelChip(customChip)}</div>`
+      : "";
     const grouped = catalog.models.some((model) => model.group);
     searchWrap.hidden = !grouped;
 
@@ -683,10 +778,10 @@
             <div class="model-section-title">${filteredModels.length} match${filteredModels.length === 1 ? "" : "es"}</div>
             ${filteredModels.length ? `<div class="model-grid">${filteredModels.map((model) => modelChip(model, { showGroup: true })).join("")}</div>` : '<p class="muted model-empty">No models match that search.</p>'}
           </div>
-          <div class="model-custom-row">${modelChip(customChip)}</div>`
+          ${customMarkup}`
         : `${recentModels.length ? `<div class="model-recent"><div class="model-section-title">Recently added</div><div class="model-grid">${recentModels.map((model) => modelChip(model, { showGroup: true })).join("")}</div></div>` : ""}
           <div class="model-folders">${folderMarkup}</div>
-          <div class="model-custom-row">${modelChip(customChip)}</div>`;
+          ${customMarkup}`;
 
       host.querySelectorAll(".model-folder__head").forEach((head) => {
         head.addEventListener("click", () => {
@@ -721,7 +816,8 @@
         });
       });
     } else {
-      host.innerHTML = `<div class="model-grid model-grid--primary">${[...catalog.models, customChip].map((model) => modelChip(model)).join("")}</div>`;
+      const models = allowCustomModel ? [...catalog.models, customChip] : catalog.models;
+      host.innerHTML = `<div class="model-grid model-grid--primary">${models.map((model) => modelChip(model)).join("")}</div>`;
     }
 
     host.querySelectorAll(".chip[data-model-id]").forEach((chip) => {
@@ -740,7 +836,7 @@
     });
 
     const customWrap = document.getElementById("model-custom");
-    customWrap.hidden = state.modelId !== "__custom__";
+    customWrap.hidden = !allowCustomModel || state.modelId !== "__custom__";
     if (state.modelId === "__custom__" && catalog.models.length) {
       document.getElementById("model-custom-input").focus();
     }
@@ -751,25 +847,12 @@
     if (reveal) requestAnimationFrame(() => revealModelChoices(host));
   }
 
-  // Both Codex and Claude Code expose reasoning effort per model. The installed
-  // Claude CLI accepts five possible values, but not every Claude model supports
-  // all (or any) of them, so its catalog supplies the valid subset.
   function reasoningOptions() {
-    const catalog = state.catalogs[state.provider] || {};
-
-    if (state.provider === "prime") {
-      // Passed through to the eval as --sampling.reasoning-effort. OpenAI
-      // reasoning models and Claude (extended thinking) honor it; models that
-      // don't support reasoning simply ignore it. "" = off (no effort sent).
-      return ["low", "medium", "high"];
-    }
-
-    if (state.provider === "claude") {
-      const model = selectedModel();
+    if (state.execution === "prime") return ["low", "medium", "high"];
+    const model = selectedModel();
+    if (state.harness === "claude-code") {
       return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
     }
-
-    const model = selectedModel();
     return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
       ? model.reasoning_levels
       : ["low", "medium", "high", "xhigh"];
@@ -780,14 +863,13 @@
     const host = document.getElementById("reasoning-picker");
     const fastSwitch = document.getElementById("fast-switch");
 
-    if (!state.modelId || (state.provider !== "codex" && state.provider !== "claude" && state.provider !== "prime")) {
+    if (!state.modelId || !state.harness) {
       row.hidden = true;
       return;
     }
 
-    const model = selectedModel();
     const levels = reasoningOptions();
-    const choices = state.provider === "prime" || (state.provider === "claude" && levels.length === 0)
+    const choices = state.execution === "prime" || (state.harness === "claude-code" && levels.length === 0)
       ? [{ id: "", label: "off" }, ...levels.map((level) => ({ id: level, label: level }))]
       : levels.map((level) => ({ id: level, label: level }));
     if (state.reasoning !== null && !choices.some((choice) => choice.id === state.reasoning)) {
@@ -812,8 +894,7 @@
       });
     });
 
-    // Fast mode is a Codex-only tier; only offer it when the model supports it.
-    fastSwitch.hidden = state.provider !== "codex" || (Boolean(model) && !model.fast);
+    fastSwitch.hidden = state.execution !== "local" || state.harness !== "codex" || (Boolean(selectedModel()) && !selectedModel().fast);
     renderSelectionSlider(host, ".chip.is-selected", selectionFrom, "reasoning");
   }
 
@@ -1036,10 +1117,10 @@
 
   // Prime models differ in whether they accept image inputs and the catalog
   // can't tell us directly, so the server infers it (primeModelVision) and tags
-  // each model with `vision`. A text-only model locks Vision off. A custom
-  // (user-typed) id is unknown, so we trust the user and allow it.
+  // each model with `vision`. A text-only model locks Vision off. Custom ids
+  // are available only when no coding-agent harness is selected.
   function primeModelAcceptsImages() {
-    if (state.provider !== "prime") return true;
+    if (state.execution === "local") return true;
     if (state.modelId === "__custom__") return true;
     const model = selectedModel();
     return model ? Boolean(model.vision) : true;
@@ -1066,7 +1147,9 @@
     const note = document.getElementById("prime-vision-note");
     if (note) {
       const model = selectedModel();
-      note.textContent = canVision ? "" : `${model ? model.label : "This model"} is text-only — Vision (image inputs) is unavailable.`;
+      note.textContent = canVision
+        ? ""
+        : `${model ? model.label : "This model"} is text-only — Vision (image inputs) is unavailable.`;
       note.hidden = canVision;
     }
   }
@@ -1155,7 +1238,7 @@
   }
 
   function setUnlimited(selected, syncSteps = true) {
-    state.unlimited = state.provider !== "prime" && Boolean(selected);
+    state.unlimited = state.execution === "local" && Boolean(selected);
     const button = document.getElementById("run-unlimited");
     const input = document.getElementById("run-moves");
     if (button) {
@@ -1234,7 +1317,7 @@
   async function refreshEnvironment() {
     const env = await api("/api/agent/environment");
     data.environment = env;
-    renderProviders();
+    renderHarnesses();
     syncIsolationPicker();
     return env;
   }
@@ -1300,48 +1383,49 @@
 
   document.getElementById("launch-run")?.addEventListener("click", async () => {
     if (!runReady()) return;
-    if (state.modelId === "__custom__" && !resolvedModelName() && (state.catalogs[state.provider]?.models || []).length) {
+    if (state.modelId === "__custom__" && !resolvedModelName() && (state.catalogs[catalogKey()]?.models || []).length) {
       setStatus("Type a model id or pick one from the list.", true);
       return;
     }
 
-    const body =
-      state.provider === "prime"
-        ? {
-            kind: "prime",
-            model_name: resolvedModelName(),
-            max_turns: moveBudget(),
-            mode: state.mode,
-            vision: state.mode === "vision",
-            omniscient: state.mode === "json" && state.omniscient,
-            hide_names: state.mode !== "vision" && state.hideNames,
-            hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
-            reasoning: state.reasoning,
-            allow_quit: state.allowQuit,
-            video: false
-          }
-        : {
-            kind: "local",
-            model: state.provider,
-            game_id: state.worldId,
-            level_id: effectiveLevelId(),
-            moves: moveBudget(),
-            unlimited: state.unlimited,
-            allow_quit: state.allowQuit,
-            mode: state.mode,
-            omniscient: state.mode === "json" && state.omniscient,
-            hide_names: state.mode !== "vision" && state.hideNames,
-            hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
-            vision_view: "",
-            model_name: resolvedModelName(),
-            reasoning: state.provider === "codex" || state.provider === "claude" ? state.reasoning : "",
-            codex_fast: state.provider === "codex" && document.getElementById("run-codex-fast").checked,
-            container: state.isolation === "docker",
-            video: false,
-            tools: state.toolUse === "offline",
-            tool_use: state.toolUse,
-            swarm: state.orchestration === "swarm"
-          };
+    const body = state.execution === "prime"
+      ? {
+          kind: "prime",
+          harness: state.harness,
+          model_name: resolvedModelName(),
+          max_turns: moveBudget(),
+          mode: state.mode,
+          vision: state.mode === "vision",
+          omniscient: state.mode === "json" && state.omniscient,
+          hide_names: state.mode !== "vision" && state.hideNames,
+          hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
+          reasoning: state.reasoning,
+          allow_quit: state.allowQuit,
+          video: false
+        }
+      : {
+          kind: "local",
+          subscription: true,
+          model: localProviderId(),
+          game_id: state.worldId,
+          level_id: effectiveLevelId(),
+          moves: moveBudget(),
+          unlimited: state.unlimited,
+          allow_quit: state.allowQuit,
+          mode: state.mode,
+          omniscient: state.mode === "json" && state.omniscient,
+          hide_names: state.mode !== "vision" && state.hideNames,
+          hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
+          vision_view: "",
+          model_name: resolvedModelName(),
+          reasoning: state.reasoning,
+          codex_fast: state.harness === "codex" && document.getElementById("run-codex-fast").checked,
+          container: state.isolation === "docker",
+          video: false,
+          tools: state.toolUse === "offline",
+          tool_use: state.toolUse,
+          swarm: state.orchestration === "swarm"
+        };
 
     body.count = 1;
 
@@ -1405,11 +1489,10 @@
             : "ended"
           : run.status;
     const modelName = run.model_name || run.model;
-    const providerName = {
-      codex: "Codex",
-      claude: "Claude Code",
-      prime: "Prime Intellect"
-    }[run.provider || run.model] || run.model;
+    const harnessName = HARNESSES.find((harness) => harness.id === (run.harness || "none"))?.name || run.harness;
+    const providerName = run.provider === "prime"
+      ? `${harnessName || "None"} via Prime`
+      : ({ codex: "Codex", claude: "Claude Code" }[run.provider || run.model] || run.model);
     const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
     const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");
@@ -1644,7 +1727,7 @@
 
   function wireModelCatalog() {
     document.getElementById("refresh-models")?.addEventListener("click", () => {
-      loadModels(state.provider, { fresh: true });
+      if (state.harness) loadModels(state.harness, { fresh: true });
     });
 
     document.getElementById("model-search-input")?.addEventListener("input", (event) => {
@@ -1690,9 +1773,13 @@
 
   // ---- boot -----------------------------------------------------------------
 
-  renderProviders();
+  renderExecutionPicker();
+  renderHarnesses();
   renderWorlds();
   renderLevelSummary();
+  document.querySelectorAll("[data-execution]").forEach((option) => {
+    option.addEventListener("click", () => setExecution(option.dataset.execution));
+  });
   document.querySelectorAll(".segmented__option[data-isolation]").forEach((option) => {
     option.addEventListener("click", () => {
       if (option.disabled) return;
@@ -1723,7 +1810,7 @@
   });
   refreshEnvironment().catch((error) => {
     data.environment = { checking: false };
-    renderProviders();
+    renderHarnesses();
     setStatus(error.message, true);
   });
   syncComposerSteps(false);
