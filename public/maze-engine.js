@@ -251,6 +251,251 @@
 
     initializeWeightlessRelativeElevations();
 
+    // ------------------------------------------------------------------
+    // Perf caches for many-piece levels (giant weightless groups made the
+    // cluster machinery quadratic: 224 boxes at 1.4k moves/s before these).
+    // ------------------------------------------------------------------
+
+    // Static group membership: actors never change group, so the per-call
+    // O(actorCount) scans + array allocations become cached lookups.
+    const weightlessMembersByGroup = new Map();
+    const cloneMembersByGroup = new Map();
+
+    for (let index = 0; index < actorCount; index += 1) {
+      if (actorTypes[index] === "weightless_box") {
+        const groupKey = actorGroupIds[index];
+
+        if (!weightlessMembersByGroup.has(groupKey)) {
+          weightlessMembersByGroup.set(groupKey, []);
+        }
+
+        weightlessMembersByGroup.get(groupKey).push(index);
+      } else if (isCloneType(actorTypes[index])) {
+        const groupKey = actorGroupIds[index] || "";
+
+        if (!cloneMembersByGroup.has(groupKey)) {
+          cloneMembersByGroup.set(groupKey, []);
+        }
+
+        cloneMembersByGroup.get(groupKey).push(index);
+      }
+    }
+
+    // Slope cell mask: every slope helper starts from the target cell's
+    // slope layers. On slope-free boards (or non-slope cells) a single byte
+    // probe replaces five traversal probes and their layer-array filters.
+    const slopeCellMask = new Uint8Array(cellCount);
+    let levelHasSlopes = false;
+
+    for (let cell = 0; cell < cellCount; cell += 1) {
+      if (terrainLayers[cell].some((layer) => layer.type === terrainTypes.ice_slope)) {
+        slopeCellMask[cell] = 1;
+        levelHasSlopes = true;
+      }
+    }
+
+    const EMPTY_LAYER_LIST = Object.freeze([]);
+
+    // ------------------------------------------------------------------
+    // Rigid-body shape data. Weightless groups never change shape (members
+    // move in lockstep, settle uniformly, and are removed only whole), so
+    // for each cardinal push direction every member is either FRONTIER (its
+    // target voxel is outside its own body — it can collide) or INTERIOR
+    // (its target voxel is another member's cell at the same elevation — by
+    // induction it can always enter, because the current occupant legally
+    // stands there). A 75-voxel body then pays ~perimeter checks per step
+    // instead of ~volume. Interior skips are disabled per group if any
+    // member has been removed, and per cell when a side-blocking flank
+    // (elevated floor/ice/exit) exists at the target.
+    // Direction bits: 1=R(+x) 2=L(-x) 4=D(+y) 8=U(-y).
+    const weightlessInteriorFlags = new Uint8Array(actorCount);
+
+    {
+      const positionKeys = new Set();
+      const shapeKey = (x, y, e) => ((e + 4) * 4096 + (y + 2) * 128 + (x + 2));
+
+      for (const cached of weightlessMembersByGroup.values()) {
+        positionKeys.clear();
+
+        for (const index of cached) {
+          positionKeys.add(
+            shapeKey(
+              Number.isInteger(actorSource[index]?.x) ? actorSource[index].x : 0,
+              Number.isInteger(actorSource[index]?.y) ? actorSource[index].y : 0,
+              actorInitialElevations[index] || 0
+            )
+          );
+        }
+
+        for (const index of cached) {
+          const x = Number.isInteger(actorSource[index]?.x) ? actorSource[index].x : 0;
+          const y = Number.isInteger(actorSource[index]?.y) ? actorSource[index].y : 0;
+          const e = actorInitialElevations[index] || 0;
+          let flags = 0;
+
+          if (positionKeys.has(shapeKey(x + 1, y, e))) flags |= 1;
+          if (positionKeys.has(shapeKey(x - 1, y, e))) flags |= 2;
+          if (positionKeys.has(shapeKey(x, y + 1, e))) flags |= 4;
+          if (positionKeys.has(shapeKey(x, y - 1, e))) flags |= 8;
+
+          weightlessInteriorFlags[index] = flags;
+        }
+      }
+    }
+
+    function interiorDirBit(dx, dy) {
+      if (dx === 1 && dy === 0) return 1;
+      if (dx === -1 && dy === 0) return 2;
+      if (dx === 0 && dy === 1) return 4;
+      if (dx === 0 && dy === -1) return 8;
+      return 0;
+    }
+
+    // Cells whose flank refuses weightless entry (elevated floor/ice/exit
+    // layers) — interior skips are not taken into such cells so the
+    // side-block rule keeps its legacy semantics.
+    const sideBlockCellMask = new Uint8Array(cellCount);
+
+    for (let cell = 0; cell < cellCount; cell += 1) {
+      if (
+        terrainLayers[cell].some(
+          (layer) =>
+            terrainSideBlockingSupportTypes.has(layer.type) && layer.elevation >= 1
+        )
+      ) {
+        sideBlockCellMask[cell] = 1;
+      }
+    }
+
+    // Stamped actor mark set — replaces `new Set(members)` + .has() churn in
+    // the hot group-support loops.
+    const actorMarks = new Int32Array(actorCount);
+    let actorMarkStamp = 0;
+
+    function markActorList(list) {
+      actorMarkStamp += 1;
+
+      if (actorMarkStamp >= 0x7ffffff0) {
+        actorMarks.fill(0);
+        actorMarkStamp = 1;
+      }
+
+      for (let i = 0; i < list.length; i += 1) {
+        actorMarks[list[i]] = actorMarkStamp;
+      }
+
+      return actorMarkStamp;
+    }
+
+    // Stamped spatial index of support-actor TOP surfaces: one O(actorCount)
+    // build per group operation, then O(1) probes per member — replaces the
+    // per-member O(actorCount) actorSupportSurfaceHeightsAt scans.
+    // Sized with the same slot layout as the occupancy grid (ELEV_SLOTS is
+    // declared below with the occupancy section; 20 must match it — the
+    // helpers index through occupancySlot, so a mismatch would throw).
+    const supportTopStampGrid = new Int32Array(cellCount * 20);
+    const supportTopActorGrid = new Int16Array(cellCount * 20);
+    let supportTopStamp = 0;
+
+    let buildActorSupportTopGridEpoch = -1;
+    let buildActorSupportTopGridLength = -1;
+
+    function buildActorSupportTopGrid(state) {
+      if (buildActorSupportTopGridEpoch === journalEpoch && buildActorSupportTopGridLength === journalLength) {
+        return;
+      }
+
+      buildActorSupportTopGridEpoch = journalEpoch;
+      buildActorSupportTopGridLength = journalLength;
+      supportTopStamp += 1;
+
+      if (supportTopStamp >= 0x3ffffff0) {
+        supportTopStampGrid.fill(0);
+        supportTopStamp = 1;
+      }
+
+      for (let index = 0; index < actorCount; index += 1) {
+        if (state.actorRemoved[index] || !isSupportActorType(actorTypes[index])) {
+          continue;
+        }
+
+        const slot = occupancySlot(
+          state.actorX[index],
+          state.actorY[index],
+          (state.actorElevation[index] || 0) + 1
+        );
+
+        if (slot >= 0) {
+          supportTopStampGrid[slot] = supportTopStamp;
+          supportTopActorGrid[slot] = index;
+        }
+      }
+    }
+
+    // Highest support height (terrain or non-member actor top) at (x, y)
+    // that is <= maxHeight. Requires buildActorSupportTopGrid + markActorList
+    // to have been called for the current operation.
+    function maxSupportHeightAtOrBelow(
+      state,
+      x,
+      y,
+      maxHeight,
+      memberStamp,
+      includePlayers,
+      gateState,
+      orangeButtonsPressed
+    ) {
+      let best = -Infinity;
+
+      if (!isInsideBoard(x, y)) {
+        return best;
+      }
+
+      const cell = cellIndex(x, y);
+      const layers = terrainLayersForCell(state, cell);
+
+      for (let i = 0; i < layers.length; i += 1) {
+        const height = terrainLayerSurfaceHeight(
+          state,
+          cell,
+          layers[i],
+          gateState,
+          orangeButtonsPressed
+        );
+
+        if (height !== null && height <= maxHeight && height > best) {
+          best = height;
+        }
+      }
+
+      // Actor tops live at elevation+1, so the lowest possible top is
+      // -ELEV_BASE+1; the hard floor also guards the -Infinity terrain case.
+      for (let height = maxHeight; height > best && height >= 1 - ELEV_BASE_FOR_SUPPORT; height -= 1) {
+        const slot = occupancySlot(x, y, height);
+
+        if (slot < 0 || supportTopStampGrid[slot] !== supportTopStamp) {
+          continue;
+        }
+
+        const actor = supportTopActorGrid[slot];
+
+        if (actorMarks[actor] === memberStamp) {
+          continue;
+        }
+
+        if (!includePlayers && isMainPlayerActor(actor)) {
+          continue;
+        }
+
+        best = height;
+        break;
+      }
+
+      return best;
+    }
+
+    const ELEV_BASE_FOR_SUPPORT = 2; // must match ELEV_BASE below
+
     // Compile-time probe: does any cell contain a hole layer or a bare void
     // at ground level (nothing standable or blocking at elevation 0)? Used
     // to gate the dynamic sink/removal logic. Conservative: hole fills only
@@ -1257,7 +1502,23 @@
       gateState,
       orangeButtonsPressed = areOrangeButtonsPressed(state)
     ) {
-      return terrainSurfaceHeightsAt(state, x, y, gateState, orangeButtonsPressed).includes(elevation);
+      if (!isInsideBoard(x, y)) {
+        return false;
+      }
+
+      const cell = cellIndex(x, y);
+      const layers = terrainLayersForCell(state, cell);
+
+      for (let index = 0; index < layers.length; index += 1) {
+        if (
+          terrainLayerSurfaceHeight(state, cell, layers[index], gateState, orangeButtonsPressed) ===
+          elevation
+        ) {
+          return true;
+        }
+      }
+
+      return false;
     }
 
     function terrainSupportSideBlocksWeightlessEntry(
@@ -1377,10 +1638,20 @@
 
     function iceSlopeLayersAt(state, x, y) {
       if (!isInsideBoard(x, y)) {
-        return [];
+        return EMPTY_LAYER_LIST;
       }
 
-      return terrainLayersForCell(state, cellIndex(x, y)).filter(
+      const cell = cellIndex(x, y);
+
+      // Perf: one byte probe short-circuits every slope helper on non-slope
+      // cells — the cluster machinery probes five slope traversals per
+      // member per step, which on slope-free many-box levels was pure
+      // allocation churn.
+      if (!levelHasSlopes || slopeCellMask[cell] === 0) {
+        return EMPTY_LAYER_LIST;
+      }
+
+      return terrainLayersForCell(state, cell).filter(
         (layer) => layer.type === terrainTypes.ice_slope
       );
     }
@@ -2413,30 +2684,29 @@
     }
 
     function weightlessGroupSupportedElevation(state, members, gateState, orangeButtonsPressed) {
-      const memberSet = new Set(members);
+      const memberStamp = markActorList(members);
+      buildActorSupportTopGrid(state);
       let baseElevation = 0;
 
-      members.forEach((member) => {
-        const x = state.actorX[member];
-        const y = state.actorY[member];
+      for (let i = 0; i < members.length; i += 1) {
+        const member = members[i];
         const currentElevation = actorElevation(state, member);
         const relativeElevation = weightlessRelativeElevations[member] || 0;
-        const supportHeights = terrainSurfaceHeightsAt(
+        const best = maxSupportHeightAtOrBelow(
           state,
-          x,
-          y,
+          state.actorX[member],
+          state.actorY[member],
+          currentElevation + 1,
+          memberStamp,
+          true,
           gateState,
           orangeButtonsPressed
-        ).concat(actorSupportSurfaceHeightsAt(state, x, y, memberSet, true));
+        );
 
-        supportHeights.forEach((height) => {
-          if (height > currentElevation + 1) {
-            return;
-          }
-
-          baseElevation = Math.max(baseElevation, height - relativeElevation);
-        });
-      });
+        if (best !== -Infinity && best - relativeElevation > baseElevation) {
+          baseElevation = best - relativeElevation;
+        }
+      }
 
       return Math.max(0, baseElevation);
     }
@@ -2477,30 +2747,30 @@
       });
 
       let baseElevation = -Infinity;
+      const memberStamp = markActorList(members);
+      buildActorSupportTopGrid(state);
 
-      members.forEach((member) => {
-        const x = state.actorX[member];
-        const y = state.actorY[member];
+      for (let i = 0; i < members.length; i += 1) {
+        const member = members[i];
         const currentElevation = actorElevation(state, member);
         const relativeElevation =
           (groupBaseOffsets.get(actorGroupIds[member]) ?? 0) +
           (weightlessRelativeElevations[member] || 0);
-        const supportHeights = terrainSurfaceHeightsAt(
+        const best = maxSupportHeightAtOrBelow(
           state,
-          x,
-          y,
+          state.actorX[member],
+          state.actorY[member],
+          currentElevation + 1,
+          memberStamp,
+          true,
           gateState,
           orangeButtonsPressed
-        ).concat(actorSupportSurfaceHeightsAt(state, x, y, memberSet, true));
+        );
 
-        supportHeights.forEach((height) => {
-          if (height > currentElevation + 1) {
-            return;
-          }
-
-          baseElevation = Math.max(baseElevation, height - relativeElevation);
-        });
-      });
+        if (best !== -Infinity && best - relativeElevation > baseElevation) {
+          baseElevation = best - relativeElevation;
+        }
+      }
 
       return {
         baseElevation: Number.isFinite(baseElevation) ? baseElevation : componentCurrentBase,
@@ -2526,28 +2796,28 @@
       const memberSet = new Set(members);
       const currentBaseElevation = cloneGroupCurrentBaseElevation(state, groupId);
       let baseElevation = -Infinity;
+      const memberStamp = markActorList(members);
+      buildActorSupportTopGrid(state);
 
-      members.forEach((member) => {
-        const x = state.actorX[member];
-        const y = state.actorY[member];
+      for (let i = 0; i < members.length; i += 1) {
+        const member = members[i];
         const currentElevation = actorElevation(state, member);
         const relativeElevation = currentElevation - currentBaseElevation;
-        const supportHeights = terrainSurfaceHeightsAt(
+        const best = maxSupportHeightAtOrBelow(
           state,
-          x,
-          y,
+          state.actorX[member],
+          state.actorY[member],
+          currentElevation + 1,
+          memberStamp,
+          true,
           gateState,
           orangeButtonsPressed
-        ).concat(actorSupportSurfaceHeightsAt(state, x, y, memberSet, true));
+        );
 
-        supportHeights.forEach((height) => {
-          if (height > currentElevation + 1) {
-            return;
-          }
-
-          baseElevation = Math.max(baseElevation, height - relativeElevation);
-        });
-      });
+        if (best !== -Infinity && best - relativeElevation > baseElevation) {
+          baseElevation = best - relativeElevation;
+        }
+      }
 
       return {
         baseElevation: Number.isFinite(baseElevation) ? baseElevation : currentBaseElevation,
@@ -2727,24 +2997,36 @@
       return [actorIndex];
     }
 
-    function cloneGroupMembers(state, groupId) {
-      const members = [];
-      const normalizedGroupId = groupId || "";
+    function liveMembersFromCache(state, cached, members) {
+      if (!cached) {
+        return members;
+      }
 
-      for (let index = 0; index < actorCount; index += 1) {
-        if (
-          !state.actorRemoved[index] &&
-          isCloneActor(index) &&
-          (actorGroupIds[index] || "") === normalizedGroupId
-        ) {
-          members.push(index);
+      for (let i = 0; i < cached.length; i += 1) {
+        if (!state.actorRemoved[cached[i]]) {
+          members.push(cached[i]);
         }
       }
 
       return members;
     }
 
+    function cloneGroupMembers(state, groupId) {
+      return liveMembersFromCache(state, cloneMembersByGroup.get(groupId || ""), []);
+    }
+
     function weightlessGroupMembers(state, groupId, actorType = "weightless_box") {
+      const cache =
+        actorType === "weightless_box"
+          ? weightlessMembersByGroup.get(groupId)
+          : actorType === "clone"
+            ? cloneMembersByGroup.get(groupId || "")
+            : null;
+
+      if (cache) {
+        return liveMembersFromCache(state, cache, []);
+      }
+
       const members = [];
 
       for (let index = 0; index < actorCount; index += 1) {
@@ -2761,18 +3043,34 @@
     }
 
     function weightlessClusterMembers(state, groupIds, actorType = "weightless_box") {
-      const groupIdSet = new Set(groupIds);
       const members = [];
 
-      for (let index = 0; index < actorCount; index += 1) {
-        if (
-          !state.actorRemoved[index] &&
-          actorTypes[index] === actorType &&
-          groupIdSet.has(actorGroupIds[index])
-        ) {
-          members.push(index);
+      for (const groupId of groupIds) {
+        const cache =
+          actorType === "weightless_box"
+            ? weightlessMembersByGroup.get(groupId)
+            : actorType === "clone"
+              ? cloneMembersByGroup.get(groupId || "")
+              : null;
+
+        if (cache) {
+          liveMembersFromCache(state, cache, members);
+        } else {
+          for (let index = 0; index < actorCount; index += 1) {
+            if (
+              !state.actorRemoved[index] &&
+              actorTypes[index] === actorType &&
+              actorGroupIds[index] === groupId
+            ) {
+              members.push(index);
+            }
+          }
         }
       }
+
+      // Legacy scanned all actors in index order across the whole group set;
+      // record ordering downstream depends on it.
+      members.sort((left, right) => left - right);
 
       return members;
     }
@@ -2786,32 +3084,223 @@
     }
 
     function weightlessVerticalSupportComponentGroupIds(state, startGroupId) {
+      // O(members) BFS over a stamped position grid — the legacy fixpoint
+      // loop compared every component member against every other weightless
+      // actor per round (quadratic in the 200-box levels).
       const componentGroupIds = new Set([startGroupId]);
-      let changed = true;
+      const queue = weightlessGroupMembers(state, startGroupId);
 
-      while (changed) {
-        changed = false;
-        const componentMembers = weightlessClusterMembers(state, componentGroupIds);
+      if (queue.length === 0) {
+        return componentGroupIds;
+      }
 
-        for (let index = 0; index < actorCount; index += 1) {
-          if (state.actorRemoved[index] || actorTypes[index] !== "weightless_box") {
+      buildWeightlessPositionGrid(state);
+
+      for (let head = 0; head < queue.length; head += 1) {
+        const member = queue[head];
+        const x = state.actorX[member];
+        const y = state.actorY[member];
+        const elevation = actorElevation(state, member);
+
+        for (let delta = -1; delta <= 1; delta += 2) {
+          const neighbor = weightlessActorAtSlot(x, y, elevation + delta);
+
+          if (neighbor === -1) {
             continue;
           }
 
-          const groupId = actorGroupIds[index];
+          const neighborGroup = actorGroupIds[neighbor];
 
-          if (componentGroupIds.has(groupId)) {
-            continue;
-          }
-
-          if (componentMembers.some((member) => weightlessActorsVerticallyTouch(state, member, index))) {
-            componentGroupIds.add(groupId);
-            changed = true;
+          if (!componentGroupIds.has(neighborGroup)) {
+            componentGroupIds.add(neighborGroup);
+            liveMembersFromCache(state, weightlessMembersByGroup.get(neighborGroup), queue);
           }
         }
       }
 
       return componentGroupIds;
+    }
+
+    // Support-change cell mask: per sync iteration, the cells where a
+    // support-relevant change happened this move (endpoints of support-actor
+    // moves). Group settles are skipped for groups whose columns saw no
+    // change — the settle is idempotent for them by construction. A skipped
+    // group still joins a touched neighbor's component via the BFS, so
+    // stacked structures stay correct.
+    const supportChangeCellStamp = new Int32Array(cellCount);
+    let supportChangeCounter = 0;
+
+    function stampSupportChangeCells(moves) {
+      supportChangeCounter += 1;
+
+      if (supportChangeCounter >= 0x7ffffff0) {
+        supportChangeCellStamp.fill(0);
+        supportChangeCounter = 1;
+      }
+
+      for (let i = 0; i < moves.length; i += 1) {
+        const move = moves[i];
+
+        if (move.visualOnly || !isSupportActorType(move.actorType)) {
+          continue;
+        }
+
+        if (isInsideBoard(move.fromX, move.fromY)) {
+          supportChangeCellStamp[cellIndex(move.fromX, move.fromY)] = supportChangeCounter;
+        }
+
+        if (isInsideBoard(move.toX, move.toY)) {
+          supportChangeCellStamp[cellIndex(move.toX, move.toY)] = supportChangeCounter;
+        }
+      }
+
+      return supportChangeCounter;
+    }
+
+    function groupTouchesChangedCells(state, cached, stamp) {
+      if (!cached) {
+        return true;
+      }
+
+      for (let i = 0; i < cached.length; i += 1) {
+        const index = cached[i];
+
+        if (state.actorRemoved[index]) {
+          continue;
+        }
+
+        if (
+          supportChangeCellStamp[cellIndex(state.actorX[index], state.actorY[index])] === stamp
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    function gateSetsDiffer(left, right) {
+      if (left === right) {
+        return false;
+      }
+
+      if (left.size !== right.size) {
+        return true;
+      }
+
+      for (const cell of left) {
+        if (!right.has(cell)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    // Stamped weightless-actor position grid backing the component BFS.
+    const weightlessPosStampGrid = new Int32Array(cellCount * 20);
+    const weightlessPosActorGrid = new Int16Array(cellCount * 20);
+    let weightlessPosStamp = 0;
+
+    let buildWeightlessPositionGridEpoch = -1;
+    let buildWeightlessPositionGridLength = -1;
+
+    function buildWeightlessPositionGrid(state) {
+      if (buildWeightlessPositionGridEpoch === journalEpoch && buildWeightlessPositionGridLength === journalLength) {
+        return;
+      }
+
+      buildWeightlessPositionGridEpoch = journalEpoch;
+      buildWeightlessPositionGridLength = journalLength;
+      weightlessPosStamp += 1;
+
+      if (weightlessPosStamp >= 0x3ffffff0) {
+        weightlessPosStampGrid.fill(0);
+        weightlessPosStamp = 1;
+      }
+
+      for (const cached of weightlessMembersByGroup.values()) {
+        for (let i = 0; i < cached.length; i += 1) {
+          const index = cached[i];
+
+          if (state.actorRemoved[index]) {
+            continue;
+          }
+
+          const slot = occupancySlot(
+            state.actorX[index],
+            state.actorY[index],
+            state.actorElevation[index] || 0
+          );
+
+          if (slot >= 0) {
+            weightlessPosStampGrid[slot] = weightlessPosStamp;
+            weightlessPosActorGrid[slot] = index;
+          }
+        }
+      }
+    }
+
+    function weightlessActorAtSlot(x, y, elevation) {
+      const slot = occupancySlot(x, y, elevation);
+
+      if (slot < 0 || weightlessPosStampGrid[slot] !== weightlessPosStamp) {
+        return -1;
+      }
+
+      return weightlessPosActorGrid[slot];
+    }
+
+    // Stamped position grid of ALL blocking actors (everything except gems,
+    // buttons, punchers) at their own elevation. Built once per cluster
+    // collection; actors do not move while a cluster is being collected.
+    const blockingPosStampGrid = new Int32Array(cellCount * 20);
+    const blockingPosActorGrid = new Int16Array(cellCount * 20);
+    let blockingPosStamp = 0;
+
+    let buildBlockingPositionGridEpoch = -1;
+    let buildBlockingPositionGridLength = -1;
+
+    function buildBlockingPositionGrid(state) {
+      if (buildBlockingPositionGridEpoch === journalEpoch && buildBlockingPositionGridLength === journalLength) {
+        return;
+      }
+
+      buildBlockingPositionGridEpoch = journalEpoch;
+      buildBlockingPositionGridLength = journalLength;
+      blockingPosStamp += 1;
+
+      if (blockingPosStamp >= 0x3ffffff0) {
+        blockingPosStampGrid.fill(0);
+        blockingPosStamp = 1;
+      }
+
+      for (let index = 0; index < actorCount; index += 1) {
+        if (state.actorRemoved[index] || isNonBlockingActor(index)) {
+          continue;
+        }
+
+        const slot = occupancySlot(
+          state.actorX[index],
+          state.actorY[index],
+          state.actorElevation[index] || 0
+        );
+
+        if (slot >= 0) {
+          blockingPosStampGrid[slot] = blockingPosStamp;
+          blockingPosActorGrid[slot] = index;
+        }
+      }
+    }
+
+    function blockingActorAtSlot(x, y, elevation) {
+      const slot = occupancySlot(x, y, elevation);
+
+      if (slot < 0 || blockingPosStampGrid[slot] !== blockingPosStamp) {
+        return -1;
+      }
+
+      return blockingPosActorGrid[slot];
     }
 
     function canMoveInto(state, x, y, occupied, gateState, orangeButtonsPressed, elevation = 0) {
@@ -4129,6 +4618,16 @@
         const elevation = actorElevation(state, member);
         const targetX = state.actorX[member] + dx;
         const targetY = state.actorY[member] + dy;
+
+        // Perf: all slope probes key off the target cell's slope layers.
+        if (
+          !levelHasSlopes ||
+          !isInsideBoard(targetX, targetY) ||
+          slopeCellMask[cellIndex(targetX, targetY)] === 0
+        ) {
+          continue;
+        }
+
         let traversal = resolveIceSlopeTraversal(
           state,
           targetX,
@@ -4267,11 +4766,54 @@
       const allowIceSlopeTransit =
         Boolean(slopeDelta) || allowClusterIceSlopeTransit;
 
+      // Rigid-body fast path for the plain unit step: interior members can
+      // always enter their own body's cells. Only valid while every group in
+      // the cluster is intact (shapes are static unless members were
+      // removed) and the target cell has no side-block flank or slope.
+      const stepDirBit =
+        step.elevation === 0 && step.pathOffsets.length === 0
+          ? interiorDirBit(step.dx, step.dy)
+          : 0;
+      let intactGroups = null;
+
+      if (stepDirBit !== 0) {
+        const liveCountByGroup = new Map();
+
+        for (const member of members) {
+          if (actorTypes[member] !== "weightless_box") {
+            continue;
+          }
+
+          const groupKey = actorGroupIds[member];
+          liveCountByGroup.set(groupKey, (liveCountByGroup.get(groupKey) || 0) + 1);
+        }
+
+        intactGroups = new Set();
+
+        for (const [groupKey, liveCount] of liveCountByGroup) {
+          if ((weightlessMembersByGroup.get(groupKey)?.length ?? -1) === liveCount) {
+            intactGroups.add(groupKey);
+          }
+        }
+      }
+
       if (
         members.every((member) => {
           const targetX = state.actorX[member] + step.dx;
           const targetY = state.actorY[member] + step.dy;
           const targetElevation = actorElevation(state, member) + step.elevation;
+
+          if (
+            stepDirBit !== 0 &&
+            (weightlessInteriorFlags[member] & stepDirBit) !== 0 &&
+            actorTypes[member] === "weightless_box" &&
+            intactGroups.has(actorGroupIds[member]) &&
+            isInsideBoard(targetX, targetY) &&
+            sideBlockCellMask[cellIndex(targetX, targetY)] === 0 &&
+            (!levelHasSlopes || slopeCellMask[cellIndex(targetX, targetY)] === 0)
+          ) {
+            return true;
+          }
 
           return weightlessMemberCanOccupy(
             state,
@@ -4304,6 +4846,10 @@
       gateState,
       orangeButtonsPressed
     ) {
+      if (!levelHasSlopes) {
+        return null;
+      }
+
       let bounceOffsets = null;
 
       for (const member of members) {
@@ -4379,40 +4925,55 @@
 
       while (expanded) {
         expanded = false;
-        const clusterMembers = new Set(weightlessClusterMembers(state, clusterGroupIds, actorType));
+        buildBlockingPositionGrid(state);
 
         Array.from(clusterGroupIds).forEach((currentGroupId) => {
           const members = weightlessGroupMembers(state, currentGroupId, actorType);
-          const canStartIceSlopeTransit = weightlessClusterCanStartIceSlopeTransit(
-            state,
-            members,
-            dx,
-            dy,
-            occupied,
-            gateState,
-            orangeButtonsPressed
-          );
+          const canStartIceSlopeTransit = levelHasSlopes
+            ? weightlessClusterCanStartIceSlopeTransit(
+                state,
+                members,
+                dx,
+                dy,
+                occupied,
+                gateState,
+                orangeButtonsPressed
+              )
+            : false;
+          // Hoisted out of the member loop (it was rebuilt per member — a
+          // ~150-entry Set 75x per step on the 224-box levels), and built
+          // lazily only when a slope cell is actually in front of a member.
+          let slopeIgnoredActors = null;
+          // Rigid-body fast path: interior members (target voxel inside the
+          // group's own static shape) can never collide with anything.
+          const dirBit = interiorDirBit(dx, dy);
+          const groupIntact =
+            actorType === "weightless_box" &&
+            (weightlessMembersByGroup.get(currentGroupId)?.length ?? -1) === members.length;
 
           for (const member of members) {
             const memberElevation = actorElevation(state, member);
             const targetX = state.actorX[member] + dx;
             const targetY = state.actorY[member] + dy;
-            const slopeTraversal = resolveIceSlopeTraversal(
-              state,
-              targetX,
-              targetY,
-              dx,
-              dy,
-              memberElevation,
-              occupied,
-              gateState,
-              orangeButtonsPressed
-            );
-            const slopeIgnoredActors = new Set(ignoredActors);
-            clusterMembers.forEach((clusterMember) => slopeIgnoredActors.add(clusterMember));
-            const blockedSlope = slopeTraversal
-              ? null
-              : blockedIceSlopePushForEntry(
+
+            if (
+              groupIntact &&
+              dirBit !== 0 &&
+              (weightlessInteriorFlags[member] & dirBit) !== 0 &&
+              isInsideBoard(targetX, targetY) &&
+              sideBlockCellMask[cellIndex(targetX, targetY)] === 0 &&
+              (!levelHasSlopes || slopeCellMask[cellIndex(targetX, targetY)] === 0)
+            ) {
+              continue;
+            }
+            // Perf: all five slope probes key off the target cell's slope
+            // layers — one mask byte decides them all.
+            const targetHasSlope =
+              levelHasSlopes &&
+              isInsideBoard(targetX, targetY) &&
+              slopeCellMask[cellIndex(targetX, targetY)] === 1;
+            const slopeTraversal = targetHasSlope
+              ? resolveIceSlopeTraversal(
                   state,
                   targetX,
                   targetY,
@@ -4421,11 +4982,34 @@
                   memberElevation,
                   occupied,
                   gateState,
-                  orangeButtonsPressed,
-                  slopeIgnoredActors
-                );
+                  orangeButtonsPressed
+                )
+              : null;
+
+            if (targetHasSlope && slopeIgnoredActors === null) {
+              slopeIgnoredActors = new Set(ignoredActors);
+              weightlessClusterMembers(state, clusterGroupIds, actorType).forEach(
+                (clusterMember) => slopeIgnoredActors.add(clusterMember)
+              );
+            }
+
+            const blockedSlope =
+              !targetHasSlope || slopeTraversal
+                ? null
+                : blockedIceSlopePushForEntry(
+                    state,
+                    targetX,
+                    targetY,
+                    dx,
+                    dy,
+                    memberElevation,
+                    occupied,
+                    gateState,
+                    orangeButtonsPressed,
+                    slopeIgnoredActors
+                  );
             const fallSlopeTraversal =
-              slopeTraversal || blockedSlope
+              !targetHasSlope || slopeTraversal || blockedSlope
                 ? null
                 : resolveIceSlopeFallTraversalForLanding(
                     state,
@@ -4437,7 +5021,7 @@
                     orangeButtonsPressed
                   );
             const topSlopeTraversal =
-              slopeTraversal || blockedSlope || fallSlopeTraversal
+              !targetHasSlope || slopeTraversal || blockedSlope || fallSlopeTraversal
                 ? null
                 : resolveIceSlopeTopSlideTraversal(
                     state,
@@ -4449,7 +5033,7 @@
                     orangeButtonsPressed
                   );
             const blockedSlopeBouncePath =
-              slopeTraversal || blockedSlope || fallSlopeTraversal || topSlopeTraversal
+              !targetHasSlope || slopeTraversal || blockedSlope || fallSlopeTraversal || topSlopeTraversal
                 ? null
                 : blockedIceSlopeBouncePathForEntry(
                     state,
@@ -4516,17 +5100,18 @@
               continue;
             }
 
-            const blocker = actorAt(
-              state,
-              targetX,
-              targetY,
-              (candidate) =>
-                !ignoredActors.has(candidate) &&
-                candidate !== member &&
-                !isNonBlockingActor(candidate) &&
-                actorElevation(state, candidate) === actorElevation(state, member) &&
-                !(actorTypes[candidate] === actorType && clusterGroupIds.has(actorGroupIds[candidate]))
-            );
+            // O(1) grid probe replaces the per-member O(actorCount) scan.
+            const blockerCandidate = blockingActorAtSlot(targetX, targetY, memberElevation);
+            const blocker =
+              blockerCandidate !== -1 &&
+              !ignoredActors.has(blockerCandidate) &&
+              blockerCandidate !== member &&
+              !(
+                actorTypes[blockerCandidate] === actorType &&
+                clusterGroupIds.has(actorGroupIds[blockerCandidate])
+              )
+                ? blockerCandidate
+                : -1;
 
             if (blocker === -1) {
               continue;
@@ -7274,6 +7859,15 @@
           setDynamicElevation(index, dynamicUnsupportedFallElevation(index, gateState, orangeButtonsPressed));
         }
 
+        // Perf gate: a group's settle is idempotent unless a support-relevant
+        // change happened in one of its columns this move (or device state
+        // changed). Skipped groups are NOT marked handled, so a touched
+        // neighbor's component BFS still pulls them in.
+        const changeStamp = stampSupportChangeCells(moves);
+        const syncAllGroups =
+          previousOrangeButtonsPressed !== orangeButtonsPressed ||
+          gateSetsDiffer(previousGateState, gateState);
+
         const handledWeightlessGroups = new Set();
 
         for (let index = 0; index < actorCount; index += 1) {
@@ -7284,6 +7878,13 @@
           const groupId = actorGroupIds[index];
 
           if (handledWeightlessGroups.has(groupId)) {
+            continue;
+          }
+
+          if (
+            !syncAllGroups &&
+            !groupTouchesChangedCells(state, weightlessMembersByGroup.get(groupId), changeStamp)
+          ) {
             continue;
           }
 
@@ -7319,6 +7920,13 @@
           const groupId = actorGroupIds[index] || "";
 
           if (handledCloneGroups.has(groupId)) {
+            continue;
+          }
+
+          if (
+            !syncAllGroups &&
+            !groupTouchesChangedCells(state, cloneMembersByGroup.get(groupId), changeStamp)
+          ) {
             continue;
           }
 

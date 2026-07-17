@@ -20,7 +20,16 @@ function loadEngineExport(relativePath) {
 }
 
 const NewEngine = loadEngineExport("public/maze-engine.js");
-const LegacyEngine = loadEngineExport("public/maze-engine-legacy.js");
+// The legacy engine was removed from the repo after the rewrite was accepted
+// (2026-07). To diff against it again, restore it from git history:
+//   git show <pre-rewrite-sha>:public/maze-engine.js > /tmp/maze-engine-legacy.js
+// and pass the path via MAZE_LEGACY_ENGINE_PATH.
+const legacyPath = process.env.MAZE_LEGACY_ENGINE_PATH || "public/maze-engine-legacy.js";
+if (!fs.existsSync(path.join(ROOT, legacyPath)) && !fs.existsSync(legacyPath)) {
+  console.error("diff-engines: no legacy engine found at " + legacyPath + " — set MAZE_LEGACY_ENGINE_PATH (see comment in this file).");
+  process.exit(2);
+}
+const LegacyEngine = loadEngineExport(fs.existsSync(path.join(ROOT, legacyPath)) ? legacyPath : path.resolve(legacyPath));
 
 // author-play-data for level parsing (shared, engine-agnostic)
 global.window = {};

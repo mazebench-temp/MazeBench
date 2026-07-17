@@ -133,3 +133,56 @@ DONE in public/maze-engine-next.js (smoke-tested: journal undo round-trips, incr
 - Legacy rule maps: LEGACY-RULES.md. Verdicts: SEMANTICS.md.
 - Contracts: API-CONTRACT.md, TEST-IMPACT.md (agent-written).
 - Repros: tests/repros/*.js (59 scripts; load engine via tests/helpers/browser-module-loader).
+
+## Phase B round 1 — many-piece levels (2026-07-16, post-acceptance)
+Target: level_FxL (224 weightless boxes, 3 rigid groups), level_OxO (47 boxes + 46
+orange walls), level_FxB (4 punchers). Landed in public/maze-engine.js:
+- Static group-membership caches (weightlessMembersByGroup/cloneMembersByGroup)
+- slopeCellMask: one byte probe short-circuits all five slope traversal probes
+  (they were run per member per step even on slope-free boards)
+- Hoisted + lazy slopeIgnoredActors Set (was rebuilt per member: ~150 entries x 75)
+- Stamped spatial grids: support-top grid (maxSupportHeightAtOrBelow replaces
+  per-member O(actorCount) actorSupportSurfaceHeightsAt scans), weightless position
+  grid (O(members) component BFS replaces the O(members^2) fixpoint), blocking
+  position grid (O(1) cluster blocker probe replaces per-member actorAt scans)
+- terrainSupportsElevation made allocation-free
+Results (moveForSearch / weighted-solve expansions per second):
+- FxL:  1,391/s -> 21,457/s (15.4x) | 413 -> 3,085 exp/s (7.5x)
+- OxO: 17,538/s -> 53,546/s (3.1x)  | 4,521 -> 12,517 exp/s (2.8x)
+- FxB: 121,674/s -> 186,754/s (1.5x) | 40,647 -> 53,984 exp/s (1.3x)
+Verified: full suite green, 255/256-level differential replay identical (single
+divergence = the intentional moved:false fix) BEFORE legacy removal.
+NOTE: FxL remains search-bound (224-box branching), not engine-bound — a solve
+still caps at 200k expansions. Next lever if FxL must actually solve: box-aware
+relaxed-distance heuristic / corridor macro-moves (design doc §expansion-reduction).
+Legacy engine removed from repo (restore via git history; see bench/diff-engines.js).
+
+## Phase B round 2 — rigid-body model (2026-07-16, owner insight: "3 massive pieces, not 224")
+Landed in public/maze-engine.js:
+- weightlessInteriorFlags: per-member per-direction INTERIOR/FRONTIER classification from
+  the static group shape. Interior members (target voxel inside own body) skip ALL checks
+  in cluster collection and cluster stepping — a body pays ~perimeter, not ~volume.
+  Guards: group intact (no removals), target not side-block-flanked, target slope-free.
+- slopeCellMask gates in weightlessClusterStep + bounce-offsets early return.
+- Grid-build memoization keyed on (journalEpoch, journalLength): support-top /
+  weightless-position / blocking-position grids build at most once per state change.
+- Support-change cell mask gates the per-iteration group settles (idempotent unless a
+  support-actor endpoint touched a group column or device state changed); skipped seeds
+  remain reachable through a touched neighbor's component BFS.
+Cumulative results on the slow levels (baseline -> now):
+- FxL: 1,391 -> ~25,000 moves/s (18x) | 413 -> ~3,200 exp/s (7.7x)
+- OxO: 17,538 -> 74,183 moves/s (4.2x) | 4,521 -> 15,548 exp/s (3.4x)
+- FxB: 121,674 -> 235,046 moves/s (1.9x) | 40,647 -> 55,436 exp/s (1.4x)
+Verified: full suite green, spot repros green, level_FxL plays in browser cleanly.
+
+## Phase C (next lever, not started) — true group-level state
+The public per-actor state contract keeps O(actorCount) fixed passes per move (occupancy
+rebuild, hash toggles per member on group pushes, originalActor snapshots). The full
+realization of the rigid-body insight: canonical mutable state per weightless group = ONE
+(dx, dy, dElev, removed) offset tuple; per-actor arrays become a derived view for the
+renderer/API. Group hash contribution memoized per offset (Map offset -> lane pair, exact
+XOR-fold of member contributions, so stateKey semantics are unchanged). Expected: another
+~5-10x on many-piece levels, near-elimination of group cost from the journal. Orange walls
+already have 1-bit state (global pressed flag); their remaining per-query layer scans would
+be removed by the substrate-draft blocking/surface masks (precomputed pressed/unpressed
+variants). Clones already move as one group and benefit from the same offset treatment.
