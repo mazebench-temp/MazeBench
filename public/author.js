@@ -216,6 +216,28 @@
     '<path d="M22 21H7"></path>' +
     '<path d="m5 11 9 9"></path>' +
     "</svg>";
+  // Ghost, Minimize 2, Maximize 2, and X from Lucide Icons (ISC License).
+  // https://lucide.dev/icons/ghost
+  // https://lucide.dev/icons/minimize-2
+  // https://lucide.dev/icons/maximize-2
+  // https://lucide.dev/icons/x
+  const solverGhostIconSvg =
+    '<svg class="solver-dock__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M9 10h.01"></path><path d="M15 10h.01"></path>' +
+    '<path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"></path>' +
+    "</svg>";
+  const solverMinimizeIconSvg =
+    '<svg class="solver-dock__icon solver-dock__icon--minimize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="m14 10 7-7"></path><path d="M20 10h-6V4"></path><path d="m3 21 7-7"></path><path d="M4 14h6v6"></path>' +
+    "</svg>";
+  const solverMaximizeIconSvg =
+    '<svg class="solver-dock__icon solver-dock__icon--maximize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M15 3h6v6"></path><path d="m21 3-7 7"></path><path d="m3 21 7-7"></path><path d="M9 21H3v-6"></path>' +
+    "</svg>";
+  const solverDismissIconSvg =
+    '<svg class="solver-dock__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>' +
+    "</svg>";
   // Prompt-style toolbox entries (owner feature 2026-07): "Box N" and friends
   // ask for a numeric id, then select the concrete pattern token (M<N>, c<N>,
   // SrM<N>, Src<N>). They follow the noop/eraser meta-tool precedent; the id
@@ -799,37 +821,33 @@
     if (!solverDock.element) return;
     const playable = hasPlayableSolution();
     const locked = state.isSolverBusy || state.isSolutionPlaying;
+    const exporting = Boolean(state.solverExportFormat);
     if (solverDock.playbackButton) {
-      solverDock.playbackButton.disabled = locked || !playable;
-      solverDock.playbackButton.textContent = state.isSolutionPlaying
-        ? "Playing..."
-        : solverDock.minimized
-          ? "Playback"
-          : "Playback Solution";
+      solverDock.playbackButton.disabled = locked || exporting || !playable;
+      solverDock.playbackButton.textContent = state.isSolutionPlaying ? "Playing..." : "Play Solution";
     }
     if (solverDock.ghostButton) {
-      solverDock.ghostButton.disabled = locked || !playable;
+      solverDock.ghostButton.disabled = locked || exporting || !playable;
       solverDock.ghostButton.setAttribute(
         "aria-pressed",
         state.solverGhostVisible ? "true" : "false"
       );
-      solverDock.ghostButton.textContent = state.solverGhostVisible
-        ? "Hide Ghost"
-        : "Show Ghost";
+      const ghostLabel = state.solverGhostVisible ? "Hide ghost path" : "Show ghost path";
+      solverDock.ghostButton.setAttribute("aria-label", ghostLabel);
+      solverDock.ghostButton.title = ghostLabel;
     }
-    if (solverDock.harderButton) solverDock.harderButton.disabled = locked;
-    if (solverDock.harderInfoButton) solverDock.harderInfoButton.disabled = locked;
-    solverDock.exportButtons.forEach((button) => {
-      const format = button.dataset.solverExportFormat;
-      button.disabled = locked || !playable || Boolean(state.solverExportFormat);
-      button.textContent =
-        state.solverExportFormat === format
-          ? `Rendering ${format.toUpperCase()}...`
-          : `Download ${format.toUpperCase()}`;
-    });
+    if (solverDock.harderButton) solverDock.harderButton.disabled = locked || exporting;
+    if (solverDock.harderInfoButton) solverDock.harderInfoButton.disabled = locked || exporting;
+    if (solverDock.exportFormat) solverDock.exportFormat.disabled = locked || exporting || !playable;
+    if (solverDock.exportButton) {
+      solverDock.exportButton.disabled = locked || exporting || !playable;
+      solverDock.exportButton.textContent = exporting ? "Rendering..." : "Download";
+    }
     if (solverDock.minimizeButton) {
-      solverDock.minimizeButton.disabled = locked || !playable;
-      solverDock.minimizeButton.textContent = solverDock.minimized ? "Expand" : "Minimize";
+      const minimizeLabel = solverDock.minimized ? "Expand solver panel" : "Minimize solver panel";
+      solverDock.minimizeButton.disabled = locked || exporting || !playable;
+      solverDock.minimizeButton.setAttribute("aria-label", minimizeLabel);
+      solverDock.minimizeButton.title = minimizeLabel;
       solverDock.minimizeButton.setAttribute(
         "aria-expanded",
         solverDock.minimized ? "false" : "true"
@@ -1177,7 +1195,8 @@
     abortActiveSolverWorkerJob();
     if (solverDock.cancelButton) {
       solverDock.cancelButton.disabled = true;
-      solverDock.cancelButton.textContent = "Cancelling...";
+      solverDock.cancelButton.setAttribute("aria-label", "Cancelling solver");
+      solverDock.cancelButton.title = "Cancelling solver";
     }
     setStatus("Cancelling solver...", "warning");
     syncSolverButtonState();
@@ -1211,8 +1230,13 @@
     cancelButton: null,
     elapsed: null,
     element: null,
-    exportButtons: [],
+    exportBar: null,
+    exportButton: null,
+    exportFormat: null,
     exportGroup: null,
+    exportLabel: null,
+    exportProgress: null,
+    exportTrack: null,
     harderButton: null,
     harderInfoButton: null,
     ghostButton: null,
@@ -1284,12 +1308,10 @@
     "  border-radius: 9px;",
     "  color: var(--ink, #e7eaff);",
     "  cursor: pointer;",
-    "  font: inherit;",
-    "  font-size: 12px;",
-    "  font-weight: 600;",
-    "  min-height: 0;",
-    "  padding: 4px 12px;",
+    "  height: 34px;",
+    "  padding: 0;",
     "  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;",
+    "  width: 34px;",
     "}",
     ".solver-dock__cancel:hover:not(:disabled),",
     ".solver-dock__cancel:focus-visible {",
@@ -1299,10 +1321,13 @@
     "  outline: none;",
     "}",
     ".solver-dock__cancel:disabled { color: var(--muted, #9aa3c7); cursor: default; opacity: 0.7; }",
-    ".solver-dock__minimize { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.08); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.42); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; min-height: 0; padding: 4px 10px; }",
+    ".solver-dock__minimize { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.08); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.42); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; height: 34px; padding: 0; width: 34px; }",
     ".solver-dock__minimize:hover:not(:disabled), .solver-dock__minimize:focus-visible { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.13); border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.86); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.22); outline: none; }",
     ".solver-dock__minimize:disabled { cursor: default; opacity: 0.48; }",
     ".solver-dock__minimize[hidden] { display: none; }",
+    ".solver-dock__cancel, .solver-dock__minimize, .solver-dock__ghost { align-items: center; display: inline-flex; flex: 0 0 auto; justify-content: center; }",
+    ".solver-dock__icon { height: 17px; pointer-events: none; width: 17px; }",
+    ".solver-dock__icon--maximize { display: none; }",
     ".solver-dock__track {",
     "  background: rgba(124, 143, 255, 0.14);",
     "  border: 1px solid rgba(124, 143, 255, 0.3);",
@@ -1325,17 +1350,27 @@
     ".solver-dock__actions[hidden] { display: none; }",
     ".solver-dock__playback { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.14); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.7); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 12px; font-weight: 750; min-height: 34px; padding: 6px 12px; }",
     ".solver-dock__playback:hover, .solver-dock__playback:focus-visible { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 1); box-shadow: 0 0 14px rgba(var(--cyan-rgb, 84, 240, 255), 0.27); outline: none; }",
-    ".solver-dock__ghost { align-items: center; background: rgba(124, 143, 255, 0.07); border: 1px solid rgba(124, 143, 255, 0.38); border-radius: 999px; color: var(--muted, #9aa3c7); cursor: pointer; display: inline-flex; font: inherit; font-size: 11px; font-weight: 700; gap: 7px; min-height: 34px; padding: 6px 11px; }",
-    ".solver-dock__ghost::before { background: rgba(84, 240, 255, 0.18); border: 1px solid rgba(84, 240, 255, 0.72); border-radius: 999px; content: ''; height: 10px; transition: background 160ms ease, box-shadow 160ms ease; width: 10px; }",
-    ".solver-dock__ghost[aria-pressed='true'] { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.68); color: var(--ink, #e7eaff); }",
-    ".solver-dock__ghost[aria-pressed='true']::before { background: rgba(84, 240, 255, 0.85); box-shadow: 0 0 9px rgba(84, 240, 255, 0.62); }",
+    ".solver-dock__ghost { background: rgba(124, 143, 255, 0.07); border: 1px solid rgba(124, 143, 255, 0.38); border-radius: 9px; color: var(--muted, #9aa3c7); cursor: pointer; height: 34px; padding: 0; transition: border-color 150ms ease, box-shadow 150ms ease, color 150ms ease; width: 34px; }",
+    ".solver-dock__ghost:hover:not(:disabled), .solver-dock__ghost:focus-visible { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.78); color: var(--ink, #e7eaff); outline: none; }",
+    ".solver-dock__ghost[aria-pressed='true'] { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.78); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.28); color: var(--cyan, #54f0ff); }",
     ".solver-dock__playback[hidden], .solver-dock__ghost[hidden] { display: none; }",
     ".solver-dock__playback:disabled, .solver-dock__ghost:disabled, .solver-dock__harder:disabled { cursor: default; opacity: 0.48; }",
-    ".solver-dock__exports { align-items: center; display: inline-flex; gap: 7px; }",
+    ".solver-dock__exports { align-items: center; display: inline-flex; gap: 6px; }",
     ".solver-dock__exports[hidden] { display: none; }",
+    ".solver-dock__export-format { appearance: none; background: rgba(10, 13, 31, 0.72); border: 1px solid rgba(var(--green-rgb, 88, 255, 178), 0.42); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 11px; font-weight: 750; height: 34px; padding: 0 25px 0 10px; }",
+    ".solver-dock__export-select { position: relative; }",
+    ".solver-dock__export-select::after { border-color: var(--green, #58ffb2) transparent transparent; border-style: solid; border-width: 4px 3.5px 0; content: ''; pointer-events: none; position: absolute; right: 9px; top: calc(50% - 1px); }",
+    ".solver-dock__export-format:focus-visible { border-color: rgba(var(--green-rgb, 88, 255, 178), 0.9); box-shadow: 0 0 12px rgba(var(--green-rgb, 88, 255, 178), 0.18); outline: none; }",
     ".solver-dock__export { background: rgba(var(--green-rgb, 88, 255, 178), 0.08); border: 1px solid rgba(var(--green-rgb, 88, 255, 178), 0.5); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 11px; font-weight: 700; min-height: 34px; padding: 6px 10px; }",
     ".solver-dock__export:hover:not(:disabled), .solver-dock__export:focus-visible { background: rgba(var(--green-rgb, 88, 255, 178), 0.14); border-color: rgba(var(--green-rgb, 88, 255, 178), 0.9); box-shadow: 0 0 14px rgba(var(--green-rgb, 88, 255, 178), 0.2); outline: none; }",
     ".solver-dock__export:disabled { cursor: default; opacity: 0.48; }",
+    ".solver-dock__export-progress { background: rgba(3, 6, 16, 0.68); border: 1px solid rgba(124, 143, 255, 0.2); border-radius: 10px; display: grid; gap: 7px; padding: 8px 10px; }",
+    ".solver-dock__export-progress[hidden] { display: none; }",
+    ".solver-dock__export-progress-copy { align-items: center; display: flex; font-family: var(--font-mono, monospace); font-size: 10px; gap: 8px; justify-content: space-between; }",
+    ".solver-dock__export-progress-copy strong { color: var(--green, #58ffb2); font-size: 10px; }",
+    ".solver-dock__export-progress-label { color: var(--muted, #9aa3c7); text-align: right; }",
+    ".solver-dock__export-track { background: rgba(124, 143, 255, 0.16); border: 1px solid rgba(124, 143, 255, 0.24); border-radius: 999px; height: 8px; overflow: hidden; }",
+    ".solver-dock__export-bar { background: linear-gradient(90deg, var(--green, #58ffb2), var(--cyan, #54f0ff)); border-radius: 999px; box-shadow: 0 0 10px rgba(var(--green-rgb, 88, 255, 178), 0.34); height: 100%; transition: width 320ms ease; width: 0%; }",
     ".solver-dock__harder-group { align-items: center; display: inline-flex; gap: 7px; margin-left: auto; }",
     ".solver-dock__harder-group[hidden] { display: none; }",
     ".solver-dock__harder { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.1); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.58); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; min-height: 34px; padding: 6px 12px; }",
@@ -1343,13 +1378,15 @@
     ".solver-dock__info { align-items: center; background: transparent; border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.48); border-radius: 999px; color: var(--cyan, #54f0ff); cursor: pointer; display: inline-flex; font-family: var(--font-mono, monospace); font-size: 11px; font-style: italic; height: 27px; justify-content: center; min-height: 0; min-width: 0; padding: 0; width: 27px; }",
     ".solver-dock__info:hover, .solver-dock__info:focus-visible { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.12); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.22); outline: none; }",
     ".solver-dock.is-failed { border-color: rgba(var(--magenta-rgb, 255, 84, 170), 0.48); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 22px rgba(var(--magenta-rgb, 255, 84, 170), 0.12); }",
-    ".solver-dock.is-minimized { align-items: center; display: flex; gap: 7px; padding: 8px 10px; }",
+    ".solver-dock.is-minimized { align-items: center; display: flex; gap: 7px; padding: 5px 8px; }",
     ".solver-dock.is-minimized .solver-dock__head, .solver-dock.is-minimized .solver-dock__actions { display: contents; }",
-    ".solver-dock.is-minimized .solver-dock__badge, .solver-dock.is-minimized .solver-dock__elapsed, .solver-dock.is-minimized .solver-dock__track, .solver-dock.is-minimized .solver-dock__text, .solver-dock.is-minimized .solver-dock__path, .solver-dock.is-minimized .solver-dock__ghost, .solver-dock.is-minimized .solver-dock__exports, .solver-dock.is-minimized .solver-dock__harder-group { display: none; }",
+    ".solver-dock.is-minimized .solver-dock__badge, .solver-dock.is-minimized .solver-dock__elapsed, .solver-dock.is-minimized .solver-dock__track, .solver-dock.is-minimized .solver-dock__text, .solver-dock.is-minimized .solver-dock__path, .solver-dock.is-minimized .solver-dock__ghost, .solver-dock.is-minimized .solver-dock__exports, .solver-dock.is-minimized .solver-dock__harder-group, .solver-dock.is-minimized .solver-dock__export-progress { display: none; }",
     ".solver-dock.is-minimized .solver-dock__title { font-size: 11px; order: 1; white-space: nowrap; }",
     ".solver-dock.is-minimized .solver-dock__playback { min-height: 30px; order: 2; padding: 4px 9px; white-space: nowrap; }",
-    ".solver-dock.is-minimized .solver-dock__minimize { order: 3; white-space: nowrap; }",
-    ".solver-dock.is-minimized .solver-dock__cancel { order: 4; padding-inline: 9px; white-space: nowrap; }",
+    ".solver-dock.is-minimized .solver-dock__minimize { order: 3; }",
+    ".solver-dock.is-minimized .solver-dock__cancel { order: 4; }",
+    ".solver-dock.is-minimized .solver-dock__icon--minimize { display: none; }",
+    ".solver-dock.is-minimized .solver-dock__icon--maximize { display: block; }",
     ".solver-dock.is-minimized .solver-dock__actions[hidden], .solver-dock.is-minimized .solver-dock__playback[hidden] { display: none; }"
   ].join("\n");
 
@@ -1372,8 +1409,12 @@
       '<span class="solver-dock__title">Solver</span>' +
       '<span class="solver-dock__badge" title="Engine v0.1 — expect rough edges">Experimental</span>' +
       '<span class="solver-dock__elapsed">0.0s</span>' +
-      '<button class="solver-dock__minimize" type="button" aria-expanded="true" hidden>Minimize</button>' +
-      '<button class="solver-dock__cancel" type="button">Cancel</button>' +
+      '<button class="solver-dock__minimize" type="button" aria-label="Minimize solver panel" aria-expanded="true" title="Minimize solver panel" hidden>' +
+      solverMinimizeIconSvg + solverMaximizeIconSvg +
+      '</button>' +
+      '<button class="solver-dock__cancel" type="button" aria-label="Cancel solver" title="Cancel solver">' +
+      solverDismissIconSvg +
+      '</button>' +
       "</div>" +
       '<div class="solver-dock__track" role="progressbar" aria-label="Solver search progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' +
       '<div class="solver-dock__bar"></div>' +
@@ -1381,17 +1422,25 @@
       '<p class="solver-dock__text">Starting search...</p>' +
       '<code class="solver-dock__path"></code>' +
       '<div class="solver-dock__actions" hidden>' +
-      '<button class="solver-dock__playback" type="button" hidden>Playback Solution</button>' +
-      '<button class="solver-dock__ghost" type="button" aria-pressed="false" hidden>Show Ghost</button>' +
+      '<button class="solver-dock__playback" type="button" hidden>Play Solution</button>' +
+      '<button class="solver-dock__ghost" type="button" aria-label="Show ghost path" aria-pressed="false" title="Show ghost path" hidden>' +
+      solverGhostIconSvg +
+      '</button>' +
       '<span class="solver-dock__exports" hidden>' +
-      '<button class="solver-dock__export" type="button" data-solver-export-format="mp4">Download MP4</button>' +
-      '<button class="solver-dock__export" type="button" data-solver-export-format="gif">Download GIF</button>' +
+      '<label class="solver-dock__export-select">' +
+      '<select class="solver-dock__export-format" aria-label="Solution export format"><option value="mp4">MP4</option><option value="gif">GIF</option></select>' +
+      '</label>' +
+      '<button class="solver-dock__export" type="button">Download</button>' +
       '</span>' +
       '<span class="solver-dock__harder-group" hidden>' +
       '<button class="solver-dock__harder" type="button">Make Level Harder</button>' +
       '<button class="solver-dock__info" type="button" data-panel-info-title="Make Level Harder" data-panel-info-description="Tests adding exactly one block, then moves the gem only when A* verifies a strictly harder reachable placement. If no harder placement is found, the board is left unchanged." aria-label="About Make Level Harder" aria-controls="author-info-popover" aria-expanded="false">i</button>' +
       '</span>' +
-      "</div>";
+      "</div>" +
+      '<div class="solver-dock__export-progress" aria-live="polite" hidden>' +
+      '<div class="solver-dock__export-progress-copy"><strong>Rendering MP4</strong><span class="solver-dock__export-progress-label">Starting...</span></div>' +
+      '<div class="solver-dock__export-track" role="progressbar" aria-label="Solution export progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="solver-dock__export-bar"></div></div>' +
+      '</div>';
     document.body.append(dock);
 
     solverDock.element = dock;
@@ -1399,8 +1448,13 @@
     solverDock.bar = dock.querySelector(".solver-dock__bar");
     solverDock.cancelButton = dock.querySelector(".solver-dock__cancel");
     solverDock.elapsed = dock.querySelector(".solver-dock__elapsed");
-    solverDock.exportButtons = Array.from(dock.querySelectorAll(".solver-dock__export"));
+    solverDock.exportBar = dock.querySelector(".solver-dock__export-bar");
+    solverDock.exportButton = dock.querySelector(".solver-dock__export");
+    solverDock.exportFormat = dock.querySelector(".solver-dock__export-format");
     solverDock.exportGroup = dock.querySelector(".solver-dock__exports");
+    solverDock.exportLabel = dock.querySelector(".solver-dock__export-progress-label");
+    solverDock.exportProgress = dock.querySelector(".solver-dock__export-progress");
+    solverDock.exportTrack = dock.querySelector(".solver-dock__export-track");
     solverDock.harderButton = dock.querySelector(".solver-dock__harder");
     solverDock.harderInfoButton = dock.querySelector(".solver-dock__info");
     solverDock.ghostButton = dock.querySelector(".solver-dock__ghost");
@@ -1418,10 +1472,8 @@
     solverDock.minimizeButton.addEventListener("click", () => {
       setSolverDockMinimized(!solverDock.minimized);
     });
-    solverDock.exportButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        downloadSolutionExport(button.dataset.solverExportFormat);
-      });
+    solverDock.exportButton.addEventListener("click", () => {
+      downloadSolutionExport(solverDock.exportFormat.value);
     });
     solverDock.ghostButton.addEventListener("click", () => {
       setSolverGhostVisible(!state.solverGhostVisible);
@@ -1479,7 +1531,7 @@
     solverDock.element.style.left = Math.round(center) + "px";
     solverDock.element.style.top = solverDockTopOffset() + "px";
     solverDock.element.style.width =
-      Math.min(solverDock.minimized ? 330 : 540, availableWidth) + "px";
+      Math.min(solverDock.minimized ? 280 : 540, availableWidth) + "px";
   }
 
   function formatSolverElapsed(ms) {
@@ -1514,9 +1566,11 @@
     dock.bar.style.width = "0%";
     dock.track.setAttribute("aria-valuenow", "0");
     dock.cancelButton.disabled = false;
-    dock.cancelButton.textContent = "Cancel";
+    dock.cancelButton.setAttribute("aria-label", "Cancel solver");
+    dock.cancelButton.title = "Cancel solver";
     dock.minimizeButton.hidden = true;
     dock.actions.hidden = true;
+    dock.exportProgress.hidden = true;
     dock.path.textContent = "";
     dock.status = "running";
     solverDock.startedAt = performanceNow();
@@ -1572,9 +1626,11 @@
   function completeSolverDock(result = {}) {
     const dock = ensureSolverDock();
     window.clearInterval(dock.tickTimer);
+    updateSolverDockElapsed();
     dock.status = "complete";
     dock.cancelButton.disabled = false;
-    dock.cancelButton.textContent = "Dismiss";
+    dock.cancelButton.setAttribute("aria-label", "Dismiss solver panel");
+    dock.cancelButton.title = "Dismiss solver panel";
     dock.bar.style.width = "100%";
     dock.track.setAttribute("aria-valuenow", "100");
     dock.text.textContent = [result.title, result.detail].filter(Boolean).join(" · ");
@@ -6897,6 +6953,7 @@
           signal
         }
       );
+      const elapsed = formatSolverElapsed(performanceNow() - solverDock.startedAt);
 
       if (result.status === "solved") {
         rememberSolverSolution(result.path);
@@ -6904,7 +6961,13 @@
           canMakeHarder: true,
           canPlayback: true,
           detail:
-            "Explored " + formatStateCount(result.expanded) + " states with " + algorithmLabel + ".",
+            "Explored " +
+            formatStateCount(result.expanded) +
+            " states with " +
+            algorithmLabel +
+            " in " +
+            elapsed +
+            ".",
           path: formatSolverPath(result.path),
           solved: true,
           title: "Solved in " + result.moves + " move" + (result.moves === 1 ? "" : "s")
@@ -6916,7 +6979,8 @@
           canMakeHarder: false,
           detail:
             "Explored " + formatStateCount(result.expanded) +
-            " state" + (result.expanded === 1 ? "" : "s") + " — no path reaches a gem.",
+            " state" + (result.expanded === 1 ? "" : "s") +
+            " in " + elapsed + " — no path reaches a gem.",
           path: "",
           solved: false,
           title: "Not solvable"
@@ -7031,6 +7095,73 @@
     }
   }
 
+  function solutionExportPhaseLabel(phase, format) {
+    const normalized = String(phase || "starting").toLowerCase();
+    if (normalized === "starting") return "Preparing renderer";
+    if (normalized === "capturing") return "Capturing play-mode frames";
+    if (normalized === "encoding") return `Encoding ${format.toUpperCase()}`;
+    if (normalized === "done") return "Ready to download";
+    if (normalized === "failed") return "Render failed";
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  function showSolutionExportProgress(format, progress = {}) {
+    const dock = ensureSolverDock();
+    const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    const detail = [];
+    if (
+      progress.current != null &&
+      progress.total != null &&
+      Number.isFinite(Number(progress.current)) &&
+      Number.isFinite(Number(progress.total))
+    ) {
+      detail.push(
+        `${Number(progress.current).toLocaleString()}/${Number(progress.total).toLocaleString()} ${progress.unit || "frames"}`
+      );
+    }
+    if (
+      progress.eta_ms != null &&
+      Number.isFinite(Number(progress.eta_ms)) &&
+      Number(progress.eta_ms) >= 0
+    ) {
+      detail.push(`about ${formatSolverElapsed(Number(progress.eta_ms))} left`);
+    }
+    detail.push(`${Math.round(percent)}%`);
+
+    dock.exportProgress.hidden = false;
+    dock.exportProgress.querySelector("strong").textContent = `Rendering ${format.toUpperCase()}`;
+    dock.exportLabel.textContent = `${solutionExportPhaseLabel(progress.phase, format)} · ${detail.join(" · ")}`;
+    dock.exportBar.style.width = `${percent}%`;
+    dock.exportTrack.setAttribute("aria-valuenow", String(Math.round(percent)));
+    dock.exportTrack.setAttribute("aria-valuetext", dock.exportLabel.textContent);
+  }
+
+  function waitForSolutionExportPoll() {
+    return new Promise((resolve) => window.setTimeout(resolve, 400));
+  }
+
+  async function waitForSolutionExport(job, format) {
+    let current = job;
+    while (current?.status === "rendering") {
+      showSolutionExportProgress(format, current.progress);
+      await waitForSolutionExportPoll();
+      const response = await fetch(job.statusUrl, {
+        headers: { Accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!response.ok) {
+        throw new Error((await solutionExportError(response)) || "Could not read export progress.");
+      }
+      current = await response.json();
+    }
+
+    showSolutionExportProgress(format, current?.progress || {});
+    if (current?.status !== "ready") {
+      throw new Error(current?.error || `Could not render solution ${format.toUpperCase()}.`);
+    }
+    return current;
+  }
+
   async function downloadSolutionExport(requestedFormat) {
     const format = String(requestedFormat || "").toLowerCase();
     if (!["gif", "mp4"].includes(format) || state.solverExportFormat) return;
@@ -7042,7 +7173,9 @@
 
     state.solverExportFormat = format;
     setStatus(`Rendering play-mode ${format.toUpperCase()}...`, "warning");
+    showSolutionExportProgress(format, { phase: "starting", percent: 0 });
     syncSolverDockControls();
+    let statusUrl = "";
 
     try {
       const response = await fetch(
@@ -7065,11 +7198,25 @@
         throw new Error((await solutionExportError(response)) || "Could not render solution.");
       }
 
-      const blob = await response.blob();
+      const job = await response.json();
+      if (!job?.statusUrl || !job?.downloadUrl) {
+        throw new Error("Solution renderer did not return an export job.");
+      }
+      statusUrl = job.statusUrl;
+      await waitForSolutionExport(job, format);
+      showSolutionExportProgress(format, { phase: "done", percent: 100 });
+
+      const downloadResponse = await fetch(job.downloadUrl, { cache: "no-store" });
+      if (!downloadResponse.ok) {
+        throw new Error(
+          (await solutionExportError(downloadResponse)) || "Could not download rendered solution."
+        );
+      }
+      const blob = await downloadResponse.blob();
       const objectUrl = URL.createObjectURL(blob);
       const download = document.createElement("a");
       download.href = objectUrl;
-      download.download = solutionExportFileName(response, format);
+      download.download = solutionExportFileName(downloadResponse, format);
       download.hidden = true;
       document.body.append(download);
       download.click();
@@ -7077,6 +7224,9 @@
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
       setStatus(`Downloaded play-mode solution ${format.toUpperCase()}.`, "success");
     } catch (error) {
+      if (statusUrl) {
+        fetch(statusUrl, { method: "DELETE" }).catch(() => {});
+      }
       setStatus(
         error instanceof Error ? error.message : `Could not render solution ${format.toUpperCase()}.`,
         "error"
@@ -7084,6 +7234,11 @@
     } finally {
       state.solverExportFormat = null;
       syncSolverDockControls();
+      window.setTimeout(() => {
+        if (!state.solverExportFormat && solverDock.exportProgress) {
+          solverDock.exportProgress.hidden = true;
+        }
+      }, 700);
     }
   }
 

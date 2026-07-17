@@ -697,7 +697,8 @@ function createRequestRouter({
     }
 
     if (
-      segments.length === 5 &&
+      segments.length >= 5 &&
+      segments.length <= 7 &&
       segments[0] === "api" &&
       segments[1] === "author" &&
       segments[4] === "solution-export"
@@ -708,25 +709,81 @@ function createRequestRouter({
         return;
       }
 
-      if (request.method !== "POST") {
-        response.writeHead(405, { Allow: "POST" });
-        response.end();
-        return;
-      }
-
       const level = getLevel(game, segments[3]);
       if (!level) {
         sendHtml(response, 404, renderNotFound());
         return;
       }
 
-      const payload = await readJsonBody(request);
-      const artifact = await solverExports.render({
-        format: url.searchParams.get("format") || "mp4",
+      if (segments.length === 5) {
+        if (request.method !== "POST") {
+          response.writeHead(405, { Allow: "POST" });
+          response.end();
+          return;
+        }
+
+        const payload = await readJsonBody(request);
+        const job = solverExports.start({
+          format: url.searchParams.get("format") || "mp4",
+          gameId: game.id,
+          levelId: level.id,
+          payload
+        });
+        const jobUrl = `${url.pathname}/${encodeURIComponent(job.id)}`;
+        sendJson(response, 202, {
+          ...job,
+          downloadUrl: `${jobUrl}/download`,
+          statusUrl: jobUrl
+        });
+        return;
+      }
+
+      const identity = {
         gameId: game.id,
-        levelId: level.id,
-        payload
-      });
+        jobId: segments[5],
+        levelId: level.id
+      };
+      const job = solverExports.status(identity);
+      if (!job) {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
+
+      if (segments.length === 6) {
+        if (request.method === "DELETE") {
+          solverExports.cancel(identity);
+          response.writeHead(204, { "Cache-Control": "no-store" });
+          response.end();
+          return;
+        }
+        if (request.method !== "GET") {
+          response.writeHead(405, { Allow: "DELETE, GET" });
+          response.end();
+          return;
+        }
+        sendJson(response, 200, job);
+        return;
+      }
+
+      if (segments[6] !== "download") {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405, { Allow: "GET" });
+        response.end();
+        return;
+      }
+      if (job.status !== "ready") {
+        sendJson(response, 409, job);
+        return;
+      }
+
+      const artifact = solverExports.artifact(identity);
+      if (!artifact) {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
       const stats = fs.statSync(artifact.filePath);
       response.writeHead(200, {
         "Cache-Control": "no-store",
