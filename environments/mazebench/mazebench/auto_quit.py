@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 
 AUTO_QUIT_DEFAULT_THRESHOLD = 10.0
-AUTO_QUIT_DEFAULT_MODE: Literal["cumulative", "rolling"] = "cumulative"
+AUTO_QUIT_DEFAULT_MODE: Literal["cumulative", "rolling"] = "rolling"
 AUTO_QUIT_DEFAULT_WINDOW = 100
 AUTO_QUIT_DEFAULT_WARNING_MOVES = 10
 AUTO_QUIT_MAX_WINDOW = 10_000
@@ -70,7 +70,11 @@ def normalize_auto_quit_config(
             0.0,
             100.0,
         ),
-        "mode": "rolling" if normalized_mode == "rolling" else "cumulative",
+        "mode": (
+            normalized_mode
+            if normalized_mode in {"cumulative", "rolling"}
+            else AUTO_QUIT_DEFAULT_MODE
+        ),
         "window": _integer_in_range(
             window,
             AUTO_QUIT_DEFAULT_WINDOW,

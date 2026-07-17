@@ -21,6 +21,18 @@ def actions(*hashes: str) -> list[dict[str, object]]:
 
 
 class AutoQuitParityTests(unittest.TestCase):
+    def test_defaults_use_a_100_move_rolling_window(self) -> None:
+        self.assertEqual(
+            auto_quit.normalize_auto_quit_config(enabled=True),
+            {
+                "enabled": True,
+                "threshold": 10.0,
+                "mode": "rolling",
+                "window": 100,
+                "warning_moves": 10,
+            },
+        )
+
     def test_cumulative_matches_engine_threshold(self) -> None:
         config = {
             "enabled": True,
@@ -139,6 +151,7 @@ class AutoQuitParityTests(unittest.TestCase):
             invalid_actions,
             enabled=True,
             threshold=10,
+            mode="cumulative",
             warning_moves=10,
         )
         self.assertIn("next 1 action", warning)

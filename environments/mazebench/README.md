@@ -154,7 +154,7 @@ push_reward_weight = 0.05
 allow_quit = false
 auto_quit = true
 auto_quit_threshold = 10.0
-auto_quit_mode = "cumulative"
+auto_quit_mode = "rolling"
 auto_quit_window = 100
 auto_quit_warning_moves = 10
 ```
@@ -213,7 +213,7 @@ Prime CLI 0.6.x passes these settings under `[env.args]` to MazeBench's hosted c
 | `allow_quit` | boolean | `true` | Whether `quit` may end the rollout. |
 | `auto_quit` | boolean | `false` | Stop the rollout when its percentage of globally novel board states reaches the configured threshold. |
 | `auto_quit_threshold` | number | `10.0` | New-state percentage at or below which auto-quit fires. |
-| `auto_quit_mode` | `cumulative` or `rolling` | `cumulative` | Measure novelty across the whole rollout or a rolling action window. |
+| `auto_quit_mode` | `cumulative` or `rolling` | `rolling` | Measure novelty across the whole rollout or a rolling action window. |
 | `auto_quit_window` | integer | `100` | Rolling-mode action window. Rolling mode waits until this window is full. |
 | `auto_quit_warning_moves` | integer | `10` | Warn when this many repeated-state actions would reach the threshold. `0` disables warnings. |
 | `target_gems` | integer | `0` | Optional gem-score normalization target. `0` uses raw gem count. |
