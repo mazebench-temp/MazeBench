@@ -216,10 +216,11 @@
     '<path d="M22 21H7"></path>' +
     '<path d="m5 11 9 9"></path>' +
     "</svg>";
-  // Ghost, Minimize 2, Maximize 2, and X from Lucide Icons (ISC License).
+  // Ghost, Minimize 2, Maximize 2, Circle Stop, and X from Lucide Icons (ISC License).
   // https://lucide.dev/icons/ghost
   // https://lucide.dev/icons/minimize-2
   // https://lucide.dev/icons/maximize-2
+  // https://lucide.dev/icons/circle-stop
   // https://lucide.dev/icons/x
   const solverGhostIconSvg =
     '<svg class="solver-dock__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
@@ -233,6 +234,10 @@
   const solverMaximizeIconSvg =
     '<svg class="solver-dock__icon solver-dock__icon--maximize" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
     '<path d="M15 3h6v6"></path><path d="m21 3-7 7"></path><path d="m3 21 7-7"></path><path d="M9 21H3v-6"></path>' +
+    "</svg>";
+  const solverStopIconSvg =
+    '<svg class="solver-dock__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<circle cx="12" cy="12" r="10"></circle><rect x="9" y="9" width="6" height="6" rx="1"></rect>' +
     "</svg>";
   const solverDismissIconSvg =
     '<svg class="solver-dock__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
@@ -499,6 +504,7 @@
     selectedCell: { x: 0, y: 0 },
     selectedToken:
       authorData.defaultWallToken || authorData.palette[0]?.token || authorData.defaultFloorToken,
+    solutionPlaybackAbortController: null,
     solverAbortController: null,
     solverExportFormat: null,
     solverGhostVisible: false,
@@ -826,6 +832,18 @@
       solverDock.playbackButton.disabled = locked || exporting || !playable;
       solverDock.playbackButton.textContent = state.isSolutionPlaying ? "Playing..." : "Play Solution";
     }
+    if (solverDock.stopPlaybackButton) {
+      const stopping = Boolean(state.solutionPlaybackAbortController?.signal.aborted);
+      solverDock.stopPlaybackButton.hidden = !state.isSolutionPlaying;
+      solverDock.stopPlaybackButton.disabled = stopping;
+      solverDock.stopPlaybackButton.setAttribute(
+        "aria-label",
+        stopping ? "Stopping solution playback" : "Stop solution playback"
+      );
+      solverDock.stopPlaybackButton.title = stopping
+        ? "Stopping solution playback"
+        : "Stop solution playback";
+    }
     if (solverDock.ghostButton) {
       solverDock.ghostButton.disabled = locked || exporting || !playable;
       solverDock.ghostButton.setAttribute(
@@ -852,6 +870,9 @@
         "aria-expanded",
         solverDock.minimized ? "false" : "true"
       );
+    }
+    if (solverDock.cancelButton && !state.isSolverBusy) {
+      solverDock.cancelButton.disabled = state.isSolutionPlaying || exporting;
     }
   }
 
@@ -1250,6 +1271,7 @@
     resizeObserver: null,
     startedAt: 0,
     status: "idle",
+    stopPlaybackButton: null,
     text: null,
     tickTimer: 0,
     track: null
@@ -1327,7 +1349,7 @@
     ".solver-dock__minimize:hover:not(:disabled), .solver-dock__minimize:focus-visible { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.13); border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.86); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.22); outline: none; }",
     ".solver-dock__minimize:disabled { cursor: default; opacity: 0.48; }",
     ".solver-dock__minimize[hidden] { display: none; }",
-    ".solver-dock__cancel, .solver-dock__minimize, .solver-dock__ghost { align-items: center; display: inline-flex; flex: 0 0 auto; justify-content: center; }",
+    ".solver-dock__cancel, .solver-dock__minimize, .solver-dock__ghost, .solver-dock__stop-playback { align-items: center; display: inline-flex; flex: 0 0 auto; justify-content: center; }",
     ".solver-dock__icon { height: 17px; pointer-events: none; width: 17px; }",
     ".solver-dock__icon--maximize { display: none; }",
     ".solver-dock__track {",
@@ -1352,11 +1374,13 @@
     ".solver-dock__actions[hidden] { display: none; }",
     ".solver-dock__playback { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.14); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.7); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 12px; font-weight: 750; min-height: 34px; padding: 6px 12px; }",
     ".solver-dock__playback:hover, .solver-dock__playback:focus-visible { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 1); box-shadow: 0 0 14px rgba(var(--cyan-rgb, 84, 240, 255), 0.27); outline: none; }",
+    ".solver-dock__stop-playback { background: rgba(var(--magenta-rgb, 255, 84, 170), 0.09); border: 1px solid rgba(var(--magenta-rgb, 255, 84, 170), 0.58); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; height: 34px; padding: 0; transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease; width: 34px; }",
+    ".solver-dock__stop-playback:hover:not(:disabled), .solver-dock__stop-playback:focus-visible { background: rgba(var(--magenta-rgb, 255, 84, 170), 0.16); border-color: rgba(var(--magenta-rgb, 255, 84, 170), 0.95); box-shadow: 0 0 14px rgba(var(--magenta-rgb, 255, 84, 170), 0.3); outline: none; }",
     ".solver-dock__ghost { background: rgba(124, 143, 255, 0.07); border: 1px solid rgba(124, 143, 255, 0.38); border-radius: 9px; color: var(--muted, #9aa3c7); cursor: pointer; height: 34px; padding: 0; transition: border-color 150ms ease, box-shadow 150ms ease, color 150ms ease; width: 34px; }",
     ".solver-dock__ghost:hover:not(:disabled), .solver-dock__ghost:focus-visible { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.78); color: var(--ink, #e7eaff); outline: none; }",
     ".solver-dock__ghost[aria-pressed='true'] { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.78); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.28); color: var(--cyan, #54f0ff); }",
-    ".solver-dock__playback[hidden], .solver-dock__ghost[hidden] { display: none; }",
-    ".solver-dock__playback:disabled, .solver-dock__ghost:disabled, .solver-dock__harder:disabled { cursor: default; opacity: 0.48; }",
+    ".solver-dock__playback[hidden], .solver-dock__ghost[hidden], .solver-dock__stop-playback[hidden] { display: none; }",
+    ".solver-dock__playback:disabled, .solver-dock__ghost:disabled, .solver-dock__stop-playback:disabled, .solver-dock__harder:disabled { cursor: default; opacity: 0.48; }",
     ".solver-dock__exports { align-items: center; display: inline-flex; gap: 6px; }",
     ".solver-dock__exports[hidden] { display: none; }",
     ".solver-dock__export-format { appearance: none; background: rgba(10, 13, 31, 0.72); border: 1px solid rgba(var(--green-rgb, 88, 255, 178), 0.42); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 11px; font-weight: 750; height: 34px; padding: 0 25px 0 10px; }",
@@ -1385,8 +1409,9 @@
     ".solver-dock.is-minimized .solver-dock__badge, .solver-dock.is-minimized .solver-dock__elapsed, .solver-dock.is-minimized .solver-dock__track, .solver-dock.is-minimized .solver-dock__text, .solver-dock.is-minimized .solver-dock__path, .solver-dock.is-minimized .solver-dock__ghost, .solver-dock.is-minimized .solver-dock__exports, .solver-dock.is-minimized .solver-dock__harder-group, .solver-dock.is-minimized .solver-dock__export-progress { display: none; }",
     ".solver-dock.is-minimized .solver-dock__title { font-size: 11px; order: 1; white-space: nowrap; }",
     ".solver-dock.is-minimized .solver-dock__playback { min-height: 30px; order: 2; padding: 4px 9px; white-space: nowrap; }",
-    ".solver-dock.is-minimized .solver-dock__minimize { order: 3; }",
-    ".solver-dock.is-minimized .solver-dock__cancel { order: 4; }",
+    ".solver-dock.is-minimized .solver-dock__stop-playback { order: 3; }",
+    ".solver-dock.is-minimized .solver-dock__minimize { order: 4; }",
+    ".solver-dock.is-minimized .solver-dock__cancel { order: 5; }",
     ".solver-dock.is-minimized .solver-dock__icon--minimize { display: none; }",
     ".solver-dock.is-minimized .solver-dock__icon--maximize { display: block; }",
     ".solver-dock.is-minimized .solver-dock__actions[hidden], .solver-dock.is-minimized .solver-dock__playback[hidden] { display: none; }"
@@ -1425,6 +1450,9 @@
       '<code class="solver-dock__path"></code>' +
       '<div class="solver-dock__actions" hidden>' +
       '<button class="solver-dock__playback" type="button" hidden>Play Solution</button>' +
+      '<button class="solver-dock__stop-playback" type="button" aria-label="Stop solution playback" title="Stop solution playback" hidden>' +
+      solverStopIconSvg +
+      '</button>' +
       '<button class="solver-dock__ghost" type="button" aria-label="Show ghost path" aria-pressed="false" title="Show ghost path" hidden>' +
       solverGhostIconSvg +
       '</button>' +
@@ -1463,6 +1491,7 @@
     solverDock.minimizeButton = dock.querySelector(".solver-dock__minimize");
     solverDock.path = dock.querySelector(".solver-dock__path");
     solverDock.playbackButton = dock.querySelector(".solver-dock__playback");
+    solverDock.stopPlaybackButton = dock.querySelector(".solver-dock__stop-playback");
     solverDock.text = dock.querySelector(".solver-dock__text");
     solverDock.track = dock.querySelector(".solver-dock__track");
     solverDock.cancelButton.addEventListener("click", () => {
@@ -1471,6 +1500,7 @@
     });
     solverDock.harderButton.addEventListener("click", makeLevelHarder);
     solverDock.playbackButton.addEventListener("click", playSolution);
+    solverDock.stopPlaybackButton.addEventListener("click", stopSolutionPlayback);
     solverDock.minimizeButton.addEventListener("click", () => {
       setSolverDockMinimized(!solverDock.minimized);
     });
@@ -7116,6 +7146,18 @@
     return result.moved ? completion.then(() => result) : Promise.resolve(result);
   }
 
+  function stopSolutionPlayback() {
+    const controller = state.solutionPlaybackAbortController;
+
+    if (!state.isSolutionPlaying || !controller || controller.signal.aborted) {
+      return;
+    }
+
+    controller.abort();
+    setStatus("Stopping solution playback...", "warning");
+    syncSolverButtonState();
+  }
+
   function buildSolutionExportPlayData() {
     return buildEditorPlayData({
       cameraView: {
@@ -7325,7 +7367,10 @@
       return;
     }
 
+    const playbackController = new AbortController();
+    let completedMoves = 0;
     setSolverDockMinimized(true);
+    state.solutionPlaybackAbortController = playbackController;
     state.isSolutionPlaying = true;
     setStatus("Playing solver solution...", "warning");
     syncSolverButtonState();
@@ -7341,6 +7386,10 @@
       app.render();
 
       for (let index = 0; index < moves.length; index += 1) {
+        if (playbackController.signal.aborted) {
+          break;
+        }
+
         const result = await performSolutionMove(app, moves[index]);
 
         if (!result.moved) {
@@ -7352,21 +7401,52 @@
               ")."
           );
         }
+
+        completedMoves += 1;
+
+        if (playbackController.signal.aborted) {
+          break;
+        }
       }
 
-      setStatus(
-        "Played solution: " +
-          moves.length +
-          " move" +
-          (moves.length === 1 ? "" : "s") +
-          ". UDLR: " +
-          formatSolverPath(solutionPath) +
-          ".",
-        "success"
-      );
+      if (playbackController.signal.aborted) {
+        setStatus(
+          "Stopped solution after " +
+            completedMoves +
+            " move" +
+            (completedMoves === 1 ? "" : "s") +
+            ".",
+          "warning"
+        );
+      } else {
+        setStatus(
+          "Played solution: " +
+            moves.length +
+            " move" +
+            (moves.length === 1 ? "" : "s") +
+            ". UDLR: " +
+            formatSolverPath(solutionPath) +
+            ".",
+          "success"
+        );
+      }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not play the solution.", "error");
+      setStatus(
+        playbackController.signal.aborted
+          ? "Stopped solution after " +
+              completedMoves +
+              " move" +
+              (completedMoves === 1 ? "" : "s") +
+              "."
+          : error instanceof Error
+            ? error.message
+            : "Could not play the solution.",
+        playbackController.signal.aborted ? "warning" : "error"
+      );
     } finally {
+      if (state.solutionPlaybackAbortController === playbackController) {
+        state.solutionPlaybackAbortController = null;
+      }
       state.isSolutionPlaying = false;
       renderEditorScene();
       syncSolverButtonState();
