@@ -79,6 +79,89 @@ const PRIME_HARNESSES = new Map([
   ["claude-code", { id: "claude-code", label: "Claude Code", taskset: "mazebench-agent", protocol: "Anthropic Messages" }]
 ]);
 
+const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
+
+function claudeReasoningLevels(modelId) {
+  const id = String(modelId || "").toLowerCase().replace(/\./g, "-");
+  const supportsXhigh = /(?:^|-)claude-(?:fable-5|mythos-5|opus-4-(?:7|8)|sonnet-5)(?:-|$)/.test(`-${id}`);
+  const supportsMax = supportsXhigh ||
+    /(?:^|-)claude-(?:mythos-preview|opus-4-6|sonnet-4-6)(?:-|$)/.test(`-${id}`);
+  const supportsEffort = supportsMax || /(?:^|-)claude-opus-4-5(?:-|$)/.test(`-${id}`);
+
+  if (!supportsEffort) return [];
+  return [
+    ...STANDARD_REASONING_LEVELS,
+    ...(supportsXhigh ? ["xhigh"] : []),
+    ...(supportsMax ? ["max"] : [])
+  ];
+}
+
+// Prime forwards provider-native reasoning values even though its /models
+// response does not publish per-model capability metadata. Keep this mapping
+// deliberately narrow: each entry is backed by the provider's model docs or by
+// the live Codex model metadata for Prime's OpenAI frontier variants. An empty
+// list means "provider default only"; it is safer than offering a control that
+// a model ignores or rejects.
+function primeReasoningLevels(modelId) {
+  const id = String(modelId || "").trim().toLowerCase();
+  const slash = id.indexOf("/");
+  const provider = slash === -1 ? "" : id.slice(0, slash);
+  const model = slash === -1 ? id : id.slice(slash + 1);
+
+  if (provider === "anthropic") {
+    return claudeReasoningLevels(model);
+  }
+
+  if (provider === "google") {
+    if (/^gemini-(?:3-flash-preview|3\.5-flash)$/.test(model)) {
+      return ["minimal", ...STANDARD_REASONING_LEVELS];
+    }
+    if (/^gemini-(?:3\.1-pro-preview|2\.5-(?:flash|flash-lite|pro))$/.test(model)) {
+      return [...STANDARD_REASONING_LEVELS];
+    }
+    return [];
+  }
+
+  if (provider === "x-ai") {
+    if (/^grok-4\.20-multi-agent(?:-|$)/.test(model)) {
+      return [...STANDARD_REASONING_LEVELS, "xhigh"];
+    }
+    if (/^grok-(?:4\.20|4\.5)(?:-|$)/.test(model)) {
+      return [...STANDARD_REASONING_LEVELS];
+    }
+    return [];
+  }
+
+  if (provider !== "openai") return [];
+  if (/^gpt-oss-(?:20b|120b)(?:-|$)/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS];
+  }
+  if (/-chat(?:-|$)/.test(model)) return [];
+  if (/-pro(?:-|$)/.test(model)) return ["high"];
+  if (/^gpt-5\.6-(?:sol|terra)$/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS, "xhigh", "max", "ultra"];
+  }
+  if (/^gpt-5\.6-luna$/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS, "xhigh", "max"];
+  }
+  if (/^gpt-5\.(?:[3-9]|\d{2,})(?:[.-]|$)/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS, "xhigh"];
+  }
+  if (/^gpt-5\.2(?:[.-]|$)/.test(model)) {
+    return ["none", ...STANDARD_REASONING_LEVELS, "xhigh"];
+  }
+  if (/^gpt-5\.1(?:[.-]|$)/.test(model)) {
+    return ["none", ...STANDARD_REASONING_LEVELS];
+  }
+  if (/^gpt-5-codex(?:-|$)/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS];
+  }
+  if (/^gpt-5(?:-(?:mini|nano))?$/.test(model)) {
+    return ["minimal", ...STANDARD_REASONING_LEVELS];
+  }
+  return [];
+}
+
 function primeHarnessModelCompatible(modelId, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
   const id = String(modelId || "").trim().toLowerCase();
@@ -3085,23 +3168,6 @@ function createAgentRunService({
     };
   }
 
-  function claudeReasoningLevels(modelId) {
-    const id = String(modelId || "").toLowerCase().replace(/\./g, "-");
-    const supportsXhigh = /(?:^|-)claude-(?:fable-5|mythos-5|opus-4-(?:7|8)|sonnet-5)(?:-|$)/.test(`-${id}`);
-    const supportsMax = supportsXhigh ||
-      /(?:^|-)claude-(?:mythos-preview|opus-4-6|sonnet-4-6)(?:-|$)/.test(`-${id}`);
-    const supportsEffort = supportsMax || /(?:^|-)claude-opus-4-5(?:-|$)/.test(`-${id}`);
-
-    if (!supportsEffort) return [];
-    return [
-      "low",
-      "medium",
-      "high",
-      ...(supportsXhigh ? ["xhigh"] : []),
-      ...(supportsMax ? ["max"] : [])
-    ];
-  }
-
   function claudeModelCatalog() {
     // Claude Code has no JSON model-catalog command. Its help lists most aliases,
     // while the model picker metadata embedded in the installed CLI is more
@@ -3314,6 +3380,7 @@ function createAgentRunService({
             description: "",
             group: slash === -1 ? "other" : id.slice(0, slash),
             vision: primeModelVision(id),
+            reasoning_levels: primeReasoningLevels(id),
             created_at: Number(row.created) || 0,
             pricing: row.pricing && typeof row.pricing === "object"
               ? {
@@ -3331,7 +3398,7 @@ function createAgentRunService({
         checked_at: modelCatalogCheckedAt(),
         default_model_id: models[0]?.id || "",
         note: models.length
-          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id.`
+          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id and reasoning controls are model-specific.`
           : "The Prime catalog came back empty — type a model id instead."
       };
     } catch (error) {
@@ -3561,10 +3628,12 @@ function createAgentRunService({
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
-    // Reasoning effort → --sampling.reasoning-effort. OpenAI reasoning models and
-    // Claude (extended thinking) honor it; others ignore it. "" = don't send one.
-    const reasoning = ["low", "medium", "high"].includes(String(params.reasoning))
-      ? String(params.reasoning)
+    // Reasoning effort → --sampling.reasoning-effort. Prime forwards native
+    // provider values, but each model supports a different subset. "" means
+    // omit the override and preserve the provider's default.
+    const requestedReasoning = String(params.reasoning || "").toLowerCase();
+    const reasoning = primeReasoningLevels(model).includes(requestedReasoning)
+      ? requestedReasoning
       : "";
     const envDir = path.join(
       rootDir,
@@ -4888,6 +4957,7 @@ module.exports = {
   createAgentRunService,
   enrichedPathEnv,
   filterPrimeCatalogForHarness,
+  primeReasoningLevels,
   primeHarnessModelCompatible,
   replayMessageForCommandText
 };
