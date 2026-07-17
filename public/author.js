@@ -478,6 +478,7 @@
     selectedToken:
       authorData.defaultWallToken || authorData.palette[0]?.token || authorData.defaultFloorToken,
     solverAbortController: null,
+    solverExportFormat: null,
     solverGhostVisible: false,
     solverMode: null,
     solverSolutionCellsKey: null,
@@ -802,7 +803,9 @@
       solverDock.playbackButton.disabled = locked || !playable;
       solverDock.playbackButton.textContent = state.isSolutionPlaying
         ? "Playing..."
-        : "Playback Solution";
+        : solverDock.minimized
+          ? "Playback"
+          : "Playback Solution";
     }
     if (solverDock.ghostButton) {
       solverDock.ghostButton.disabled = locked || !playable;
@@ -816,6 +819,22 @@
     }
     if (solverDock.harderButton) solverDock.harderButton.disabled = locked;
     if (solverDock.harderInfoButton) solverDock.harderInfoButton.disabled = locked;
+    solverDock.exportButtons.forEach((button) => {
+      const format = button.dataset.solverExportFormat;
+      button.disabled = locked || !playable || Boolean(state.solverExportFormat);
+      button.textContent =
+        state.solverExportFormat === format
+          ? `Rendering ${format.toUpperCase()}...`
+          : `Download ${format.toUpperCase()}`;
+    });
+    if (solverDock.minimizeButton) {
+      solverDock.minimizeButton.disabled = locked || !playable;
+      solverDock.minimizeButton.textContent = solverDock.minimized ? "Expand" : "Minimize";
+      solverDock.minimizeButton.setAttribute(
+        "aria-expanded",
+        solverDock.minimized ? "false" : "true"
+      );
+    }
   }
 
   function setSolverGhostVisible(visible) {
@@ -1192,11 +1211,15 @@
     cancelButton: null,
     elapsed: null,
     element: null,
+    exportButtons: [],
+    exportGroup: null,
     harderButton: null,
     harderInfoButton: null,
     ghostButton: null,
     hideFinalizeTimer: 0,
     hideTimer: 0,
+    minimizeButton: null,
+    minimized: false,
     path: null,
     playbackButton: null,
     resizeObserver: null,
@@ -1276,6 +1299,10 @@
     "  outline: none;",
     "}",
     ".solver-dock__cancel:disabled { color: var(--muted, #9aa3c7); cursor: default; opacity: 0.7; }",
+    ".solver-dock__minimize { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.08); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.42); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; min-height: 0; padding: 4px 10px; }",
+    ".solver-dock__minimize:hover:not(:disabled), .solver-dock__minimize:focus-visible { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.13); border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.86); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.22); outline: none; }",
+    ".solver-dock__minimize:disabled { cursor: default; opacity: 0.48; }",
+    ".solver-dock__minimize[hidden] { display: none; }",
     ".solver-dock__track {",
     "  background: rgba(124, 143, 255, 0.14);",
     "  border: 1px solid rgba(124, 143, 255, 0.3);",
@@ -1294,7 +1321,7 @@
     ".solver-dock__text { color: var(--ink, #e7eaff); font-family: var(--font-mono, monospace); font-size: 11px; margin: 0; }",
     ".solver-dock__path { color: var(--cyan, #54f0ff); font-family: var(--font-mono, monospace); font-size: 11px; letter-spacing: 0.1em; line-height: 1.5; margin: 0; overflow-wrap: anywhere; user-select: all; }",
     ".solver-dock__path:empty { display: none; }",
-    ".solver-dock__actions { align-items: center; display: flex; gap: 7px; }",
+    ".solver-dock__actions { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; }",
     ".solver-dock__actions[hidden] { display: none; }",
     ".solver-dock__playback { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.14); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.7); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 12px; font-weight: 750; min-height: 34px; padding: 6px 12px; }",
     ".solver-dock__playback:hover, .solver-dock__playback:focus-visible { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 1); box-shadow: 0 0 14px rgba(var(--cyan-rgb, 84, 240, 255), 0.27); outline: none; }",
@@ -1304,13 +1331,26 @@
     ".solver-dock__ghost[aria-pressed='true']::before { background: rgba(84, 240, 255, 0.85); box-shadow: 0 0 9px rgba(84, 240, 255, 0.62); }",
     ".solver-dock__playback[hidden], .solver-dock__ghost[hidden] { display: none; }",
     ".solver-dock__playback:disabled, .solver-dock__ghost:disabled, .solver-dock__harder:disabled { cursor: default; opacity: 0.48; }",
+    ".solver-dock__exports { align-items: center; display: inline-flex; gap: 7px; }",
+    ".solver-dock__exports[hidden] { display: none; }",
+    ".solver-dock__export { background: rgba(var(--green-rgb, 88, 255, 178), 0.08); border: 1px solid rgba(var(--green-rgb, 88, 255, 178), 0.5); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 11px; font-weight: 700; min-height: 34px; padding: 6px 10px; }",
+    ".solver-dock__export:hover:not(:disabled), .solver-dock__export:focus-visible { background: rgba(var(--green-rgb, 88, 255, 178), 0.14); border-color: rgba(var(--green-rgb, 88, 255, 178), 0.9); box-shadow: 0 0 14px rgba(var(--green-rgb, 88, 255, 178), 0.2); outline: none; }",
+    ".solver-dock__export:disabled { cursor: default; opacity: 0.48; }",
     ".solver-dock__harder-group { align-items: center; display: inline-flex; gap: 7px; margin-left: auto; }",
     ".solver-dock__harder-group[hidden] { display: none; }",
     ".solver-dock__harder { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.1); border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.58); border-radius: 9px; color: var(--ink, #e7eaff); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; min-height: 34px; padding: 6px 12px; }",
     ".solver-dock__harder:hover, .solver-dock__harder:focus-visible { border-color: rgba(var(--cyan-rgb, 84, 240, 255), 0.92); box-shadow: 0 0 14px rgba(var(--cyan-rgb, 84, 240, 255), 0.24); outline: none; }",
     ".solver-dock__info { align-items: center; background: transparent; border: 1px solid rgba(var(--cyan-rgb, 84, 240, 255), 0.48); border-radius: 999px; color: var(--cyan, #54f0ff); cursor: pointer; display: inline-flex; font-family: var(--font-mono, monospace); font-size: 11px; font-style: italic; height: 27px; justify-content: center; min-height: 0; min-width: 0; padding: 0; width: 27px; }",
     ".solver-dock__info:hover, .solver-dock__info:focus-visible { background: rgba(var(--cyan-rgb, 84, 240, 255), 0.12); box-shadow: 0 0 12px rgba(var(--cyan-rgb, 84, 240, 255), 0.22); outline: none; }",
-    ".solver-dock.is-failed { border-color: rgba(var(--magenta-rgb, 255, 84, 170), 0.48); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 22px rgba(var(--magenta-rgb, 255, 84, 170), 0.12); }"
+    ".solver-dock.is-failed { border-color: rgba(var(--magenta-rgb, 255, 84, 170), 0.48); box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), 0 0 22px rgba(var(--magenta-rgb, 255, 84, 170), 0.12); }",
+    ".solver-dock.is-minimized { align-items: center; display: flex; gap: 7px; padding: 8px 10px; }",
+    ".solver-dock.is-minimized .solver-dock__head, .solver-dock.is-minimized .solver-dock__actions { display: contents; }",
+    ".solver-dock.is-minimized .solver-dock__badge, .solver-dock.is-minimized .solver-dock__elapsed, .solver-dock.is-minimized .solver-dock__track, .solver-dock.is-minimized .solver-dock__text, .solver-dock.is-minimized .solver-dock__path, .solver-dock.is-minimized .solver-dock__ghost, .solver-dock.is-minimized .solver-dock__exports, .solver-dock.is-minimized .solver-dock__harder-group { display: none; }",
+    ".solver-dock.is-minimized .solver-dock__title { font-size: 11px; order: 1; white-space: nowrap; }",
+    ".solver-dock.is-minimized .solver-dock__playback { min-height: 30px; order: 2; padding: 4px 9px; white-space: nowrap; }",
+    ".solver-dock.is-minimized .solver-dock__minimize { order: 3; white-space: nowrap; }",
+    ".solver-dock.is-minimized .solver-dock__cancel { order: 4; padding-inline: 9px; white-space: nowrap; }",
+    ".solver-dock.is-minimized .solver-dock__actions[hidden], .solver-dock.is-minimized .solver-dock__playback[hidden] { display: none; }"
   ].join("\n");
 
   function ensureSolverDock() {
@@ -1332,6 +1372,7 @@
       '<span class="solver-dock__title">Solver</span>' +
       '<span class="solver-dock__badge" title="Engine v0.1 — expect rough edges">Experimental</span>' +
       '<span class="solver-dock__elapsed">0.0s</span>' +
+      '<button class="solver-dock__minimize" type="button" aria-expanded="true" hidden>Minimize</button>' +
       '<button class="solver-dock__cancel" type="button">Cancel</button>' +
       "</div>" +
       '<div class="solver-dock__track" role="progressbar" aria-label="Solver search progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' +
@@ -1342,6 +1383,10 @@
       '<div class="solver-dock__actions" hidden>' +
       '<button class="solver-dock__playback" type="button" hidden>Playback Solution</button>' +
       '<button class="solver-dock__ghost" type="button" aria-pressed="false" hidden>Show Ghost</button>' +
+      '<span class="solver-dock__exports" hidden>' +
+      '<button class="solver-dock__export" type="button" data-solver-export-format="mp4">Download MP4</button>' +
+      '<button class="solver-dock__export" type="button" data-solver-export-format="gif">Download GIF</button>' +
+      '</span>' +
       '<span class="solver-dock__harder-group" hidden>' +
       '<button class="solver-dock__harder" type="button">Make Level Harder</button>' +
       '<button class="solver-dock__info" type="button" data-panel-info-title="Make Level Harder" data-panel-info-description="Tests adding exactly one block, then moves the gem only when A* verifies a strictly harder reachable placement. If no harder placement is found, the board is left unchanged." aria-label="About Make Level Harder" aria-controls="author-info-popover" aria-expanded="false">i</button>' +
@@ -1354,9 +1399,12 @@
     solverDock.bar = dock.querySelector(".solver-dock__bar");
     solverDock.cancelButton = dock.querySelector(".solver-dock__cancel");
     solverDock.elapsed = dock.querySelector(".solver-dock__elapsed");
+    solverDock.exportButtons = Array.from(dock.querySelectorAll(".solver-dock__export"));
+    solverDock.exportGroup = dock.querySelector(".solver-dock__exports");
     solverDock.harderButton = dock.querySelector(".solver-dock__harder");
     solverDock.harderInfoButton = dock.querySelector(".solver-dock__info");
     solverDock.ghostButton = dock.querySelector(".solver-dock__ghost");
+    solverDock.minimizeButton = dock.querySelector(".solver-dock__minimize");
     solverDock.path = dock.querySelector(".solver-dock__path");
     solverDock.playbackButton = dock.querySelector(".solver-dock__playback");
     solverDock.text = dock.querySelector(".solver-dock__text");
@@ -1367,6 +1415,14 @@
     });
     solverDock.harderButton.addEventListener("click", makeLevelHarder);
     solverDock.playbackButton.addEventListener("click", playSolution);
+    solverDock.minimizeButton.addEventListener("click", () => {
+      setSolverDockMinimized(!solverDock.minimized);
+    });
+    solverDock.exportButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        downloadSolutionExport(button.dataset.solverExportFormat);
+      });
+    });
     solverDock.ghostButton.addEventListener("click", () => {
       setSolverGhostVisible(!state.solverGhostVisible);
     });
@@ -1380,6 +1436,14 @@
     }
 
     return solverDock;
+  }
+
+  function setSolverDockMinimized(minimized) {
+    const dock = ensureSolverDock();
+    dock.minimized = minimized === true && hasPlayableSolution();
+    dock.element.classList.toggle("is-minimized", dock.minimized);
+    syncSolverDockControls();
+    positionSolverDock();
   }
 
   function solverDockTopOffset() {
@@ -1414,7 +1478,8 @@
 
     solverDock.element.style.left = Math.round(center) + "px";
     solverDock.element.style.top = solverDockTopOffset() + "px";
-    solverDock.element.style.width = Math.min(540, availableWidth) + "px";
+    solverDock.element.style.width =
+      Math.min(solverDock.minimized ? 330 : 540, availableWidth) + "px";
   }
 
   function formatSolverElapsed(ms) {
@@ -1443,12 +1508,14 @@
     window.clearTimeout(solverDock.hideFinalizeTimer);
     window.clearInterval(solverDock.tickTimer);
     dock.element.hidden = false;
+    setSolverDockMinimized(false);
     positionSolverDock();
     dock.text.textContent = (label ? label + " · " : "") + "starting search...";
     dock.bar.style.width = "0%";
     dock.track.setAttribute("aria-valuenow", "0");
     dock.cancelButton.disabled = false;
     dock.cancelButton.textContent = "Cancel";
+    dock.minimizeButton.hidden = true;
     dock.actions.hidden = true;
     dock.path.textContent = "";
     dock.status = "running";
@@ -1495,6 +1562,7 @@
   function dismissSolverDock() {
     if (!solverDock.element) return;
     clearSolverGhostOverlay();
+    setSolverDockMinimized(false);
     solverDock.element.classList.remove("is-open");
     window.setTimeout(() => {
       if (!state.isSolverBusy && solverDock.element) solverDock.element.hidden = true;
@@ -1512,8 +1580,11 @@
     dock.text.textContent = [result.title, result.detail].filter(Boolean).join(" · ");
     dock.path.textContent = result.path || "";
     const canPlayback = result.canPlayback === true && hasPlayableSolution();
+    const canExport = canPlayback && Boolean(authorData.solutionExportApiUrl);
     dock.playbackButton.hidden = !canPlayback;
     dock.ghostButton.hidden = !canPlayback;
+    dock.exportGroup.hidden = !canExport;
+    dock.minimizeButton.hidden = !canPlayback;
     dock.element.querySelector(".solver-dock__harder-group").hidden = result.canMakeHarder !== true;
     dock.actions.hidden = !canPlayback && result.canMakeHarder !== true;
     dock.element.classList.toggle("is-failed", result.solved === false);
@@ -6927,6 +6998,93 @@
     });
 
     return result.moved ? completion.then(() => result) : Promise.resolve(result);
+  }
+
+  function buildSolutionExportPlayData() {
+    return buildEditorPlayData({
+      cameraView: {
+        height: state.height,
+        width: state.width
+      },
+      editorRender: false,
+      levelId: state.levelId,
+      levelLabel: state.levelId,
+      worldColumns,
+      worldRows
+    });
+  }
+
+  function solutionExportFileName(response, format) {
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    if (match?.[1]) return match[1];
+    return `${authorData.game.id}-${state.levelId}-solution.${format}`;
+  }
+
+  async function solutionExportError(response) {
+    const body = await response.text();
+    try {
+      const payload = JSON.parse(body);
+      return payload?.error || body;
+    } catch (_error) {
+      return body;
+    }
+  }
+
+  async function downloadSolutionExport(requestedFormat) {
+    const format = String(requestedFormat || "").toLowerCase();
+    if (!["gif", "mp4"].includes(format) || state.solverExportFormat) return;
+
+    if (!hasPlayableSolution() || !authorData.solutionExportApiUrl) {
+      setStatus("Run Solver successfully before exporting a solution.", "error");
+      return;
+    }
+
+    state.solverExportFormat = format;
+    setStatus(`Rendering play-mode ${format.toUpperCase()}...`, "warning");
+    syncSolverDockControls();
+
+    try {
+      const response = await fetch(
+        authorData.solutionExportApiUrl +
+          "/" +
+          encodeURIComponent(state.levelId) +
+          "/solution-export?format=" +
+          encodeURIComponent(format),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: state.solverSolutionPath,
+            playData: buildSolutionExportPlayData()
+          })
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error((await solutionExportError(response)) || "Could not render solution.");
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const download = document.createElement("a");
+      download.href = objectUrl;
+      download.download = solutionExportFileName(response, format);
+      download.hidden = true;
+      document.body.append(download);
+      download.click();
+      download.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setStatus(`Downloaded play-mode solution ${format.toUpperCase()}.`, "success");
+    } catch (error) {
+      setStatus(
+        error instanceof Error ? error.message : `Could not render solution ${format.toUpperCase()}.`,
+        "error"
+      );
+    } finally {
+      state.solverExportFormat = null;
+      syncSolverDockControls();
+    }
   }
 
   async function playSolution() {
