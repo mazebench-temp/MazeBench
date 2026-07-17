@@ -5473,8 +5473,32 @@
       const predictedSupports = Array.isArray(pushContext?.predictedSupports)
         ? pushContext.predictedSupports
         : null;
+      // Cycle guard. Certain slope+ice geometries let a sliding cluster loop
+      // forever (ascend a slope, fall in behind it, slide forward again): the
+      // legacy engine hung in this loop growing path arrays without bound
+      // (observed as a multi-GB OOM inside a single move on level_AxE). If
+      // the cluster revisits a (position, direction) it has already been in
+      // during THIS slide, the slide ends there.
+      const seenSlideSignatures = new Set();
+      const anchorMember = members.length > 0 ? members[0] : -1;
 
       while (true) {
+        if (anchorMember !== -1) {
+          const signature =
+            (((state.actorElevation[anchorMember] + 4) * 128 + state.actorY[anchorMember] + 2) * 128 +
+              state.actorX[anchorMember] + 2) *
+              8 +
+            (stepDx + 1) * 2 +
+            (stepDy + 1) +
+            (reversedAfterSlopeBounce ? 40000000 : 0);
+
+          if (seenSlideSignatures.has(signature)) {
+            break;
+          }
+
+          seenSlideSignatures.add(signature);
+        }
+
         const attemptJournalMark = pushContext ? journalMark() : -1;
         const moveCount = moves.length;
         const allowIceSlopeTransit = weightlessClusterHasIceSlopeTransit(
@@ -8598,6 +8622,64 @@
       );
     }
 
+    // Owner rule (2026-07): exposed floor / ice / ice-block surfaces do not
+    // rail the world edge — a player standing on one of them at the boundary
+    // walks (or slides) off and falls out of the world. Other surfaces
+    // (devices, exits, actor tops) still act as a railing, and pushables are
+    // always railed. Per-level default policy comes from playData.edgeFalls
+    // ({left,right,up,down} or true for all); per-move options.edgeFalls
+    // overrides on.
+    const levelEdgeFalls = (() => {
+      const source = playData?.edgeFalls;
+
+      if (source === true) {
+        return { left: true, right: true, up: true, down: true };
+      }
+
+      return {
+        left: source?.left === true,
+        right: source?.right === true,
+        up: source?.up === true,
+        down: source?.down === true
+      };
+    })();
+
+    function edgeFallDirectionName(dx, dy) {
+      if (dx === 1) return "right";
+      if (dx === -1) return "left";
+      if (dy === 1) return "down";
+      return "up";
+    }
+    function playerEdgeFallSurfaceAt(state, x, y, elevation, gateState, orangeButtonsPressed) {
+      if (!isInsideBoard(x, y)) {
+        return false;
+      }
+
+      const cell = cellIndex(x, y);
+      const layers = terrainLayersForCell(state, cell);
+
+      for (let index = 0; index < layers.length; index += 1) {
+        const layer = layers[index];
+
+        if (
+          layer.type !== terrainTypes.floor &&
+          layer.type !== terrainTypes.ice &&
+          layer.type !== terrainTypes.ice_block
+        ) {
+          continue;
+        }
+
+        if (
+          terrainLayerSurfaceHeight(state, cell, layer, gateState, orangeButtonsPressed) ===
+          elevation
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     // FIX(SEMANTICS R5): unified endpoint sweep. Any live MAIN player that
     // actually moved this turn runs the same endpoint interactions the
     // walking branch runs — lift toggle on arrival and gem collection at the
@@ -8870,6 +8952,7 @@
         let stepDy = dy;
         let reversedAfterSlopeBounce = false;
         let levelExit = null;
+        let edgeFall = null;
         let stopAfterStartSlope = false;
 
         if (!continuePunchSlide && options.startOnCurrentSlope === true) {
@@ -9120,6 +9203,32 @@
               !canSlipOffIce &&
               !canAttemptInitialPush)
           ) {
+            // Owner rule (2026-07): a main player pressing (or sliding) into
+            // the board edge while standing on exposed floor/ice/ice-block
+            // falls off the world instead of bumping into an invisible rail.
+            // Policy, not mechanism, decides where: options.edgeFalls (the
+            // play layer enables it exactly where the world map has no
+            // neighboring room in that direction) or the level's own
+            // playData.edgeFalls annotation. Identical in play and search
+            // modes — the solver simulates the same world the player sees.
+            if (
+              !isInsideBoard(targetX, targetY) &&
+              (options.edgeFalls === true ||
+                levelEdgeFalls[edgeFallDirectionName(stepDx, stepDy)] === true) &&
+              canExitLevel &&
+              !continuePunchSlide &&
+              playerEdgeFallSurfaceAt(
+                state,
+                nextX,
+                nextY,
+                travelElevation,
+                raisedPlayerGates,
+                orangeButtonsPressed
+              )
+            ) {
+              edgeFall = { dx: stepDx, dy: stepDy };
+            }
+
             if (isInsideBoard(targetX, targetY)) {
               const bouncePath = blockedIceSlopeBouncePathForEntry(
                 state,
@@ -9433,7 +9542,7 @@
           }
         }
 
-        if (nextX !== fromX || nextY !== fromY || travelElevation !== fromElevation || levelExit) {
+        if (nextX !== fromX || nextY !== fromY || travelElevation !== fromElevation || levelExit || edgeFall) {
           jSetActorX(state, player, nextX);
           jSetActorY(state, player, nextY);
           let toElevation = fromElevation;
@@ -9578,9 +9687,20 @@
             moveRecord.iceSlipOff = true;
           }
 
+          if (edgeFall) {
+            // The player leaves the world: removed at the boundary cell (the
+            // state never holds out-of-board coordinates), with the fall
+            // direction recorded for the renderer.
+            moveRecord.toRemoved = true;
+            moveRecord.edgeFall = true;
+            moveRecord.edgeFallDx = edgeFall.dx;
+            moveRecord.edgeFallDy = edgeFall.dy;
+          }
+
           moves.push(moveRecord);
 
           if (
+            !edgeFall &&
             !isHole(state, nextX, nextY, toElevation)
           ) {
             collectGemsAtEndpoint(

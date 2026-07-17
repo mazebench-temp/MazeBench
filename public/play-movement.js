@@ -40,6 +40,19 @@
       });
     }
 
+    // Exposed edges are lethal for players wherever the world has no
+    // neighboring room in that direction — and everywhere in single-room
+    // play (adjacentWorldLevelId returns nothing for non-world level ids).
+    // Interior room boundaries keep their rail: legitimate crossings are
+    // claimed by the world-transition planner before the engine is asked.
+    function edgeFallsEnabledFor(dx, dy) {
+      if (typeof app.adjacentWorldLevelId !== "function" || !app.currentLevelId) {
+        return true;
+      }
+
+      return !app.adjacentWorldLevelId(app.currentLevelId, dx, dy);
+    }
+
     function moveFromEngineRecord(record) {
       const actor = state.actors[record.actorIndex];
 
@@ -315,7 +328,8 @@
       const raisedOrangeWalls = computeRaisedOrangeWallSet();
       const moveResult = engine.move(engineState, dx, dy, {
         continuePunchSlide: options.continuePunchSlide === true,
-        startOnCurrentSlope: options.startOnCurrentSlope === true
+        startOnCurrentSlope: options.startOnCurrentSlope === true,
+        edgeFalls: edgeFallsEnabledFor(dx, dy)
       });
       const moves = moveResult.moves.map(moveFromEngineRecord).filter(Boolean);
       // Snapshots are only taken once we know the move actually goes
@@ -411,7 +425,8 @@
       const engineState = engine.cloneState(engine.initialState);
       const moveResult = engine.move(engineState, dx, dy, {
         continuePunchSlide: options.continuePunchSlide === true,
-        startOnCurrentSlope: options.startOnCurrentSlope === true
+        startOnCurrentSlope: options.startOnCurrentSlope === true,
+        edgeFalls: edgeFallsEnabledFor(dx, dy)
       });
       const moves = moveResult.moves.map(moveFromEngineRecord).filter(Boolean);
 

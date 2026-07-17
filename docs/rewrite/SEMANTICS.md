@@ -156,3 +156,28 @@ Scope decisions forced by pinned behavior (differs from the draft verdicts above
 4. **Punch gate/wall traversal uses move-start device state uniformly** (R1) — a gate lowered at
    move start stays traversable for that punch regardless of distance. Outcomes are consistent;
    they no longer depend on where the punch started.
+
+## Addendum 2026-07-16 (post-acceptance changes)
+
+**Cluster slide cycle guard.** Certain slope+ice geometries let a sliding weightless
+cluster loop forever (ascend a slope, fall in behind it, slide forward again). The legacy
+engine hung in moveWeightlessCluster growing path arrays without bound — observed as a
+multi-GB OOM inside a single move on level_AxE, and the reason both solve-sweeps died.
+The slide now ends when the cluster revisits a (position, direction, bounce-state) it has
+already held within the same slide.
+
+**Edge falls (owner rule).** A MAIN player pressing or sliding into the board edge while
+standing on exposed floor / ice / ice-block FALLS OFF THE WORLD (removed at the boundary
+cell; record carries edgeFall/edgeFallDx/edgeFallDy). Pushables and clones remain railed.
+Policy, not mechanism, decides where it applies:
+- per-move: engine option `options.edgeFalls === true`
+- per-level: `playData.edgeFalls` (true, or {left,right,up,down})
+- default: OFF (legacy rail) — so solver/search behavior only changes for annotated levels,
+  and search/play parity is preserved (moveForSearch does NOT force it on).
+Browser wiring (play-movement.js): enabled per direction exactly where
+`app.adjacentWorldLevelId(currentLevelId, dx, dy)` has no neighboring room — i.e. true
+world edges and all single-room sessions. Interior room boundaries keep the rail; the
+world-transition planner claims legitimate crossings before the engine is consulted
+(verified live: corridor transitions still work).
+Follow-ups if desired: annotate world bundles with per-room edgeFalls so world-solver and
+agent runs model outer-edge falls too; toolbox demo rooms are unaffected (no annotation).

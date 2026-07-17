@@ -1770,9 +1770,24 @@ asyncTests.push(
   const app = createGameplayApp(createUShapeActors([blocker]));
   const result = app.tryMovePlayersInstant(-1, 0);
 
-  assert.equal(result.moved, false);
-  assert.equal(result.moves.length, 0);
+  // Edge-fall rule (2026-07): in single-room play the circle player at the
+  // left boundary, standing on exposed floor, walks off the world and is
+  // removed — it no longer bumps an invisible rail. It still occupies its
+  // cell for the duration of the move, so the U-shape push stays blocked and
+  // the main player does not advance.
+  assert.equal(result.moved, true);
+  const blockerMove = result.moves.find((move) => move.actor.type === "circle_player");
+  assert.equal(blockerMove.edgeFall, true);
+  assert.equal(blockerMove.toRemoved, true);
+  assert.equal(
+    app.state.actors.find((actor) => actor.type === "circle_player").removed,
+    true
+  );
   assert.deepEqual([app.state.actors[0].x, app.state.actors[0].y], [2, 0]);
+  assert.equal(
+    result.moves.some((move) => move.actor.type === "weightless_box"),
+    false
+  );
 }
 
 {

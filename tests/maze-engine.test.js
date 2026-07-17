@@ -4253,3 +4253,81 @@ function createState(playData) {
 }
 
 console.log("maze-engine tests passed");
+
+// Owner rule (2026-07): exposed floor/ice/ice-block surfaces do not rail the
+// board edge for MAIN PLAYERS when edge falls are enabled (options.edgeFalls
+// per move, or playData.edgeFalls per level). Pushables are always railed,
+// and the default stays railed for compatibility.
+{
+  const { engine, state } = createState({
+    width: 2,
+    height: 1,
+    terrain: floorTerrain(2, 1),
+    actors: [{ type: "player", x: 1, y: 0, removed: false }]
+  });
+
+  const blocked = engine.move(engine.cloneState(state), 1, 0);
+  assert.equal(blocked.moved, false);
+
+  const result = engine.move(state, 1, 0, { edgeFalls: true });
+  assert.equal(result.moved, true);
+  assert.equal(state.actorRemoved[0], 1);
+  const playerMove = result.moves.find((move) => move.actorIndex === 0);
+  assert.equal(playerMove.edgeFall, true);
+  assert.equal(playerMove.toRemoved, true);
+  assert.deepEqual([playerMove.toX, playerMove.toY], [1, 0]);
+  assert.equal(playerMove.edgeFallDx, 1);
+}
+
+{
+  // Ice carries the slide off the edge.
+  const { engine, state } = createState({
+    width: 3,
+    height: 1,
+    terrain: [[{ type: "floor" }, iceFloorLayer(0), iceFloorLayer(0)]],
+    actors: [{ type: "player", x: 0, y: 0, removed: false }]
+  });
+
+  const result = engine.move(state, 1, 0, { edgeFalls: true });
+  assert.equal(result.moved, true);
+  assert.equal(state.actorRemoved[0], 1);
+}
+
+{
+  // Boxes stay railed at the edge even with edge falls enabled.
+  const { engine, state } = createState({
+    width: 2,
+    height: 1,
+    terrain: floorTerrain(2, 1),
+    actors: [
+      { type: "player", x: 0, y: 0, removed: false },
+      { type: "box", x: 1, y: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0, { edgeFalls: true });
+  assert.equal(result.moved, false);
+  assert.equal(state.actorRemoved[1], 0);
+}
+
+{
+  // playData.edgeFalls annotation drives both modes identically, and the
+  // journal undo restores the fall exactly.
+  const engine = createEngine({
+    width: 2,
+    height: 1,
+    terrain: floorTerrain(2, 1),
+    actors: [{ type: "player", x: 1, y: 0, removed: false }],
+    edgeFalls: true
+  });
+  const state = engine.cloneState(engine.initialState);
+  const keyBefore = engine.stateKey(state);
+  const result = engine.moveForSearch(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.equal(state.actorRemoved[0], 1);
+
+  engine.undoMove(state, result);
+  assert.equal(engine.stateKey(state), keyBefore);
+  assert.equal(state.actorRemoved[0], 0);
+}
