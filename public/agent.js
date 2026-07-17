@@ -968,8 +968,10 @@
   }
 
   function reasoningOptions() {
-    if (state.execution === "prime") return ["low", "medium", "high"];
     const model = selectedModel();
+    if (state.execution === "prime") {
+      return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
+    }
     if (state.harness === "claude-code") {
       return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
     }

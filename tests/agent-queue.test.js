@@ -125,6 +125,8 @@ try {
   assert.equal(livePrimeMeta.allow_quit, false);
   assert.doesNotMatch(livePrimeMeta.command, /--hosted/);
   assert.match(livePrimeMeta.command, /--model Qwen\/Qwen3\.5-0\.8B/);
+  assert.doesNotMatch(livePrimeMeta.command, /--reasoning/);
+  assert.equal(livePrimeMeta.reasoning, "");
   assert.match(livePrimeMeta.note, /every model turn/);
   const livePrimeRunDir = path.join(rootDir, "outputs", "maze-local", "site", livePrime.id);
   fs.writeFileSync(
@@ -153,6 +155,22 @@ try {
   assert.equal(livePrimeProgress.run.inference.action, 2);
   assert.equal(service.stopRun(livePrime.id).status, "stopped");
   service.deleteRun(livePrime.id);
+
+  const [specialEffortPrime] = service.launchRuns({
+    kind: "prime",
+    model_name: "openai/gpt-5.6-sol",
+    max_turns: 2,
+    reasoning: "ultra",
+    video: false
+  });
+  launchedIds.push(specialEffortPrime.id);
+  const specialEffortMeta = loadJson(
+    path.join(rootDir, "outputs", "maze-local", "site", specialEffortPrime.id, "run.json")
+  );
+  assert.equal(specialEffortMeta.reasoning, "ultra");
+  assert.match(specialEffortMeta.command, /--reasoning ultra/);
+  assert.equal(service.stopRun(specialEffortPrime.id).status, "stopped");
+  service.deleteRun(specialEffortPrime.id);
 
   const [autoQuitPrime] = service.launchRuns({
     kind: "prime",
