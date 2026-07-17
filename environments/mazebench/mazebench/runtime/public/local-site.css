@@ -4345,25 +4345,52 @@ html.has-run-world-map {
   }
 }
 
-/* ---- replay progress bar ---- */
+/* ---- bottom replay export ---- */
 
-.run-replay__head {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  margin-bottom: 12px;
+.run-replay-export__head {
+  align-items: flex-start;
 }
 
-.run-replay__head h2 {
-  margin: 0;
+.run-replay-export__head p {
+  font-size: 10px;
+  margin: 5px 0 0;
+}
+
+.run-replay-export__actions {
+  margin-left: auto;
+}
+
+.run-replay-export__button,
+.run-replay-export__cancel {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.run-replay-export__cancel {
+  background: rgba(255, 95, 109, 0.08);
+  border-color: rgba(255, 95, 109, 0.42);
+  color: #ff8d99;
+}
+
+.run-replay-export__cancel:hover:not(:disabled) {
+  background: rgba(255, 95, 109, 0.15);
+  border-color: rgba(255, 95, 109, 0.68);
 }
 
 .run-replay-progress-panel {
+  background: rgba(3, 6, 16, 0.68);
+  border: 1px solid rgba(124, 143, 255, 0.2);
+  border-radius: 12px;
   display: grid;
   gap: 10px;
-  margin-bottom: 18px;
-  padding: 14px 18px;
+  margin-top: 16px;
+  padding: 14px 16px;
+}
+
+.run-replay-progress-panel[hidden] {
+  display: none;
 }
 
 .run-replay-progress-panel__copy {
@@ -4425,11 +4452,25 @@ html.has-run-world-map {
   width: 0;
 }
 
+.run-replay-media {
+  display: grid;
+  margin-top: 18px;
+  place-items: center;
+}
+
+.run-replay-media[hidden] {
+  display: none;
+}
+
 .run-video {
-  border-radius: 9px;
+  background: #02040b;
+  border: 1px solid rgba(124, 143, 255, 0.24);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
   display: block;
-  max-width: 100%;
-  width: 100%;
+  max-height: min(62vh, 540px);
+  object-fit: contain;
+  width: min(100%, 760px);
 }
 
 /* ---- Agent page: run composer ---- */
