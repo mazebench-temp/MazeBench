@@ -5043,6 +5043,7 @@ html.has-run-world-map {
 
 /* Animated settings deck */
 .settings-deck {
+  align-items: start;
   display: grid;
   gap: 12px;
   grid-template-columns: 1.15fr 1.15fr 0.8fr;
