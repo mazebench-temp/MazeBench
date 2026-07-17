@@ -1254,7 +1254,7 @@ body.play-body {
 .flyover-loading.is-hidden { opacity: 0; }
 
 .flyover-loading__spinner {
-  animation: docker-spin 0.85s linear infinite;
+  animation: loading-spin 0.85s linear infinite;
   border: 5px solid rgba(84, 240, 255, 0.12);
   border-radius: 50%;
   border-right-color: rgba(124, 143, 255, 0.78);
@@ -2126,7 +2126,7 @@ body.play-body {
 }
 
 .inline-spinner {
-  animation: docker-spin 0.85s linear infinite;
+  animation: loading-spin 0.85s linear infinite;
   border: 5px solid rgba(52, 231, 240, 0.12);
   border-radius: 50%;
   border-right-color: rgba(124, 143, 255, 0.76);
@@ -2136,6 +2136,12 @@ body.play-body {
   flex-shrink: 0;
   height: 66px;
   width: 66px;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .models-loading__label {

@@ -69,7 +69,7 @@ function enrichedPathEnv() {
 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
 const PRIME_HARNESSES = new Map([
-  ["none", { id: "none", label: "None", taskset: "mazebench", protocol: "Prime model API" }],
+  ["none", { id: "none", label: "Prime Intellect", taskset: "mazebench", protocol: "Prime model API" }],
   ["codex", { id: "codex", label: "Codex", taskset: "mazebench-agent", protocol: "OpenAI Responses" }],
   ["claude-code", { id: "claude-code", label: "Claude Code", taskset: "mazebench-agent", protocol: "Anthropic Messages" }]
 ]);

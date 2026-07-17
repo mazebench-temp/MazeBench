@@ -33,8 +33,8 @@ try {
   const pagesSource = fs.readFileSync(path.join(root, "server", "pages.js"), "utf8");
   const siteTheme = fs.readFileSync(path.join(root, "public", "local-site.css"), "utf8");
 
-  assert.match(agentSource, /id: "none",\s*name: "None"/);
-  assert.match(agentSource, /<circle cx=\"24\" cy=\"24\" r=\"17\.5\"><\/circle><path d=\"M12\.5 35\.5 35\.5 12\.5\"><\/path>/);
+  assert.match(agentSource, /id: "none",\s*name: "Prime Intellect",\s*logo: '<img src="\/logos\/prime\.png"/);
+  assert.doesNotMatch(agentSource, /<circle cx=\"24\" cy=\"24\" r=\"17\.5\"><\/circle><path d=\"M12\.5 35\.5 35\.5 12\.5\"><\/path>/);
   assert.match(agentSource, /id: "codex",\s*name: "Codex"/);
   assert.match(agentSource, /id: "claude-code",\s*name: "Claude Code"/);
   assert.match(agentSource, /harness: state\.harness/);
@@ -91,6 +91,8 @@ try {
   assert.match(tasksetSource, /extra_instructions: str = ""/);
   assert.match(tasksetSource, /`view_image` in\s+Codex; `Read` in Claude Code/);
   assert.match(tasksetSource, /playwright-core@\{PLAYWRIGHT_CORE_VERSION\}/);
+  assert.doesNotMatch(tasksetSource, /node \{HELPER\} scorecard/);
+  assert.match(tasksetSource, /Scoring is evaluator-only/);
 
   assert.equal(primeHarnessModelCompatible("openai/gpt-5-codex", "codex"), true);
   assert.equal(primeHarnessModelCompatible("openai/gpt-4.1", "codex"), true);
@@ -183,6 +185,10 @@ try {
     { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
   );
   assert.equal(start.status, 0, start.stderr);
+  const startStatus = JSON.parse(start.stdout);
+  assert.equal(Object.prototype.hasOwnProperty.call(startStatus, "player"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(startStatus, "scorecard"), false);
+  assert.match(startStatus.level, /P|p/);
 
   const action = spawnSync(
     process.execPath,
@@ -196,6 +202,9 @@ try {
   assert.equal(event.turn, 1);
   assert.equal(event.command_text, "up");
   assert.equal(event.valid, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(event.status, "player"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(event.status, "scorecard"), false);
+  assert.equal(fs.existsSync(path.join(runDir, "current-render-state.json")), false);
   const traced = agenticConversationTurns({
     nodes: [
       { message: { role: "assistant", content: "", reasoning_content: "reasoned move" } },

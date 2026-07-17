@@ -14,8 +14,8 @@
   const HARNESSES = [
     {
       id: "none",
-      name: "None",
-      logo: '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="24" cy="24" r="17.5"></circle><path d="M12.5 35.5 35.5 12.5"></path></svg>'
+      name: "Prime Intellect",
+      logo: '<img src="/logos/prime.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     },
     {
       id: "codex",
@@ -1386,7 +1386,9 @@
     const modelName = run.model_name || run.model;
     const harnessName = HARNESSES.find((harness) => harness.id === (run.harness || "none"))?.name || run.harness;
     const providerName = run.provider === "prime"
-      ? `${harnessName || "None"} via Prime`
+      ? (run.harness || "none") === "none"
+        ? "Prime Intellect"
+        : `${harnessName || "Prime Intellect"} via Prime`
       : ({ codex: "Codex", claude: "Claude Code" }[run.provider || run.model] || run.model);
     const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
     const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;

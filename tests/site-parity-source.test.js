@@ -13,6 +13,7 @@ const playCore = fs.readFileSync(path.join(root, "public", "play-core.js"), "utf
 const playRenderer = fs.readFileSync(path.join(root, "public", "play-render-three.js"), "utf8");
 const playScript = fs.readFileSync(path.join(root, "public", "play.js"), "utf8");
 const playTheme = fs.readFileSync(path.join(root, "public", "play-theme.css"), "utf8");
+const siteTheme = fs.readFileSync(path.join(root, "public", "local-site.css"), "utf8");
 const replayExporter = fs.readFileSync(path.join(root, "scripts", "maze-export-replay.js"), "utf8");
 const favicon = fs.readFileSync(path.join(root, "public", "favicon.svg"), "utf8");
 const router = fs.readFileSync(path.join(root, "server", "router.js"), "utf8");
@@ -56,13 +57,15 @@ assert.match(
   pages,
   /id="train-model-loading" class="models-loading" role="status" aria-live="polite"><span class="inline-spinner" aria-hidden="true"><\/span><span class="models-loading__label">Loading models<\/span>/
 );
+assert.match(siteTheme, /\.inline-spinner \{[\s\S]*?animation: loading-spin 0\.85s linear infinite/);
+assert.match(siteTheme, /@keyframes loading-spin \{[\s\S]*?transform: rotate\(360deg\)/);
 assert.match(pages, /rel="preload" as="image" href="\/logos\/codex\.png"[^>]*fetchpriority="high"/);
 assert.match(pages, /rel="preload" as="image" href="\/logos\/claude\.png"[^>]*fetchpriority="high"/);
 assert.match(pages, /rel="preload" as="image" href="\/logos\/prime\.png"[^>]*fetchpriority="high"/);
 assert.doesNotMatch(agentScript, /logos\/(?:codex|claude|prime)\.png" alt="" loading="lazy"/);
-assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 2);
+assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 3);
 assert.match(agentScript, /const HARNESSES = \[/);
-assert.match(agentScript, /id: "none",\s*name: "None"/);
+assert.match(agentScript, /id: "none",\s*name: "Prime Intellect",\s*logo: '<img src="\/logos\/prime\.png"/);
 assert.match(agentScript, /id: "codex",\s*name: "Codex"/);
 assert.match(agentScript, /id: "claude-code",\s*name: "Claude Code"/);
 assert.match(agentScript, /kind: "prime",\s*harness: state\.harness/);

@@ -96,10 +96,29 @@ This is a visual-only rollout. The start command and every action response inclu
 an absolute `frame_image` PNG path. Before choosing the first action, and again after
 every action, inspect that exact PNG with your built-in image tool (`view_image` in
 Codex; `Read` in Claude Code). Do not infer the board from filenames or telemetry.
+Do not inspect session artifacts, renderer state, runtime source, or level files to
+reconstruct the board; the PNG is the only permitted board observation.
 If an image cannot be inspected, stop and report the visual-observation failure.
 """
         if data.observation_mode == "vision"
         else ""
+    )
+    action_policy = (
+        f"""Then inspect the observation and play up to {data.max_actions} maze actions. Run one
+shell command per action:"""
+        if data.allow_quit
+        else f"""Then inspect the observation and take exactly {data.max_actions} maze actions unless
+the game is won earlier. Run one shell command per action:"""
+    )
+    termination_policy = (
+        """Stop early if the game is won, the player dies, or no useful move remains."""
+        if data.allow_quit
+        else f"""QUIT IS DISABLED. The {data.max_actions}-action budget is a required action count,
+not an optional maximum. Do not stop because no useful move remains, the player dies,
+or you would prefer to report the score. If the player dies, recover with an available
+action such as undo or reset and continue. Blocked moves and other accepted helper
+actions count toward the budget. Do not finish while the game is not won and fewer
+than {data.max_actions} actions have been accepted."""
     )
     return f"""Play MazeBench using shell commands. The task runtime is already installed.
 
@@ -109,8 +128,7 @@ Run this exact command first:
 {start_command}
 ```
 
-Then inspect the observation and play up to {data.max_actions} maze actions. Run one
-shell command per action:
+{action_policy}
 
 ```bash
 node {HELPER} action --state {SESSION_FILE} up
@@ -123,19 +141,13 @@ node {HELPER} action --state {SESSION_FILE} reset
 node {HELPER} action --state {SESSION_FILE} go to level H I
 ```
 
-Goal: collect {data.target_gems} gems and explore as many rooms as possible. Stop early
-if the game is won, the player dies, or no useful move remains. The helper enforces the
-action budget. Lines beginning with `{TELEMETRY_PREFIX}` are telemetry; do not interpret
-or copy them.{vision}{extra}
+Goal: collect {data.target_gems} gems and explore as many rooms as possible.
+{termination_policy} The helper enforces the action budget. Lines beginning with
+`{TELEMETRY_PREFIX}` are telemetry; do not interpret or copy them.{vision}{extra}
 
-Before finishing, always run:
-
-```bash
-node {HELPER} scorecard --state {SESSION_FILE}
-```
-
-Finish with a short summary of the route and gems collected. Do not edit the runtime or
-session artifacts directly.
+Scoring is evaluator-only. Do not attempt to access a scorecard. When the game is won or
+the action budget is exhausted, finish with a short summary of the route and gems
+collected. Do not edit the runtime or session artifacts directly.
 """
 
 
@@ -250,8 +262,8 @@ class MazeBenchAgentTask(vf.Task[MazeBenchAgentData]):
         session = await _read_json(runtime, SESSION_FILE, {})
         if session:
             await runtime.run(
-                ["node", HELPER, "scorecard", "--state", SESSION_FILE],
-                {},
+                ["node", HELPER, "finalize", "--state", SESSION_FILE],
+                {"MAZEBENCH_TRUSTED_FINALIZE": "1"},
             )
             session = await _read_json(runtime, SESSION_FILE, session)
         scorecard = await _read_json(runtime, f"{ARTIFACT_ROOT}/scorecard.json", {})
