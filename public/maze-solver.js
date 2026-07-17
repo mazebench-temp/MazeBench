@@ -233,25 +233,166 @@
         ? 0
         : 1;
     const useSearchReward = algorithm === "weighted_astar";
+    // 'astar' uses the engine's ADMISSIBLE heuristic (optimal move counts —
+    // the legacy distance heuristic overestimated across ice slides, so its
+    // "minimum moves" were wrong on ice levels). 'weighted_astar' keeps the
+    // stronger inadmissible distance heuristic: the fast, explicitly
+    // non-optimal mode.
+    const heuristicFn =
+      algorithm === "weighted_astar" && typeof engine.heuristicDistance === "function"
+        ? engine.heuristicDistance
+        : engine.heuristic;
     const open = new SolverHeap();
     const bestCostByKey = new Map();
-    const statePool = new SolverStatePool(engine);
     const nodePool = new SolverNodePool();
     const reportProgressFn =
       typeof options.onProgress === "function" ? options.onProgress : null;
     let order = 0;
     let expanded = 0;
-    const initialState = statePool.acquire(engine.initialState);
-    const initialKey = engine.stateKey(initialState);
+
+    // Compact node states: one live working buffer + per-node snapshots of
+    // the actor arrays plus terrain/lift DIFFS versus the initial state.
+    // The legacy pool kept a full state buffer (incl. whole terrain and lift
+    // arrays) alive per open node — hundreds of MB on large searches, and a
+    // full-buffer memcpy per pushed child. Snapshots are ~10-30x smaller and
+    // restore in O(actors + diffs).
+    const initialState = engine.initialState;
+    const live = engine.cloneState(initialState);
+    const snapArrayPool = [];
+    let liveTerrainDiffs = null;
+    let liveLiftDiffs = null;
+
+    function acquireSnapArrays() {
+      return (
+        snapArrayPool.pop() || {
+          ax: new Int16Array(live.actorX.length),
+          ay: new Int16Array(live.actorY.length),
+          ae: new Int16Array(live.actorElevation.length),
+          ar: new Uint8Array(live.actorRemoved.length)
+        }
+      );
+    }
+
+    function makeSnap(state, parentSnap, moveResult) {
+      const arrays = acquireSnapArrays();
+
+      arrays.ax.set(state.actorX);
+      arrays.ay.set(state.actorY);
+      arrays.ae.set(state.actorElevation);
+      arrays.ar.set(state.actorRemoved);
+
+      // Terrain/lift diffs derive from the parent's diffs plus this move's
+      // recorded deltas (hole fills and lift toggles are the only cell
+      // mutations in the game) — no O(cellCount) scans.
+      let terrainDiffs = parentSnap ? parentSnap.terrainDiffs : null;
+      let liftDiffs = parentSnap ? parentSnap.liftDiffs : null;
+
+      if (moveResult) {
+        let addedTerrain = null;
+
+        if (Array.isArray(moveResult.moves)) {
+          for (const move of moveResult.moves) {
+            if (
+              move.fillsHole &&
+              typeof move.fillHoleX === "number" &&
+              typeof move.fillHoleY === "number"
+            ) {
+              (addedTerrain ||= []).push(engine.cellIndex(move.fillHoleX, move.fillHoleY));
+            }
+          }
+        }
+
+        if (addedTerrain) {
+          terrainDiffs = (terrainDiffs || []).concat(addedTerrain);
+        }
+
+        if (Array.isArray(moveResult.liftToggles) && moveResult.liftToggles.length > 0) {
+          const merged = liftDiffs ? liftDiffs.slice() : [];
+
+          for (const toggle of moveResult.liftToggles) {
+            const cell = engine.cellIndex(toggle.x, toggle.y);
+            const existing = merged.indexOf(cell);
+
+            if (existing === -1) {
+              merged.push(cell);
+            } else {
+              merged.splice(existing, 1); // toggled back to initial
+            }
+          }
+
+          liftDiffs = merged.length > 0 ? merged : null;
+        }
+      }
+
+      return {
+        ax: arrays.ax,
+        ay: arrays.ay,
+        ae: arrays.ae,
+        ar: arrays.ar,
+        terrainDiffs,
+        liftDiffs,
+        hashLo: state.hashLo | 0,
+        hashHi: state.hashHi | 0,
+        hashValid: state.hashValid === true
+      };
+    }
+
+    function releaseSnap(snap) {
+      if (snap) {
+        snapArrayPool.push({ ax: snap.ax, ay: snap.ay, ae: snap.ae, ar: snap.ar });
+      }
+    }
+
+    function restoreLive(snap) {
+      // Revert cells the live buffer currently has diverged, then apply the
+      // snapshot's divergences. Terrain diffs are always hole fills (floor).
+      if (liveTerrainDiffs) {
+        for (const cell of liveTerrainDiffs) {
+          live.terrain[cell] = initialState.terrain[cell];
+        }
+      }
+
+      if (snap.terrainDiffs) {
+        for (const cell of snap.terrainDiffs) {
+          live.terrain[cell] = 1; // terrainTypes.floor — the only fill value
+        }
+      }
+
+      liveTerrainDiffs = snap.terrainDiffs;
+
+      if (liveLiftDiffs) {
+        for (const cell of liveLiftDiffs) {
+          live.liftRaised[cell] = initialState.liftRaised[cell];
+        }
+      }
+
+      if (snap.liftDiffs) {
+        for (const cell of snap.liftDiffs) {
+          live.liftRaised[cell] = initialState.liftRaised[cell] ? 0 : 1;
+        }
+      }
+
+      liveLiftDiffs = snap.liftDiffs;
+
+      live.actorX.set(snap.ax);
+      live.actorY.set(snap.ay);
+      live.actorElevation.set(snap.ae);
+      live.actorRemoved.set(snap.ar);
+      live.hashLo = snap.hashLo;
+      live.hashHi = snap.hashHi;
+      live.hashValid = snap.hashValid;
+    }
+
+    const initialKey = engine.stateKey(live);
 
     bestCostByKey.set(initialKey, 0);
     open.push(nodePool.acquire({
-      state: initialState,
+      state: makeSnap(live, null, null),
       key: initialKey,
       cost: 0,
       searchReward: 0,
       path: "",
-      priority: heuristicWeight * engine.heuristic(initialState),
+      priority: heuristicWeight * heuristicFn(live),
       order: order
     }));
     order += 1;
@@ -263,12 +404,14 @@
       const current = open.pop();
 
       if (current.cost !== bestCostByKey.get(current.key)) {
-        statePool.release(current.state);
+        releaseSnap(current.state);
         nodePool.release(current);
         continue;
       }
 
-      if (engine.isSolved(current.state)) {
+      restoreLive(current.state);
+
+      if (engine.isSolved(live)) {
         await reportProgress(reportProgressFn, expanded, maxExpandedStates, open.size, true);
 
         return {
@@ -298,7 +441,7 @@
       for (const direction of directions) {
         throwIfSolverAborted(options.signal);
         const moveResult = engine.moveForSearch(
-          current.state,
+          live,
           direction.dx,
           direction.dy
         );
@@ -313,32 +456,30 @@
             ? current.searchReward +
               solverNonPlayerMoveReward(engine, moveResult, nonPlayerMoveRewardCap)
             : 0;
-        const nextKey = engine.stateKey(current.state);
+        const nextKey = engine.stateKey(live);
         const bestKnownCost = bestCostByKey.get(nextKey);
 
         if (typeof bestKnownCost === "number" && bestKnownCost <= nextCost) {
-          engine.undoMove(current.state, moveResult);
+          engine.undoMove(live, moveResult);
           continue;
         }
 
-        const nextState = statePool.acquire(current.state);
-
         bestCostByKey.set(nextKey, nextCost);
         open.push(nodePool.acquire({
-          state: nextState,
+          state: makeSnap(live, current.state, moveResult),
           key: nextKey,
           cost: nextCost,
           searchReward: nextSearchReward,
           path: current.path + direction.label,
-          priority: nextCost + heuristicWeight * engine.heuristic(nextState) - nextSearchReward,
+          priority: nextCost + heuristicWeight * heuristicFn(live) - nextSearchReward,
           order
         }));
         order += 1;
 
-        engine.undoMove(current.state, moveResult);
+        engine.undoMove(live, moveResult);
       }
 
-      statePool.release(current.state);
+      releaseSnap(current.state);
       nodePool.release(current);
     }
 

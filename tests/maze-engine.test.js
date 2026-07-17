@@ -1006,7 +1006,12 @@ function createState(playData) {
 
   const result = engine.move(state, 1, 0);
 
-  assert.equal(result.moved, true);
+  // MazeCore rewrite (SEMANTICS.md): a pure visual bounce changes no state,
+  // so moved is false in BOTH modes — legacy returned moved:true in play
+  // mode only, making agents score no-op inputs as successful moves and
+  // desynchronizing the solver's move graph from play mode. The visualOnly
+  // record is still emitted for the bounce animation.
+  assert.equal(result.moved, false);
   assert.deepEqual([state.actorX[0], state.actorY[0]], [0, 0]);
   assert.equal(state.actorElevation[0], 0);
   assert.equal(result.moves[0].visualOnly, true);

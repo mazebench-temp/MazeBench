@@ -28,9 +28,14 @@
   };
   const ICE_SLOPE_VISUAL_CLEARANCE = 0.08;
   const STATE_ELEVATION_KEY_OFFSET = 1024;
+  // FIX(SEMANTICS §elevation): exit included — it has floor-identical surface
+  // semantics everywhere else in the engine. Legacy omitted it, letting a
+  // weightless box pushed into a raised exit's flank sink to elevation -1 and
+  // be silently destroyed.
   const terrainSideBlockingSupportTypes = new Set([
     terrainTypes.floor,
-    terrainTypes.ice
+    terrainTypes.ice,
+    terrainTypes.exit
   ]);
 
   function actorType(actor) {
@@ -154,6 +159,7 @@
     const width = Math.max(1, Number(playData?.width) || 1);
     const height = Math.max(1, Number(playData?.height) || 1);
     const cellCount = width * height;
+    const loadWarnings = [];
     const sourceTerrain = Array.isArray(playData?.terrain) ? playData.terrain : [];
     const baseTerrain = new Uint8Array(cellCount);
     const baseLiftRaised = new Uint8Array(cellCount);
@@ -198,6 +204,24 @@
         baseTerrain[index] = terrainType;
         terrainLayers[index] = normalizedTerrainLayers(cell, terrainType);
 
+        // FIX(SEMANTICS §devices): stacked player lifts share one raised bit
+        // per cell in the state contract, so multiple lift layers in a cell
+        // are physically unrepresentable — stepping on "l+l" soft-locked the
+        // game. Keep only the lowest lift layer and warn the author.
+        const liftLayerList = terrainLayers[index].filter(
+          (layer) => layer.type === terrainTypes.player_lift
+        );
+
+        if (liftLayerList.length > 1) {
+          const keepLift = liftLayerList[0];
+          terrainLayers[index] = terrainLayers[index].filter(
+            (layer) => layer.type !== terrainTypes.player_lift || layer === keepLift
+          );
+          loadWarnings.push(
+            `cell (${x},${y}): stacked player lifts normalized to the single lift at elevation ${keepLift.elevation}`
+          );
+        }
+
         if (
           terrainType === terrainTypes.player_lift && cell.raised === true ||
           terrainLayers[index].some(
@@ -227,6 +251,51 @@
 
     initializeWeightlessRelativeElevations();
 
+    // Compile-time probe: does any cell contain a hole layer or a bare void
+    // at ground level (nothing standable or blocking at elevation 0)? Used
+    // to gate the dynamic sink/removal logic. Conservative: hole fills only
+    // ever ADD floor, so the base-terrain answer stays safe after fills.
+    let levelHasVoidOrHoleCells = false;
+
+    {
+      const probeState = { terrain: baseTerrain, liftRaised: baseLiftRaised };
+
+      for (let cell = 0; cell < cellCount; cell += 1) {
+        const x = cellX(cell);
+        const y = cellY(cell);
+
+        if (
+          terrainLayers[cell].some((layer) => layer.type === terrainTypes.hole) ||
+          isEmptyVoidAtElevation(probeState, x, y, 0)
+        ) {
+          levelHasVoidOrHoleCells = true;
+          break;
+        }
+      }
+    }
+
+    // Capability probe for the admissible heuristic: on a level where no
+    // mechanic can move a player more than one cell per input (no ice, no
+    // ice blocks, no slopes, no punchers), plain Manhattan distance is
+    // admissible and much stronger guidance than the axis-count bound.
+    let levelHasLongPlayerMoves = actorTypes.some((type) => type === "puncher");
+
+    if (!levelHasLongPlayerMoves) {
+      for (let cell = 0; cell < cellCount; cell += 1) {
+        if (
+          terrainLayers[cell].some(
+            (layer) =>
+              layer.type === terrainTypes.ice ||
+              layer.type === terrainTypes.ice_block ||
+              layer.type === terrainTypes.ice_slope
+          )
+        ) {
+          levelHasLongPlayerMoves = true;
+          break;
+        }
+      }
+    }
+
     function cellIndex(x, y) {
       return y * width + x;
     }
@@ -241,6 +310,127 @@
 
     function isInsideBoard(x, y) {
       return x >= 0 && x < width && y >= 0 && y < height;
+    }
+
+    // ------------------------------------------------------------------
+    // Load-time validation (FIX, SEMANTICS §load): the editor always writes
+    // explicit elevations, which used to disable every safety snap — actors
+    // authored floating in mid-air were permanently frozen, and actors
+    // authored on holes obeyed different physics than actors pushed onto
+    // them. Each normalization is recorded in engine.loadWarnings so the
+    // editor can surface it. Gems are exempt: gems float (owner decision).
+    // Weightless groups are exempt: their group settle runs separately.
+    // ------------------------------------------------------------------
+    function applyLoadNormalization(state, gateState, orangeButtonsPressed) {
+      for (let index = 0; index < actorCount; index += 1) {
+        if (state.actorRemoved[index]) {
+          continue;
+        }
+
+        const typeName = actorTypes[index];
+        const x = state.actorX[index];
+        const y = state.actorY[index];
+
+        if (!isInsideBoard(x, y)) {
+          state.actorRemoved[index] = 1;
+          loadWarnings.push(
+            `actor ${index} (${typeName}) at (${x},${y}) is outside the board — removed`
+          );
+          continue;
+        }
+
+        // Normalization applies only to solid gravity-bound singles (box,
+        // floating_floor). Gems float (owner decision); weightless boxes and
+        // clones keep authored group formations (their group-settle passes
+        // own their elevations); punchers and buttons are fixtures legally
+        // authorable anywhere (including over holes); players are never
+        // moved — cross-room punch continuations legitimately rebuild them
+        // mid-flight at unsupported elevations.
+        if (typeName !== "box" && typeName !== "floating_floor") {
+          if (
+            isPlayerType(typeName) &&
+            !isCloneType(typeName) &&
+            actorElevation(state, index) > 0 &&
+            !surfaceSupportsElevation(
+              state,
+              x,
+              y,
+              actorElevation(state, index),
+              gateState,
+              orangeButtonsPressed,
+              new Set([index]),
+              true
+            )
+          ) {
+            loadWarnings.push(
+              `player ${index} authored floating at (${x},${y}) elevation ${actorElevation(state, index)} — left as authored (may be unreachable)`
+            );
+          }
+
+          continue;
+        }
+
+        const elevation = actorElevation(state, index);
+
+        if (
+          surfaceSupportsElevation(
+            state,
+            x,
+            y,
+            elevation,
+            gateState,
+            orangeButtonsPressed,
+            new Set([index]),
+            true
+          )
+        ) {
+          continue;
+        }
+
+        // Floating floor authored on a hole fills it at load — identical to
+        // the pushed-into-hole behavior, so authored and reachable states
+        // obey one physics. Strict hole layers only: actors authored on
+        // bare-void cells (e.g. a lone orange_button cell) are legal and
+        // stay put (tested legacy behavior — a box authored on a button
+        // presses it).
+        if (elevation === 0 && isTerrainHoleAtElevation(state, x, y, 0)) {
+          if (typeName === "floating_floor") {
+            state.terrain[cellIndex(x, y)] = terrainTypes.floor;
+            state.actorRemoved[index] = 1;
+            loadWarnings.push(
+              `floating floor ${index} authored on the hole at (${x},${y}) filled it at load`
+            );
+          } else {
+            state.actorRemoved[index] = 1;
+            loadWarnings.push(
+              `actor ${index} (${typeName}) authored on the hole at (${x},${y}) fell in at load`
+            );
+          }
+          continue;
+        }
+
+        // Unsupported box/floating_floor: ground to the highest support
+        // at-or-below (matching the in-game landing rule R2) — legacy left
+        // them permanently frozen and unpushable in mid-air.
+        const supports = terrainSurfaceHeightsAt(state, x, y, gateState, orangeButtonsPressed)
+          .concat(actorSupportSurfaceHeightsAt(state, x, y, new Set([index]), true))
+          .filter((height) => height < elevation)
+          .sort((left, right) => right - left);
+        const landing = supports.find(
+          (height) => !terrainBlocksElevation(state, x, y, height, gateState, orangeButtonsPressed)
+        );
+
+        // Ground only when real support exists below. A box floating over a
+        // hole/void keeps its authored elevation — pinned behavior: such
+        // boxes take part in scripted fall sequences when something slides
+        // in underneath.
+        if (landing !== undefined) {
+          state.actorElevation[index] = landing;
+          loadWarnings.push(
+            `actor ${index} (${typeName}) authored floating at (${x},${y}) elevation ${elevation} — grounded to ${landing}`
+          );
+        }
+      }
     }
 
     function createInitialState() {
@@ -293,6 +483,14 @@
             ) ?? 0;
         }
       }
+
+      applyLoadNormalization(state, gateState, orangeButtonsPressed);
+
+      // Discard any journal entries produced while settling the initial
+      // state, and give the buffer a valid incremental hash baseline.
+      journalLength = 0;
+      journalEpoch += 1;
+      recomputeHash(state);
 
       return state;
     }
@@ -400,7 +598,7 @@
           const elevation = baseElevation + (weightlessRelativeElevations[member] || 0);
 
           if (state.actorElevation[member] !== elevation) {
-            state.actorElevation[member] = elevation;
+            jSetActorElevation(state, member, elevation);
             changed = true;
           }
         });
@@ -416,7 +614,10 @@
         actorX: new Int16Array(actorCount),
         actorY: new Int16Array(actorCount),
         liftRaised: new Uint8Array(cellCount),
-        terrain: new Uint8Array(cellCount)
+        terrain: new Uint8Array(cellCount),
+        hashLo: 0,
+        hashHi: 0,
+        hashValid: false
       };
     }
 
@@ -427,7 +628,10 @@
         actorX: new Int16Array(state.actorX),
         actorY: new Int16Array(state.actorY),
         liftRaised: new Uint8Array(state.liftRaised),
-        terrain: new Uint8Array(state.terrain)
+        terrain: new Uint8Array(state.terrain),
+        hashLo: state.hashLo | 0,
+        hashHi: state.hashHi | 0,
+        hashValid: state.hashValid === true
       };
     }
 
@@ -438,41 +642,276 @@
       target.actorY.set(source.actorY);
       target.liftRaised.set(source.liftRaised);
       target.terrain.set(source.terrain);
+      target.hashLo = source.hashLo | 0;
+      target.hashHi = source.hashHi | 0;
+      target.hashValid = source.hashValid === true;
     }
 
-    const searchAttemptSnapshot = createStateBuffer();
-    const searchOccupiedSnapshot = new Set();
+    // -----------------------------------------------------------------------
+    // Incremental 64-bit state hash (two Uint32 lanes, splitmix-style mixer).
+    // Maintained by the journaled setters below, so stateKey() is O(1) instead
+    // of the legacy O(actorCount + cellCount) string build. Buffers created
+    // outside the engine (hashValid=false) get one full recompute on first use.
+    // -----------------------------------------------------------------------
+    const HASH_SEED_LO = 0x8f1bbcdc | 0;
+    const HASH_SEED_HI = 0x5be0cd19 | 0;
 
-    function stateKey(state) {
-      let key = "";
+    function mix32(value) {
+      let z = (value + 0x9e3779b9) | 0;
+      z = Math.imul(z ^ (z >>> 16), 0x21f0aaad);
+      z = Math.imul(z ^ (z >>> 15), 0x735a2d97);
+      return (z ^ (z >>> 15)) | 0;
+    }
+
+    function actorHashLo(index, x, y, elevation, removed) {
+      return mix32(
+        Math.imul(index + 1, 0x1000193) ^
+          ((x + 2) & 0xff) ^ (((y + 2) & 0xff) << 8) ^
+          (((elevation + 16) & 0x3f) << 16) ^ ((removed & 1) << 22)
+      );
+    }
+
+    function actorHashHi(index, x, y, elevation, removed) {
+      return mix32(
+        0x517cc1b7 ^
+          Math.imul(index + 1, 0x85ebca77) ^
+          (((x + 2) & 0xff) << 4) ^ (((y + 2) & 0xff) << 12) ^
+          (((elevation + 16) & 0x3f) << 20) ^ ((removed & 1) << 26)
+      );
+    }
+
+    function terrainHashLo(cell, value) {
+      return mix32(0x27d4eb2f ^ Math.imul(cell + 1, 0x9e3779b1) ^ (value << 16));
+    }
+
+    function terrainHashHi(cell, value) {
+      return mix32(0x165667b1 ^ Math.imul(cell + 1, 0xc2b2ae3d) ^ (value << 12));
+    }
+
+    function liftHashLo(cell) {
+      return mix32(0x62a9d9ed ^ Math.imul(cell + 1, 0x2545f491));
+    }
+
+    function liftHashHi(cell) {
+      return mix32(0x94d049bb ^ Math.imul(cell + 1, 0x633d9abf));
+    }
+
+    function recomputeHash(state) {
+      let lo = HASH_SEED_LO;
+      let hi = HASH_SEED_HI;
 
       for (let index = 0; index < actorCount; index += 1) {
-        key +=
-          encodeKeyValue(state.actorX[index] + 1) +
-          encodeKeyValue(state.actorY[index] + 1) +
-          encodeKeyValue(state.actorElevation[index] + STATE_ELEVATION_KEY_OFFSET) +
-          encodeKeyValue(state.actorRemoved[index]);
+        lo ^= actorHashLo(index, state.actorX[index], state.actorY[index], state.actorElevation[index], state.actorRemoved[index]);
+        hi ^= actorHashHi(index, state.actorX[index], state.actorY[index], state.actorElevation[index], state.actorRemoved[index]);
       }
 
-      key += "\uffff";
-
-      for (let index = 0; index < cellCount; index += 1) {
-        if (state.terrain[index] !== baseTerrain[index]) {
-          key += encodeKeyValue(index) + encodeKeyValue(state.terrain[index]);
+      for (let cell = 0; cell < cellCount; cell += 1) {
+        if (state.terrain[cell] !== baseTerrain[cell]) {
+          lo ^= terrainHashLo(cell, state.terrain[cell]);
+          hi ^= terrainHashHi(cell, state.terrain[cell]);
         }
       }
-
-      key += "\uffff";
 
       for (let index = 0; index < playerLiftCells.length; index += 1) {
         const cell = playerLiftCells[index];
 
         if (state.liftRaised[cell] !== baseLiftRaised[cell]) {
-          key += encodeKeyValue(cell) + encodeKeyValue(state.liftRaised[cell]);
+          lo ^= liftHashLo(cell);
+          hi ^= liftHashHi(cell);
         }
       }
 
-      return key;
+      state.hashLo = lo;
+      state.hashHi = hi;
+      state.hashValid = true;
+    }
+
+    function stateKey(state) {
+      if (state.hashValid !== true) {
+        recomputeHash(state);
+      }
+
+      const lo = state.hashLo >>> 0;
+      const hi = state.hashHi >>> 0;
+
+      return String.fromCharCode(lo & 0xffff, lo >>> 16, hi & 0xffff, hi >>> 16);
+    }
+
+    // -----------------------------------------------------------------------
+    // Mutation journal. Every state write on the move path goes through the
+    // jSet* setters, which record (field, index, oldValue) triplets for exact
+    // rollback and keep the incremental hash in sync. undoMove() restores the
+    // buffer bit-for-bit \u2014 the legacy record-replay undo corrupted elevations
+    // (audit: elevated gems zeroed on backtrack).
+    // Fields: 0=actorX 1=actorY 2=actorElevation 3=actorRemoved 4=terrain 5=liftRaised
+    // -----------------------------------------------------------------------
+    let journal = new Int32Array(4096);
+    let journalLength = 0;
+    let journalEpoch = 1;
+
+    function journalPush(field, index, oldValue) {
+      if (journalLength + 3 > journal.length) {
+        const grown = new Int32Array(journal.length * 2);
+        grown.set(journal);
+        journal = grown;
+      }
+
+      journal[journalLength] = field;
+      journal[journalLength + 1] = index;
+      journal[journalLength + 2] = oldValue;
+      journalLength += 3;
+    }
+
+    function hashActorToggle(state, index) {
+      if (state.hashValid !== true) {
+        return;
+      }
+
+      state.hashLo ^= actorHashLo(index, state.actorX[index], state.actorY[index], state.actorElevation[index], state.actorRemoved[index]);
+      state.hashHi ^= actorHashHi(index, state.actorX[index], state.actorY[index], state.actorElevation[index], state.actorRemoved[index]);
+    }
+
+    function jSetActorX(state, index, value) {
+      if (state.actorX[index] === value) return;
+      journalPush(0, index, state.actorX[index]);
+      hashActorToggle(state, index);
+      state.actorX[index] = value;
+      hashActorToggle(state, index);
+    }
+
+    function jSetActorY(state, index, value) {
+      if (state.actorY[index] === value) return;
+      journalPush(1, index, state.actorY[index]);
+      hashActorToggle(state, index);
+      state.actorY[index] = value;
+      hashActorToggle(state, index);
+    }
+
+    function jSetActorElevation(state, index, value) {
+      if (state.actorElevation[index] === value) return;
+      journalPush(2, index, state.actorElevation[index]);
+      hashActorToggle(state, index);
+      state.actorElevation[index] = value;
+      hashActorToggle(state, index);
+    }
+
+    function jSetActorRemoved(state, index, value) {
+      const next = value ? 1 : 0;
+      if (state.actorRemoved[index] === next) return;
+      journalPush(3, index, state.actorRemoved[index]);
+      hashActorToggle(state, index);
+      state.actorRemoved[index] = next;
+      hashActorToggle(state, index);
+    }
+
+    function jSetTerrain(state, cell, value) {
+      if (state.terrain[cell] === value) return;
+      journalPush(4, cell, state.terrain[cell]);
+
+      if (state.hashValid === true) {
+        if (state.terrain[cell] !== baseTerrain[cell]) {
+          state.hashLo ^= terrainHashLo(cell, state.terrain[cell]);
+          state.hashHi ^= terrainHashHi(cell, state.terrain[cell]);
+        }
+
+        if (value !== baseTerrain[cell]) {
+          state.hashLo ^= terrainHashLo(cell, value);
+          state.hashHi ^= terrainHashHi(cell, value);
+        }
+      }
+
+      state.terrain[cell] = value;
+    }
+
+    function jSetLiftRaised(state, cell, value) {
+      const next = value ? 1 : 0;
+      if (state.liftRaised[cell] === next) return;
+      journalPush(5, cell, state.liftRaised[cell]);
+
+      if (state.hashValid === true) {
+        state.hashLo ^= liftHashLo(cell);
+        state.hashHi ^= liftHashHi(cell);
+      }
+
+      state.liftRaised[cell] = next;
+    }
+
+    function journalMark() {
+      return journalLength;
+    }
+
+    function journalRollback(state, mark) {
+      while (journalLength > mark) {
+        journalLength -= 3;
+        const field = journal[journalLength];
+        const index = journal[journalLength + 1];
+        const oldValue = journal[journalLength + 2];
+
+        switch (field) {
+          case 0:
+            hashActorToggle(state, index);
+            state.actorX[index] = oldValue;
+            hashActorToggle(state, index);
+            break;
+          case 1:
+            hashActorToggle(state, index);
+            state.actorY[index] = oldValue;
+            hashActorToggle(state, index);
+            break;
+          case 2:
+            hashActorToggle(state, index);
+            state.actorElevation[index] = oldValue;
+            hashActorToggle(state, index);
+            break;
+          case 3:
+            hashActorToggle(state, index);
+            state.actorRemoved[index] = oldValue;
+            hashActorToggle(state, index);
+            break;
+          case 4:
+            if (state.hashValid === true) {
+              if (state.terrain[index] !== baseTerrain[index]) {
+                state.hashLo ^= terrainHashLo(index, state.terrain[index]);
+                state.hashHi ^= terrainHashHi(index, state.terrain[index]);
+              }
+              if (oldValue !== baseTerrain[index]) {
+                state.hashLo ^= terrainHashLo(index, oldValue);
+                state.hashHi ^= terrainHashHi(index, oldValue);
+              }
+            }
+            state.terrain[index] = oldValue;
+            break;
+          case 5:
+            if (state.hashValid === true) {
+              state.hashLo ^= liftHashLo(index);
+              state.hashHi ^= liftHashHi(index);
+            }
+            state.liftRaised[index] = oldValue;
+            break;
+          default:
+            break;
+        }
+      }
+    }
+
+    // Preallocated per-move scratch (no per-move allocations on the hot path).
+    // originalActor*: positions at move() entry, consumed by the puncher /
+    // attachment sync passes. attemptBefore*: positions captured at the start
+    // of a push attempt, consumed by ride-support checks after the push.
+    const originalActorX = new Int16Array(actorCount);
+    const originalActorY = new Int16Array(actorCount);
+    const originalActorElevation = new Int16Array(actorCount);
+    const attemptBeforeState = {
+      actorX: new Int16Array(actorCount),
+      actorY: new Int16Array(actorCount),
+      actorElevation: new Int16Array(actorCount)
+    };
+
+    function captureAttemptBefore(state) {
+      attemptBeforeState.actorX.set(state.actorX);
+      attemptBeforeState.actorY.set(state.actorY);
+      attemptBeforeState.actorElevation.set(state.actorElevation);
+      return attemptBeforeState;
     }
 
     function actorCell(state, actorIndex) {
@@ -515,35 +954,128 @@
       return state.actorElevation[actorIndex] || 0;
     }
 
+    // -----------------------------------------------------------------------
+    // Occupancy grid. Replaces the legacy Set of "x,y,e" template strings
+    // (6.4% of solve time + GC pressure) with a stamped Int32Array. The
+    // `occupied` parameter is kept as an opaque token for signature
+    // compatibility with the ported logic; there is one active grid per
+    // move() resolution. Slot layout: (cell * ELEV_SLOTS) + elevation + ELEV_BASE.
+    // ELEV_BASE covers legal negative elevations (weightless sub-floor members).
+    // -----------------------------------------------------------------------
+    // Kept solely as a local map/set key builder for a few cold paths
+    // (rider target dedup, cluster position sets) — the per-move occupancy
+    // itself lives in the stamped grid below.
     function occupiedElevationKey(x, y, elevation) {
       return `${x},${y},${elevation || 0}`;
     }
 
+    const ELEV_BASE = 2;
+    const ELEV_SLOTS = 20;
+    const occupancyGrid = new Int32Array(cellCount * ELEV_SLOTS);
+    let occupancyStamp = 0;
+    const OCCUPANCY_TOKEN = { grid: true };
+
+    function occupancySlot(x, y, elevation) {
+      const slot = (elevation | 0) + ELEV_BASE;
+      if (slot < 0 || slot >= ELEV_SLOTS || !isInsideBoard(x, y)) {
+        return -1;
+      }
+      return cellIndex(x, y) * ELEV_SLOTS + slot;
+    }
+
+    function occupancyRebuild(state, excludedActor = -1, excludedSet = null) {
+      occupancyStamp += 1;
+      if (occupancyStamp >= 0x3fffff) {
+        occupancyGrid.fill(0);
+        occupancyStamp = 1;
+      }
+
+      for (let index = 0; index < actorCount; index += 1) {
+        if (
+          index === excludedActor ||
+          (excludedSet !== null && excludedSet.has(index)) ||
+          state.actorRemoved[index] ||
+          isNonBlockingActor(index)
+        ) {
+          continue;
+        }
+
+        const slot = occupancySlot(
+          state.actorX[index],
+          state.actorY[index],
+          state.actorElevation[index] || 0
+        );
+
+        if (slot >= 0) {
+          occupancyGrid[slot] = (occupancyStamp << 8) | (index + 1);
+        }
+      }
+
+      return OCCUPANCY_TOKEN;
+    }
+
     function isOccupiedAtElevation(occupied, x, y, elevation) {
-      return occupied.has(occupiedElevationKey(x, y, elevation));
+      const slot = occupancySlot(x, y, elevation || 0);
+      if (slot < 0) return false;
+      const value = occupancyGrid[slot];
+      return (value >>> 8) === occupancyStamp && (value & 0xff) !== 0;
     }
 
     function addOccupiedAtElevation(occupied, x, y, elevation) {
-      occupied.add(occupiedElevationKey(x, y, elevation));
+      const slot = occupancySlot(x, y, elevation || 0);
+      if (slot >= 0) {
+        occupancyGrid[slot] = (occupancyStamp << 8) | 0xff;
+      }
     }
 
     function removeOccupiedAtElevation(occupied, x, y, elevation) {
-      occupied.delete(occupiedElevationKey(x, y, elevation));
+      const slot = occupancySlot(x, y, elevation || 0);
+      if (slot >= 0) {
+        occupancyGrid[slot] = 0;
+      }
+    }
+
+    // Lazily-built per-cell "filled" layer variants: what the cell's layers
+    // become when its elevation-0 hole is filled by a floating floor (the only
+    // terrain mutation in the game).
+    const filledLayersCache = new Array(cellCount).fill(null);
+
+    function filledLayersForCell(cell) {
+      if (filledLayersCache[cell] === null) {
+        filledLayersCache[cell] = (terrainLayers[cell] || [])
+          .filter((layer) => !(layer.type === terrainTypes.hole && layer.elevation === 0))
+          .concat([
+            { type: terrainTypes.floor, elevation: 0, direction: null, raised: false }
+          ])
+          .sort((left, right) => left.elevation - right.elevation);
+      }
+
+      return filledLayersCache[cell];
     }
 
     function terrainLayersForCell(state, cell) {
       if (state.terrain[cell] !== baseTerrain[cell]) {
         const type = state.terrain[cell];
 
-        return type === terrainTypes.empty
-          ? []
-          : [
-              {
-                type,
-                elevation: 0,
-                raised: state.liftRaised[cell] === 1
-              }
-            ];
+        if (type === terrainTypes.empty) {
+          return [];
+        }
+
+        // FIX(SEMANTICS §elevation): a hole fill replaces only the hole layer
+        // with floor@0 — every other authored layer survives. Legacy rewrote
+        // the whole cell to a single synthetic floor layer, deleting bridges
+        // above the hole and leaving actors on them floating.
+        if (type === terrainTypes.floor) {
+          return filledLayersForCell(cell);
+        }
+
+        return [
+          {
+            type,
+            elevation: 0,
+            raised: state.liftRaised[cell] === 1
+          }
+        ];
       }
 
       return terrainLayers[cell] || [];
@@ -1393,7 +1925,7 @@
         return false;
       }
 
-      state.liftRaised[cellIndex(x, y)] = raised ? 1 : 0;
+      jSetLiftRaised(state, cellIndex(x, y), raised ? 1 : 0);
       return state.liftRaised[cellIndex(x, y)] === 1;
     }
 
@@ -1673,6 +2205,28 @@
       return actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, includePlayers).includes(elevation);
     }
 
+    // Allocation-free single-exclusion variant for hot pass loops.
+    function actorSupportsElevationExcluding(state, x, y, elevation, excludedIndex, includePlayers) {
+      for (let index = 0; index < actorCount; index += 1) {
+        if (
+          index === excludedIndex ||
+          state.actorRemoved[index] ||
+          state.actorX[index] !== x ||
+          state.actorY[index] !== y ||
+          !isSupportActorType(actorTypes[index]) ||
+          (!includePlayers && isMainPlayerActor(index))
+        ) {
+          continue;
+        }
+
+        if ((state.actorElevation[index] || 0) + 1 === elevation) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function surfaceSupportsElevation(
       state,
       x,
@@ -1724,7 +2278,8 @@
       occupied,
       gateState,
       orangeButtonsPressed,
-      ignoredActors = null
+      ignoredActors = null,
+      includePlayerSupport = true
     ) {
       if (
         canMoveIntoAtElevation(
@@ -1755,7 +2310,7 @@
         gateState,
         orangeButtonsPressed
       )
-        .concat(actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, true))
+        .concat(actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, includePlayerSupport))
         .filter((height) => height < elevation)
         .sort((left, right) => right - left);
 
@@ -2029,10 +2584,26 @@
         actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, false)
       );
 
-      return heights.length > 0 ? Math.max(...heights) : null;
+      // FIX(SEMANTICS R2): with a known travel elevation, the endpoint snap
+      // never moves the player UP — legacy took Math.max of every surface in
+      // the cell, teleporting a player exiting a slope at elevation 1 onto a
+      // bridge top at elevation 3, through solid blocks and with no
+      // reachability check. Spawn placement (currentElevation=null) keeps the
+      // legacy max-surface behavior.
+      const candidates = Number.isInteger(currentElevation)
+        ? heights.filter((height) => height <= currentElevation)
+        : heights;
+
+      return candidates.length > 0 ? Math.max(...candidates) : null;
     }
 
+    const EMPTY_GATE_SET = new Set();
+
     function computeRaisedPlayerGateSet(state) {
+      if (playerGateCells.length === 0) {
+        return EMPTY_GATE_SET;
+      }
+
       const players = [];
       const raised = new Set();
 
@@ -2091,22 +2662,7 @@
     }
 
     function buildOccupiedMap(state, excludedActor = -1) {
-      const occupied = new Set();
-
-      for (let index = 0; index < actorCount; index += 1) {
-        if (index === excludedActor || state.actorRemoved[index] || isNonBlockingActor(index)) {
-          continue;
-        }
-
-        addOccupiedAtElevation(
-          occupied,
-          state.actorX[index],
-          state.actorY[index],
-          actorElevation(state, index)
-        );
-      }
-
-      return occupied;
+      return occupancyRebuild(state, excludedActor);
     }
 
     function actorAt(state, x, y, predicate = null) {
@@ -2800,6 +3356,20 @@
         nextY += stepDy;
         path.push({ x: nextX, y: nextY, elevation: nextElevation });
 
+        // FIX(SEMANTICS R4): a slide reversed by a blocked-slope bounce may
+        // ENTER the pushing player's cell (the codified pusher/box swap) but
+        // never pass THROUGH it — legacy let the returning box glide through
+        // the net-stationary pusher and land behind them, because the active
+        // player is absent from the occupancy set for its whole move.
+        if (
+          reversedAfterSlopeBounce &&
+          options.pusherX === nextX &&
+          options.pusherY === nextY &&
+          options.pusherElevation === nextElevation
+        ) {
+          break;
+        }
+
         if (!isIce(state, nextX, nextY, nextElevation, gateState, orangeButtonsPressed)) {
           break;
         }
@@ -2862,6 +3432,9 @@
           ? {
               ignoredActors,
               reverseOnBlockedSlopeBounceFromIce: true,
+              pusherX: pushContext.pusherX,
+              pusherY: pushContext.pusherY,
+              pusherElevation: pushContext.pusherElevation,
               pushSlopeBlocker: (blocker, pushDx = dx, pushDy = dy) => {
                 if (blocker === actorIndex) {
                   return false;
@@ -2874,7 +3447,12 @@
                   pushDy,
                   occupied,
                   moves,
-                  1,
+                  // FIX(SEMANTICS R3a): legacy hardcoded budget 1 here, so a
+                  // multi-box chain at a slope exit could never be pushed by a
+                  // sliding box no matter how many players pushed. The train's
+                  // remaining budget propagates through the slide; the floor
+                  // of 1 preserves the tested lone-pusher single-blocker case.
+                  Math.max(1, pushContext.remainingBudget ?? 1),
                   pushContext.handled || new Set(),
                   gateState,
                   orangeButtonsPressed,
@@ -2893,9 +3471,9 @@
         return false;
       }
 
-      state.actorX[actorIndex] = target.x;
-      state.actorY[actorIndex] = target.y;
-      state.actorElevation[actorIndex] = target.elevation;
+      jSetActorX(state, actorIndex, target.x);
+      jSetActorY(state, actorIndex, target.y);
+      jSetActorElevation(state, actorIndex, target.elevation);
 
       const moveRecord = {
         actorIndex,
@@ -2920,10 +3498,14 @@
           target.path.length > 2 ||
           Math.abs(target.x - fromX) + Math.abs(target.y - fromY) > 1 ||
           target.pathEndElevation !== elevation;
+      }
 
-        if (target.elevation !== target.pathEndElevation || !target.hasLandingSupport) {
-          moveRecord.iceSlipOff = true;
-        }
+      // FIX(SEMANTICS R2): iceSlipOff is semantic (it drives pit removal in
+      // applyHoleFalls), not visual. Legacy set it only in play mode, so the
+      // solver simulated a different game: a box sliding off a slope over a
+      // void survived in search mode and died in play mode.
+      if (target.elevation !== target.pathEndElevation || !target.hasLandingSupport) {
+        moveRecord.iceSlipOff = true;
       }
 
       moves.push(moveRecord);
@@ -2945,6 +3527,39 @@
           checkX,
           checkY,
           (actor) => isPlayerActor(actor) && actorElevation(state, actor) === actorElevation(state, player)
+        );
+
+        if (occupant === -1) {
+          break;
+        }
+
+        count += 1;
+      }
+
+      return count;
+    }
+
+    // FIX(SEMANTICS R3): contact-position variant used for mid-slide slope
+    // pushes. Counts the pushing player plus the contiguous train of OTHER
+    // players directly behind (x, y) at the given elevation. The slider's own
+    // stale state position is excluded so a long slide cannot count itself.
+    function countSupportingPlayersAt(state, player, x, y, elevation, dx, dy) {
+      let count = 1;
+      let checkX = x;
+      let checkY = y;
+
+      while (true) {
+        checkX -= dx;
+        checkY -= dy;
+
+        const occupant = actorAt(
+          state,
+          checkX,
+          checkY,
+          (actor) =>
+            actor !== player &&
+            isPlayerActor(actor) &&
+            actorElevation(state, actor) === elevation
         );
 
         if (occupant === -1) {
@@ -3333,7 +3948,7 @@
       }
 
       members.forEach((member) => {
-        state.actorElevation[member] -= 1;
+        jSetActorElevation(state, member, state.actorElevation[member] - 1);
       });
 
       return true;
@@ -4067,9 +4682,9 @@
           elevation: fromElevation + offset.elevation
         }));
 
-        state.actorX[actorIndex] = fromX + finalOffset.dx;
-        state.actorY[actorIndex] = fromY + finalOffset.dy;
-        state.actorElevation[actorIndex] = fromElevation + finalOffset.elevation;
+        jSetActorX(state, actorIndex, fromX + finalOffset.dx);
+        jSetActorY(state, actorIndex, fromY + finalOffset.dy);
+        jSetActorElevation(state, actorIndex, fromElevation + finalOffset.elevation);
 
         const moveRecord = {
           actorIndex,
@@ -4124,6 +4739,47 @@
         }
 
         const path = riderPathForSupportMove(supportMove, rider);
+
+        // FIX(SEMANTICS §clones): validate EVERY step of the carried rider's
+        // path. Legacy validated only the first step, so a clone sliding
+        // multiple cells on ice dragged its rider straight into solid
+        // terrain — the player ended embedded in a block, a state legal
+        // movement can never reach. The ride truncates at the last legal
+        // point; if the support slides on without the rider, the dynamic
+        // fall pass drops the rider to real support.
+        let riderValidLength = 1;
+
+        for (let pointIndex = 1; pointIndex < path.length; pointIndex += 1) {
+          const point = path[pointIndex];
+
+          if (
+            !isInsideBoard(point.x, point.y) ||
+            terrainBlocksElevation(
+              state,
+              point.x,
+              point.y,
+              point.elevation,
+              gateState,
+              orangeButtonsPressed
+            ) ||
+            blockingActorAtElevation(
+              state,
+              point.x,
+              point.y,
+              point.elevation,
+              rider.actorIndex
+            ) !== -1
+          ) {
+            break;
+          }
+
+          riderValidLength = pointIndex + 1;
+        }
+
+        if (riderValidLength < path.length) {
+          path.length = riderValidLength;
+        }
+
         const finalPoint = path[path.length - 1];
         const toX = finalPoint?.x ?? rider.fromX;
         const toY = finalPoint?.y ?? rider.fromY;
@@ -4151,9 +4807,9 @@
           moveRecord.iceSlide = true;
         }
 
-        state.actorX[rider.actorIndex] = toX;
-        state.actorY[rider.actorIndex] = toY;
-        state.actorElevation[rider.actorIndex] = toElevation;
+        jSetActorX(state, rider.actorIndex, toX);
+        jSetActorY(state, rider.actorIndex, toY);
+        jSetActorElevation(state, rider.actorIndex, toElevation);
         moves.push(moveRecord);
         addOccupiedAtElevation(occupied, toX, toY, toElevation);
 
@@ -4234,8 +4890,7 @@
         : null;
 
       while (true) {
-        const attemptSnapshot = pushContext ? cloneState(state) : null;
-        const occupiedSnapshot = pushContext ? new Set(occupied) : null;
+        const attemptJournalMark = pushContext ? journalMark() : -1;
         const moveCount = moves.length;
         const allowIceSlopeTransit = weightlessClusterHasIceSlopeTransit(
           state,
@@ -4295,10 +4950,9 @@
             : null;
 
           if (bounceOffsets && bounceOffsets.length > 0) {
-            if (attemptSnapshot && occupiedSnapshot) {
-              copyStateInto(state, attemptSnapshot);
-              occupied.clear();
-              occupiedSnapshot.forEach((key) => occupied.add(key));
+            if (pushContext) {
+              journalRollback(state, attemptJournalMark);
+              occupancyRebuild(state, -1, ignoredActors);
               moves.length = moveCount;
             }
 
@@ -4325,10 +4979,9 @@
             continue;
           }
 
-          if (attemptSnapshot && occupiedSnapshot) {
-            copyStateInto(state, attemptSnapshot);
-            occupied.clear();
-            occupiedSnapshot.forEach((key) => occupied.add(key));
+          if (pushContext) {
+            journalRollback(state, attemptJournalMark);
+            occupancyRebuild(state, -1, ignoredActors);
             moves.length = moveCount;
           }
           break;
@@ -4378,9 +5031,9 @@
             }
           }
 
-          state.actorX[member] += step.dx;
-          state.actorY[member] += step.dy;
-          state.actorElevation[member] += step.elevation;
+          jSetActorX(state, member, state.actorX[member] + step.dx);
+          jSetActorY(state, member, state.actorY[member] + step.dy);
+          jSetActorElevation(state, member, state.actorElevation[member] + step.elevation);
 
           if (start) {
             appendPathPoints(start.path, [
@@ -4544,6 +5197,47 @@
         }
 
         const path = riderPathForSupportMove(supportMove, rider);
+
+        // FIX(SEMANTICS §clones): validate EVERY step of the carried rider's
+        // path. Legacy validated only the first step, so a clone sliding
+        // multiple cells on ice dragged its rider straight into solid
+        // terrain — the player ended embedded in a block, a state legal
+        // movement can never reach. The ride truncates at the last legal
+        // point; if the support slides on without the rider, the dynamic
+        // fall pass drops the rider to real support.
+        let riderValidLength = 1;
+
+        for (let pointIndex = 1; pointIndex < path.length; pointIndex += 1) {
+          const point = path[pointIndex];
+
+          if (
+            !isInsideBoard(point.x, point.y) ||
+            terrainBlocksElevation(
+              state,
+              point.x,
+              point.y,
+              point.elevation,
+              gateState,
+              orangeButtonsPressed
+            ) ||
+            blockingActorAtElevation(
+              state,
+              point.x,
+              point.y,
+              point.elevation,
+              rider.actorIndex
+            ) !== -1
+          ) {
+            break;
+          }
+
+          riderValidLength = pointIndex + 1;
+        }
+
+        if (riderValidLength < path.length) {
+          path.length = riderValidLength;
+        }
+
         const finalPoint = path[path.length - 1];
         const toX = finalPoint?.x ?? rider.fromX;
         const toY = finalPoint?.y ?? rider.fromY;
@@ -4571,9 +5265,9 @@
           moveRecord.iceSlide = true;
         }
 
-        state.actorX[rider.actorIndex] = toX;
-        state.actorY[rider.actorIndex] = toY;
-        state.actorElevation[rider.actorIndex] = toElevation;
+        jSetActorX(state, rider.actorIndex, toX);
+        jSetActorY(state, rider.actorIndex, toY);
+        jSetActorElevation(state, rider.actorIndex, toElevation);
         moves.push(moveRecord);
         addOccupiedAtElevation(occupied, toX, toY, toElevation);
 
@@ -4832,7 +5526,14 @@
               searchMode,
               {
                 handled,
-                ignoredActors
+                ignoredActors,
+                // FIX(SEMANTICS R3a): the surplus of the push train travels
+                // with the sliding box, so a slope-exit blocker chain met
+                // mid-slide can spend it.
+                remainingBudget,
+                pusherX: pushContext?.pusherX,
+                pusherY: pushContext?.pusherY,
+                pusherElevation: pushContext?.pusherElevation
               }
             );
 
@@ -4875,8 +5576,17 @@
       return type === "box" || type === "floating_floor" || type === "weightless_box";
     }
 
+    // FIX(SEMANTICS §clones): clones carry surface attachments too — the
+    // editor explicitly allows stacking an orange button on a clone, and the
+    // legacy whitelist stranded the button in mid-air on the clone's first
+    // move, permanently locking every orange wall in the level.
     function canActorCarrySurfaceAttachment(type) {
-      return type === "box" || type === "floating_floor" || type === "weightless_box";
+      return (
+        type === "box" ||
+        type === "floating_floor" ||
+        type === "weightless_box" ||
+        type === "clone"
+      );
     }
 
     function mergeMoveRecord(
@@ -5344,6 +6054,8 @@
       originalActorY,
       originalActorElevation,
       searchMode,
+      moveGateState,
+      moveOrangeButtonsPressed,
       options = {}
     ) {
       if (!actorTypes.includes("puncher")) {
@@ -5466,6 +6178,32 @@
         });
       }
 
+      // FIX(SEMANTICS §punchers): a punched SINGLE actor traverses ice slopes
+      // with the same entry rules as a pushed box. Legacy treated slope cells
+      // as absolute walls to punches (their layers block both elevations), so
+      // a punched box stopped dead on the puncher forever while the same box
+      // pushed by a player climbed the slope. Multi-actor punch trains still
+      // stop at slopes (documented limitation).
+      function attemptPunchSlopeTraversal(info, occupied) {
+        if (info.members.length !== 1) {
+          return null;
+        }
+
+        const member = info.members[0];
+
+        return resolveIceSlopeTraversal(
+          state,
+          state.actorX[member] + info.dx,
+          state.actorY[member] + info.dy,
+          info.dx,
+          info.dy,
+          actorElevation(state, member),
+          occupied,
+          info.gateState,
+          info.orangeButtonsPressed
+        );
+      }
+
       function moveSimultaneousPunchGroup(infos, occupied) {
         const movedInfos = new Set();
         let stepCount = 0;
@@ -5490,13 +6228,32 @@
           }
 
           if (movingInfos.length === 0) {
-            break;
+            let sloped = false;
+
+            for (const info of infos) {
+              const traversal = attemptPunchSlopeTraversal(info, occupied);
+
+              if (traversal) {
+                const member = info.members[0];
+                jSetActorX(state, member, traversal.exitX);
+                jSetActorY(state, member, traversal.exitY);
+                jSetActorElevation(state, member, traversal.exitElevation);
+                movedInfos.add(info);
+                sloped = true;
+              }
+            }
+
+            if (!sloped) {
+              break;
+            }
+
+            continue;
           }
 
           movingInfos.forEach((info) => {
             info.members.forEach((member) => {
-              state.actorX[member] += info.dx;
-              state.actorY[member] += info.dy;
+              jSetActorX(state, member, state.actorX[member] + info.dx);
+              jSetActorY(state, member, state.actorY[member] + info.dy);
             });
             movedInfos.add(info);
           });
@@ -5510,8 +6267,20 @@
         passCount += 1;
 
         const occupied = buildOccupiedMap(state);
-        const gateState = computeRaisedPlayerGateSet(state);
-        const orangeButtonsPressed = areOrangeButtonsPressed(state);
+        // FIX(SEMANTICS R1): one device clock per move. Legacy recomputed
+        // button/gate state from live mid-pipeline positions here, so a
+        // punched box momentarily standing on a button opened an orange wall
+        // for its own flight (tunneling through a wall that is raised both
+        // before and after the move), and gate outcomes depended on how far
+        // from the gate the punch started. Punches now resolve against the
+        // same move-start device state that walking used. Lift state is read
+        // live from state.liftRaised, so lift toggles applied earlier in this
+        // move are visible to punches (a raised lift blocks a punch).
+        const gateState = moveGateState || computeRaisedPlayerGateSet(state);
+        const orangeButtonsPressed =
+          typeof moveOrangeButtonsPressed === "boolean"
+            ? moveOrangeButtonsPressed
+            : areOrangeButtonsPressed(state);
         const candidateSource = (
           candidateActorIndexes
             ? Array.from(candidateActorIndexes)
@@ -5626,6 +6395,47 @@
         });
 
         const movedInfos = moveSimultaneousPunchGroup(triggerInfos, occupied);
+
+        // FIX(SEMANTICS R2): punched actors land like pushed boxes. Legacy
+        // punches only wrote x/y, leaving actors hovering at their old
+        // elevation over lower terrain (players soft-locked; boxes became
+        // permanently unpushable), while the identical geometry over a true
+        // void deleted them. Each member snaps to the highest support at or
+        // below its travel elevation at the slide stop; true-void members are
+        // left for the hole-fall pass (which now runs in both modes).
+        movedInfos.forEach((info) => {
+          info.members.forEach((member) => {
+            // A punch that ran off the board edge may continue into the
+            // neighboring room (cross-room flight, play-world-transitions):
+            // its elevation belongs to the continuation's own landing, not
+            // this room's. Only interior stops land here.
+            if (
+              !isInsideBoard(
+                state.actorX[member] + info.dx,
+                state.actorY[member] + info.dy
+              )
+            ) {
+              return;
+            }
+
+            const memberElevation = actorElevation(state, member);
+            const landing = landingElevationAtLocation(
+              state,
+              state.actorX[member],
+              state.actorY[member],
+              memberElevation,
+              occupied,
+              gateState,
+              orangeButtonsPressed,
+              info.memberSet,
+              !isPlayerActor(member)
+            );
+
+            if (landing !== null && landing !== memberElevation) {
+              jSetActorElevation(state, member, landing);
+            }
+          });
+        });
 
         triggerInfos.forEach(({ members }) => {
           addPunchMembersToOccupied(state, occupied, members);
@@ -5820,10 +6630,10 @@
         move.toX = carrierMove.toX + dx;
         move.toY = carrierMove.toY + dy;
         move.toElevation = carrierMove.toElevation ?? carrierMove.fromElevation ?? 0;
-        state.actorX[move.actorIndex] = move.toX;
-        state.actorY[move.actorIndex] = move.toY;
-        state.actorElevation[move.actorIndex] = move.toElevation;
-        state.actorRemoved[move.actorIndex] = carrierMove.toRemoved === true ? 1 : 0;
+        jSetActorX(state, move.actorIndex, move.toX);
+        jSetActorY(state, move.actorIndex, move.toY);
+        jSetActorElevation(state, move.actorIndex, move.toElevation);
+        jSetActorRemoved(state, move.actorIndex, carrierMove.toRemoved === true ? 1 : 0);
         copyStickyCarrierMoveData(carrierMove, move, dx, dy);
         retargetPuncherVisualMove(
           moves.find(
@@ -5862,9 +6672,18 @@
               continue;
             }
 
-            state.actorX[puncher] = move.toX + dx;
-            state.actorY[puncher] = move.toY + dy;
-            state.actorElevation[puncher] = move.toElevation ?? move.fromElevation ?? 0;
+            // FIX(SEMANTICS §punchers): carrier rides never write an
+            // off-board coordinate — every other position write in the
+            // engine enforces board bounds. A carrier ride that would leave
+            // the grid detaches the puncher at its current cell instead.
+            if (!isInsideBoard(move.toX + dx, move.toY + dy)) {
+              syncedPunchers.add(puncher);
+              continue;
+            }
+
+            jSetActorX(state, puncher, move.toX + dx);
+            jSetActorY(state, puncher, move.toY + dy);
+            jSetActorElevation(state, puncher, move.toElevation ?? move.fromElevation ?? 0);
             syncedPunchers.add(puncher);
             const targetActor = punchTriggerActorAt(
               state,
@@ -5903,7 +6722,7 @@
             retargetPuncherVisualMove(visualMove, puncherMove);
 
             if (move.toRemoved === true) {
-              state.actorRemoved[puncher] = 1;
+              jSetActorRemoved(state, puncher, 1);
             }
           }
         });
@@ -5947,10 +6766,10 @@
               continue;
             }
 
-            state.actorX[button] = move.toX;
-            state.actorY[button] = move.toY;
-            state.actorElevation[button] = (move.toElevation ?? carrierFromElevation) + 1;
-            state.actorRemoved[button] = move.toRemoved === true ? 1 : 0;
+            jSetActorX(state, button, move.toX);
+            jSetActorY(state, button, move.toY);
+            jSetActorElevation(state, button, (move.toElevation ?? carrierFromElevation) + 1);
+            jSetActorRemoved(state, button, move.toRemoved === true ? 1 : 0);
 
             const buttonMove = mergeMoveRecord(
               state,
@@ -6055,7 +6874,16 @@
           return;
         }
 
-        if (move.actorType === "weightless_box" || isCloneType(move.actorType)) {
+        if (move.actorType === "weightless_box") {
+          return;
+        }
+
+        // FIX(SEMANTICS R2): punched clones obey the same pit rules as
+        // punched players. Legacy exempted clones from hole falls entirely,
+        // leaving a punched clone floating forever over a pit where an
+        // identically punched player died. Non-punch clone movement keeps its
+        // exemption (clone-group falls are handled by the group sync pass).
+        if (isCloneType(move.actorType) && move.punchSlide !== true) {
           return;
         }
 
@@ -6127,10 +6955,10 @@
 
         const toElevation = move.toElevation ?? state.actorElevation[move.actorIndex] ?? 0;
 
-        state.actorX[move.actorIndex] = move.toX;
-        state.actorY[move.actorIndex] = move.toY;
-        state.actorElevation[move.actorIndex] = toElevation;
-        state.actorRemoved[move.actorIndex] = move.toRemoved ? 1 : 0;
+        jSetActorX(state, move.actorIndex, move.toX);
+        jSetActorY(state, move.actorIndex, move.toY);
+        jSetActorElevation(state, move.actorIndex, toElevation);
+        jSetActorRemoved(state, move.actorIndex, move.toRemoved ? 1 : 0);
       });
 
       moves.forEach(({ fillsHole = false, fillHoleX = null, fillHoleY = null }) => {
@@ -6138,9 +6966,20 @@
           return;
         }
 
-        state.terrain[cellIndex(fillHoleX, fillHoleY)] = terrainTypes.floor;
+        jSetTerrain(state, cellIndex(fillHoleX, fillHoleY), terrainTypes.floor);
       });
     }
+
+    // Perf: shared per-engine scratch for the dynamic sync pass — the legacy
+    // pass allocated a Map + two Int16Arrays per move() call, a major share
+    // of the GC pressure the profiler attributed to search.
+    const devicesPresent =
+      playerGateCells.length > 0 ||
+      playerLiftCells.length > 0 ||
+      orangeWallCells.length > 0 ||
+      orangeButtonCells.length > 0;
+    const syncOriginalElevations = new Int16Array(actorCount);
+    const syncIterationElevations = new Int16Array(actorCount);
 
     function syncDynamicActorElevationsAndFalls(
       state,
@@ -6148,68 +6987,110 @@
       previousGateState = computeRaisedPlayerGateSet(state),
       previousOrangeButtonsPressed = areOrangeButtonsPressed(state)
     ) {
+      // Fast exit: with no device terrain, no hole/void cells, and every
+      // actor exactly at ground level, nothing can ride a surface
+      // transition, fall, or sink — the whole pass is a no-op. This is the
+      // common case for flat rooms and a large share of search expansions.
+      const anyDeviceButtons = devicesPresent || orangeButtonActors.length > 0;
+
+      if (!anyDeviceButtons && !levelHasVoidOrHoleCells) {
+        let anyOffGround = false;
+
+        for (let index = 0; index < actorCount; index += 1) {
+          if (!state.actorRemoved[index] && (state.actorElevation[index] || 0) !== 0) {
+            anyOffGround = true;
+            break;
+          }
+        }
+
+        if (!anyOffGround) {
+          return;
+        }
+      }
+
       const moveByActor = new Map(moves.map((move) => [move.actorIndex, move]));
-      const originalElevations = new Int16Array(state.actorElevation);
+      syncOriginalElevations.set(state.actorElevation);
+      const originalElevations = syncOriginalElevations;
       let gateState = computeRaisedPlayerGateSet(state);
       let orangeButtonsPressed = areOrangeButtonsPressed(state);
 
-      function dynamicTerrainSurfaceTransitionsAt(x, y, nextGateState, nextOrangeButtonsPressed) {
-        if (!isInsideBoard(x, y)) {
-          return [];
-        }
-
-        const cell = cellIndex(x, y);
-        return terrainLayersForCell(state, cell)
-          .map((layer) => ({
-            from: terrainLayerSurfaceHeight(
-              state,
-              cell,
-              layer,
-              previousGateState,
-              previousOrangeButtonsPressed
-            ),
-            to: terrainLayerSurfaceHeight(
-              state,
-              cell,
-              layer,
-              nextGateState,
-              nextOrangeButtonsPressed
-            )
-          }))
-          .filter(
-            (transition) =>
-              transition.from !== null &&
-              transition.to !== null &&
-              transition.from !== transition.to
-          );
-      }
 
       function dynamicTerrainRideElevation(index, nextGateState, nextOrangeButtonsPressed) {
         const elevation = actorElevation(state, index);
-        const hasActorSupport = actorSupportsElevation(
-          state,
-          state.actorX[index],
-          state.actorY[index],
-          elevation,
-          new Set([index]),
-          true
-        );
 
-        if (hasActorSupport) {
+        // Surface transitions only exist on device terrain; without any,
+        // there is nothing to ride (perf fast path — this loop used to build
+        // two arrays per actor per iteration).
+        if (!devicesPresent) {
           return elevation;
         }
 
-        const transitions = dynamicTerrainSurfaceTransitionsAt(
-          state.actorX[index],
-          state.actorY[index],
-          nextGateState,
-          nextOrangeButtonsPressed
-        );
+        const x = state.actorX[index];
+        const y = state.actorY[index];
 
-        for (const transition of transitions) {
-          if (transition.from === elevation) {
-            return transition.to;
+        if (
+          actorSupportsElevationExcluding(state, x, y, elevation, index, true)
+        ) {
+          return elevation;
+        }
+
+        if (!isInsideBoard(x, y)) {
+          return elevation;
+        }
+
+        const cell = cellIndex(x, y);
+        const layers = terrainLayersForCell(state, cell);
+
+        for (const layer of layers) {
+          const from = terrainLayerSurfaceHeight(
+            state,
+            cell,
+            layer,
+            previousGateState,
+            previousOrangeButtonsPressed
+          );
+
+          if (from === null || from !== elevation) {
+            continue;
           }
+
+          const to = terrainLayerSurfaceHeight(
+            state,
+            cell,
+            layer,
+            nextGateState,
+            nextOrangeButtonsPressed
+          );
+
+          if (to === null || to === from) {
+            continue;
+          }
+
+          // FIX(SEMANTICS §devices): never ride a rising surface into a
+          // terrain-blocked voxel (a gate/orange wall rising under a box
+          // below a bridge used to embed the box inside the bridge). Stop
+          // at the highest non-blocked elevation on the way up; stay put
+          // if every step is blocked. Downward transitions are unchanged.
+          if (to > from) {
+            for (let target = to; target > elevation; target -= 1) {
+              if (
+                !terrainBlocksElevation(
+                  state,
+                  x,
+                  y,
+                  target,
+                  nextGateState,
+                  nextOrangeButtonsPressed
+                )
+              ) {
+                return target;
+              }
+            }
+
+            return elevation;
+          }
+
+          return to;
         }
 
         return elevation;
@@ -6281,6 +7162,12 @@
 
         const elevation = actorElevation(state, index);
         const ignoredActors = new Set([index]);
+        // FIX(SEMANTICS §elevation): a falling PLAYER does not rest on a main
+        // player's head — the movement rules forbid standing there, so the
+        // fall pass must not create that state (legacy left a rider standing
+        // on the pusher's head, temporarily uncontrollable). Boxes may still
+        // rest on player heads (preserved legacy rule).
+        const supportIncludesPlayers = !isPlayerActor(index);
 
         if (
           surfaceSupportsElevation(
@@ -6291,7 +7178,7 @@
             nextGateState,
             nextOrangeButtonsPressed,
             ignoredActors,
-            true
+            supportIncludesPlayers
           )
         ) {
           return elevation;
@@ -6306,7 +7193,8 @@
           occupied,
           nextGateState,
           nextOrangeButtonsPressed,
-          ignoredActors
+          ignoredActors,
+          supportIncludesPlayers
         );
 
         if (landingElevation !== null) {
@@ -6338,7 +7226,8 @@
         gateState = computeRaisedPlayerGateSet(state);
         orangeButtonsPressed = areOrangeButtonsPressed(state);
         let changed = false;
-        const iterationStartElevations = new Int16Array(state.actorElevation);
+        syncIterationElevations.set(state.actorElevation);
+        const iterationStartElevations = syncIterationElevations;
         const changedSupportActors = new Set();
 
         function setDynamicElevation(index, toElevation) {
@@ -6346,7 +7235,7 @@
             return;
           }
 
-          state.actorElevation[index] = toElevation;
+          jSetActorElevation(state, index, toElevation);
           changed = true;
 
           if (isSupportActorType(actorTypes[index])) {
@@ -6358,9 +7247,24 @@
           if (
             state.actorRemoved[index] ||
             actorTypes[index] === "weightless_box" ||
-            isCloneActor(index) ||
-            !isSupportActorType(actorTypes[index])
+            isCloneActor(index)
           ) {
+            continue;
+          }
+
+          if (!isSupportActorType(actorTypes[index])) {
+            // FIX(SEMANTICS §devices): punchers and button actors ride device
+            // surface transitions beneath them — a puncher resting on a lift
+            // used to be entombed at its stale elevation after one toggle and
+            // never trigger again. They are fixtures: ride only, never fall.
+            // Gems deliberately stay put (they float; owner decision).
+            if (isPuncherActor(index) || isOrangeButtonActor(index)) {
+              setDynamicElevation(
+                index,
+                dynamicTerrainRideElevation(index, gateState, orangeButtonsPressed)
+              );
+            }
+
             continue;
           }
 
@@ -6532,7 +7436,7 @@
             state.terrain[cellIndex(moveRecord.fillHoleX, moveRecord.fillHoleY)];
         }
 
-        state.actorRemoved[index] = 1;
+        jSetActorRemoved(state, index, 1);
         return true;
       }
 
@@ -6565,7 +7469,7 @@
 
           const moveRecord = ensureDynamicMove(index, toElevation);
 
-          state.actorElevation[index] = toElevation;
+          jSetActorElevation(state, index, toElevation);
           changed = changed || toElevation !== previousElevation;
 
           if (markDynamicHoleFallForMove(index, moveRecord, toElevation)) {
@@ -6860,8 +7764,8 @@
             moveRecord.toRemoved = shouldFallIntoHole;
           }
 
-          state.actorElevation[member] = toElevation;
-          state.actorRemoved[member] = shouldFallIntoHole ? 1 : 0;
+          jSetActorElevation(state, member, toElevation);
+          jSetActorRemoved(state, member, shouldFallIntoHole ? 1 : 0);
         });
       }
 
@@ -6974,8 +7878,8 @@
               changed = true;
             }
 
-            state.actorElevation[member] = toElevation;
-            state.actorRemoved[member] = shouldFallIntoHole ? 1 : 0;
+            jSetActorElevation(state, member, toElevation);
+            jSetActorRemoved(state, member, shouldFallIntoHole ? 1 : 0);
           });
         });
 
@@ -7062,10 +7966,127 @@
       });
     }
 
+    // Whether the destination elevation of a lift toggle is blocked by any
+    // terrain layer OTHER than the lift itself (whose state the toggle is
+    // about to change) — e.g. a bridge layer authored above the lift.
+    function liftToggleDestinationBlocked(state, x, y, elevation, gateState, orangeButtonsPressed) {
+      if (!isInsideBoard(x, y)) {
+        return true;
+      }
+
+      const cell = cellIndex(x, y);
+
+      return terrainLayersForCell(state, cell).some(
+        (layer) =>
+          layer.type !== terrainTypes.player_lift &&
+          terrainLayerBlocksElevation(
+            state,
+            cell,
+            layer,
+            gateState,
+            orangeButtonsPressed,
+            elevation
+          )
+      );
+    }
+
+    // FIX(SEMANTICS R5): unified endpoint sweep. Any live MAIN player that
+    // actually moved this turn runs the same endpoint interactions the
+    // walking branch runs — lift toggle on arrival and gem collection at the
+    // exact final cell+elevation. Legacy skipped these entirely for punched
+    // and clone-carried players (landing exactly on a gem collected nothing;
+    // landing on a lift left it dead).
+    function applyEndpointDeviceInteractions(
+      state,
+      moves,
+      pendingLiftToggles,
+      gateState,
+      orangeButtonsPressed,
+      collectedGems,
+      searchMode
+    ) {
+      const processed = new Set();
+
+      for (let index = moves.length - 1; index >= 0; index -= 1) {
+        const record = moves[index];
+
+        if (record.visualOnly || record.toRemoved) {
+          continue;
+        }
+
+        const actor = record.actorIndex;
+
+        if (processed.has(actor)) {
+          continue;
+        }
+
+        processed.add(actor);
+
+        if (!isMainPlayerActor(actor) || state.actorRemoved[actor]) {
+          continue;
+        }
+
+        const x = state.actorX[actor];
+        const y = state.actorY[actor];
+
+        if (record.punchSlide === true) {
+          const elevation = actorElevation(state, actor);
+          const liftLayer = playerLiftLayerAtElevation(
+            state,
+            x,
+            y,
+            elevation,
+            gateState,
+            orangeButtonsPressed
+          );
+          const alreadyToggled = pendingLiftToggles.some(
+            (toggle) => toggle.x === x && toggle.y === y
+          );
+
+          if (liftLayer && !alreadyToggled) {
+            const toRaised = !isRaisedPlayerLift(state, x, y);
+            const toElevation = liftLayer.elevation + (toRaised ? 1 : 0);
+
+            if (
+              !liftToggleDestinationBlocked(state, x, y, toElevation, gateState, orangeButtonsPressed)
+            ) {
+              setPlayerLiftRaised(state, x, y, toRaised);
+              pendingLiftToggles.push({ x, y, raised: toRaised });
+              jSetActorElevation(state, actor, toElevation);
+              record.toElevation = toElevation;
+            }
+          }
+        }
+
+        const finalElevation = actorElevation(state, actor);
+
+        if (!isHole(state, x, y, finalElevation)) {
+          collectGemsAt(state, x, y, finalElevation, moves, collectedGems, 0, 1, searchMode);
+        }
+      }
+    }
+
     function move(state, dx, dy, options = {}) {
       const searchMode = options.search === true;
-      const attemptSnapshotBuffer = options.attemptSnapshot || null;
-      const occupiedSnapshotBuffer = options.occupiedSnapshot || null;
+
+      // Journal lifecycle: each top-level move starts a fresh journal segment.
+      // undoMove() can exactly roll back the most recent move (LIFO — the
+      // solver contract); older results fall back to record-based restore.
+      journalEpoch += 1;
+      journalLength = 0;
+
+      if (searchMode) {
+        // Search relies on the incremental hash; establish a valid baseline.
+        if (state.hashValid !== true) {
+          recomputeHash(state);
+        }
+      } else {
+        // Play-mode buffers can be mutated directly by tooling
+        // (scripts/maze-bridge.js teleports/overrides) — never trust a stale
+        // incremental hash there; recompute lazily on demand instead.
+        state.hashValid = false;
+      }
+
       const occupied = buildOccupiedMap(state);
       const raisedPlayerGates = computeRaisedPlayerGateSet(state);
       const orangeButtonsPressed = areOrangeButtonsPressed(state);
@@ -7073,9 +8094,9 @@
       const moves = [];
       const collectedGems = new Set();
       const pendingLiftToggles = [];
-      const originalActorX = new Int16Array(state.actorX);
-      const originalActorY = new Int16Array(state.actorY);
-      const originalActorElevation = new Int16Array(state.actorElevation);
+      originalActorX.set(state.actorX);
+      originalActorY.set(state.actorY);
+      originalActorElevation.set(state.actorElevation);
       const continuePunchSlide = options.continuePunchSlide === true;
       const carriedPlayers = new Set();
 
@@ -7103,8 +8124,8 @@
           const moveStartIndex = moves.length;
           const ignoredActors = new Set(members);
           carriedRiders.forEach((rider) => ignoredActors.add(rider.actorIndex));
-          const attemptSnapshot = cloneState(state);
-          const occupiedSnapshot = new Set(occupied);
+          const attemptSnapshot = captureAttemptBefore(state);
+          const attemptJournalMark = journalMark();
           const clonePushCluster = collectWeightlessPushCluster(
             state,
             cloneGroupId,
@@ -7223,9 +8244,8 @@
             return;
           }
 
-          copyStateInto(state, attemptSnapshot);
-          occupied.clear();
-          occupiedSnapshot.forEach((key) => occupied.add(key));
+          journalRollback(state, attemptJournalMark);
+          occupancyRebuild(state);
           moves.length = moveStartIndex;
           return;
         }
@@ -7334,19 +8354,21 @@
           }
 
           const pushSlopeBlocker = (blocker, pushDx = stepDx, pushDy = stepDy) => {
-            const attemptSnapshot = attemptSnapshotBuffer || cloneState(state);
-            const occupiedSnapshot = occupiedSnapshotBuffer || new Set(occupied);
+            const attemptJournalMark = journalMark();
             const moveCount = moves.length;
-            const pushBudget = countSupportingPlayers(state, player, pushDx, pushDy);
-
-            if (attemptSnapshotBuffer) {
-              copyStateInto(attemptSnapshotBuffer, state);
-            }
-
-            if (occupiedSnapshotBuffer) {
-              occupiedSnapshotBuffer.clear();
-              occupied.forEach((key) => occupiedSnapshotBuffer.add(key));
-            }
+            // FIX(SEMANTICS R3): compute the push train from the slider's
+            // CONTACT position, not the pre-move origin — a lone player
+            // ramming a slope mid-slide has no trailing train, while a train
+            // standing directly behind the contact cell still counts.
+            const pushBudget = countSupportingPlayersAt(
+              state,
+              player,
+              nextX,
+              nextY,
+              travelElevation,
+              pushDx,
+              pushDy
+            );
 
             const result = attemptPushActor(
               state,
@@ -7367,9 +8389,8 @@
               return true;
             }
 
-            copyStateInto(state, attemptSnapshot);
-            occupied.clear();
-            occupiedSnapshot.forEach((key) => occupied.add(key));
+            journalRollback(state, attemptJournalMark);
+            occupancyRebuild(state, player);
             moves.length = moveCount;
             return false;
           };
@@ -7563,23 +8584,14 @@
             let didMoveBlockingActor = false;
 
             if (canAttemptInitialPush) {
-              const attemptSnapshot = attemptSnapshotBuffer || cloneState(state);
-              const occupiedSnapshot = occupiedSnapshotBuffer || new Set(occupied);
+              const attemptSnapshot = captureAttemptBefore(state);
+              const attemptJournalMark = journalMark();
               const moveCount = moves.length;
               const pushBudget = countSupportingPlayers(state, player, stepDx, stepDy);
               const pushedActorMembers = pushActorMembers(state, actorToPush);
               const pushRidesSupport =
                 supportActor !== -1 &&
                 pushEntityKey(supportActor) === pushEntityKey(actorToPush);
-
-              if (attemptSnapshotBuffer) {
-                copyStateInto(attemptSnapshotBuffer, state);
-              }
-
-              if (occupiedSnapshotBuffer) {
-                occupiedSnapshotBuffer.clear();
-                occupied.forEach((key) => occupiedSnapshotBuffer.add(key));
-              }
 
               const result = attemptPushActor(
                 state,
@@ -7602,7 +8614,10 @@
                       y: moveTargetY,
                       elevation: moveTargetElevation
                     }
-                  ]
+                  ],
+                  pusherX: fromX,
+                  pusherY: fromY,
+                  pusherElevation: fromElevation
                 }
               );
 
@@ -7720,15 +8735,13 @@
                   }
                   didMoveBlockingActor = true;
                 } else {
-                  copyStateInto(state, attemptSnapshot);
-                  occupied.clear();
-                  occupiedSnapshot.forEach((key) => occupied.add(key));
+                  journalRollback(state, attemptJournalMark);
+                  occupancyRebuild(state, player);
                   moves.length = moveCount;
                 }
               } else {
-                copyStateInto(state, attemptSnapshot);
-                occupied.clear();
-                occupiedSnapshot.forEach((key) => occupied.add(key));
+                journalRollback(state, attemptJournalMark);
+                occupancyRebuild(state, player);
                 moves.length = moveCount;
               }
             }
@@ -7813,8 +8826,8 @@
         }
 
         if (nextX !== fromX || nextY !== fromY || travelElevation !== fromElevation || levelExit) {
-          state.actorX[player] = nextX;
-          state.actorY[player] = nextY;
+          jSetActorX(state, player, nextX);
+          jSetActorY(state, player, nextY);
           let toElevation = fromElevation;
 
           const playerLiftLayer = playerLiftLayerAtElevation(
@@ -7830,12 +8843,32 @@
             toElevation = travelElevation;
           } else if (playerLiftLayer) {
             const toRaised = !isRaisedPlayerLift(state, nextX, nextY);
-            pendingLiftToggles.push({
-              x: nextX,
-              y: nextY,
-              raised: toRaised
-            });
-            toElevation = playerLiftLayer.elevation + (toRaised ? 1 : 0);
+            const liftedElevation = playerLiftLayer.elevation + (toRaised ? 1 : 0);
+
+            // FIX(SEMANTICS §devices): a lift never moves its rider into a
+            // terrain-blocked voxel (e.g. a bridge layer authored above the
+            // lift — legacy embedded the player in the bridge and soft-locked
+            // the game). The step succeeds; the toggle is refused.
+            if (
+              !liftToggleDestinationBlocked(
+                state,
+                nextX,
+                nextY,
+                liftedElevation,
+                raisedPlayerGates,
+                orangeButtonsPressed
+              )
+            ) {
+              pendingLiftToggles.push({
+                x: nextX,
+                y: nextY,
+                raised: toRaised
+              });
+              toElevation = liftedElevation;
+            } else {
+              toElevation =
+                playerLiftLayer.elevation + (isRaisedPlayerLift(state, nextX, nextY) ? 1 : 0);
+            }
           } else if (iceSlipLanding) {
             toElevation = iceSlipLanding.toElevation;
           } else {
@@ -7875,7 +8908,7 @@
             });
           }
 
-          state.actorElevation[player] = toElevation;
+          jSetActorElevation(state, player, toElevation);
           occupiedElevation = toElevation;
 
           const travelDistance = Math.abs(nextX - fromX) + Math.abs(nextY - fromY);
@@ -7905,10 +8938,6 @@
               travelPath.length > 2 ||
               pathControlsElevation;
 
-            if (continuePunchSlide) {
-              moveRecord.punchSlide = true;
-            }
-
             if (levelExit) {
               moveRecord.levelExit = true;
               moveRecord.levelExitDx = levelExit.dx;
@@ -7916,22 +8945,29 @@
               moveRecord.levelExitElevation = levelExit.elevation;
               moveRecord.levelExitSourceType = levelExit.sourceType;
             }
+          }
 
-            if (
-              iceSlipLanding ||
-              (!playerLiftLayer &&
-                (toElevation !== (moveRecord.pathEndElevation ?? toElevation) ||
-                  !canPlayerStandAtElevation(
-                    state,
-                    nextX,
-                    nextY,
-                    toElevation,
-                    raisedPlayerGates,
-                    orangeButtonsPressed
-                  )))
-            ) {
-              moveRecord.iceSlipOff = true;
-            }
+          // FIX(SEMANTICS R2): punchSlide and iceSlipOff drive pit removal in
+          // applyHoleFalls — they are semantic flags and must exist in both
+          // modes so search simulates the same deaths as play.
+          if (continuePunchSlide) {
+            moveRecord.punchSlide = true;
+          }
+
+          if (
+            iceSlipLanding ||
+            (!playerLiftLayer &&
+              (toElevation !== (moveRecord.pathEndElevation ?? toElevation) ||
+                !canPlayerStandAtElevation(
+                  state,
+                  nextX,
+                  nextY,
+                  toElevation,
+                  raisedPlayerGates,
+                  orangeButtonsPressed
+                )))
+          ) {
+            moveRecord.iceSlipOff = true;
           }
 
           moves.push(moveRecord);
@@ -7950,6 +8986,25 @@
               collectedGems,
               searchMode
             );
+
+            // FIX(SEMANTICS §devices): stepping onto a lift is a co-location
+            // with whatever rests on the platform — collect gems at the
+            // arrival elevation too, before the toggle raised the player.
+            // Legacy compared only post-toggle elevations, so a gem sitting
+            // on a lowered lift was never collectable.
+            if (playerLiftLayer && toElevation !== travelElevation) {
+              collectGemsAtEndpoint(
+                state,
+                fromX,
+                fromY,
+                nextX,
+                nextY,
+                travelElevation,
+                moves,
+                collectedGems,
+                searchMode
+              );
+            }
           }
         } else if (!searchMode && travelPath.length > 1) {
           const pathEndElevation = travelPath[travelPath.length - 1]?.elevation ?? fromElevation;
@@ -7984,6 +9039,81 @@
 
       if (moves.length > 0) {
         collapseSequentialActorMoves(moves);
+
+        // FIX(SEMANTICS §devices): lift toggles apply BEFORE punch resolution.
+        // Legacy applied them after, so a punch could slide an actor onto a
+        // lift cell that was about to raise, and the second hole-fall pass
+        // then silently erased the actor (a live player deleted on a board
+        // with no holes). With the toggle applied first, the raised lift
+        // simply blocks the punch.
+        //
+        // FIX(SEMANTICS §devices): non-player actors resting exactly on the
+        // lift surface ride the toggle — a puncher on a lift used to be
+        // entombed at its stale elevation and never trigger again, and boxes
+        // were stranded the same way. Players own their elevation via their
+        // endpoint logic; gems float (owner decision). Rides never enter a
+        // terrain-blocked voxel.
+        pendingLiftToggles.forEach(({ x, y, raised }) => {
+          const liftCell = cellIndex(x, y);
+          const liftLayer =
+            terrainLayersForCell(state, liftCell).find(
+              (layer) => layer.type === terrainTypes.player_lift
+            ) || null;
+          const oldSurface = liftLayer
+            ? liftLayer.elevation + (state.liftRaised[liftCell] === 1 ? 1 : 0)
+            : null;
+
+          setPlayerLiftRaised(state, x, y, raised);
+
+          if (!liftLayer) {
+            return;
+          }
+
+          const newSurface = liftLayer.elevation + (raised ? 1 : 0);
+
+          if (newSurface === oldSurface) {
+            return;
+          }
+
+          for (let index = 0; index < actorCount; index += 1) {
+            if (
+              state.actorRemoved[index] ||
+              isPlayerActor(index) ||
+              isCollectibleActor(index) ||
+              state.actorX[index] !== x ||
+              state.actorY[index] !== y ||
+              (state.actorElevation[index] || 0) !== oldSurface
+            ) {
+              continue;
+            }
+
+            let target = newSurface;
+
+            if (newSurface > oldSurface) {
+              while (
+                target > oldSurface &&
+                terrainBlocksElevation(state, x, y, target, raisedPlayerGates, orangeButtonsPressed)
+              ) {
+                target -= 1;
+              }
+
+              if (target === oldSurface) {
+                continue;
+              }
+            }
+
+            jSetActorElevation(state, index, target);
+            mergeMoveRecord(
+              state,
+              moves,
+              index,
+              originalActorX,
+              originalActorY,
+              originalActorElevation
+            );
+          }
+        });
+
         let movedPuncherCandidates = syncAttachedPunchersForMoves(
           state,
           moves,
@@ -8000,6 +9130,8 @@
           originalActorY,
           originalActorElevation,
           searchMode,
+          raisedPlayerGates,
+          orangeButtonsPressed,
           movedPuncherCandidates.size > 0
             ? {
                 candidateActorIndexes: movedPuncherCandidates,
@@ -8030,6 +9162,8 @@
             originalActorY,
             originalActorElevation,
             searchMode,
+            raisedPlayerGates,
+            orangeButtonsPressed,
             {
               candidateActorIndexes: movedPuncherCandidates,
               includeUnpunchedMovedActors: true,
@@ -8046,10 +9180,16 @@
           );
         }
         collapseSequentialActorMoves(moves);
+        applyEndpointDeviceInteractions(
+          state,
+          moves,
+          pendingLiftToggles,
+          raisedPlayerGates,
+          orangeButtonsPressed,
+          collectedGems,
+          searchMode
+        );
         applyHoleFalls(state, moves);
-        pendingLiftToggles.forEach(({ x, y, raised }) => {
-          setPlayerLiftRaised(state, x, y, raised);
-        });
         applyMoveFinalState(state, moves);
         syncDynamicActorElevationsAndFalls(state, moves, raisedPlayerGates, orangeButtonsPressed);
         syncAttachedPunchersForMoves(
@@ -8072,11 +9212,26 @@
         applyMoveFinalState(state, moves);
       }
 
+      let effectiveMoveCount = 0;
+
+      for (let index = 0; index < moves.length; index += 1) {
+        if (moves[index].visualOnly !== true) {
+          effectiveMoveCount += 1;
+        }
+      }
+
       return {
         direction: directionNames[`${dx},${dy}`] || "",
         liftToggles: pendingLiftToggles.map(({ x, y, raised }) => ({ x, y, raised })),
-        moved: moves.length > 0,
-        moves
+        // FIX(SEMANTICS): moved reflects a real state change in BOTH modes.
+        // Legacy play mode returned moved:true for zero-effect visual bounce
+        // records, so agents scored no-op inputs as successful moves and the
+        // solver's move graph disagreed with play mode.
+        moved: effectiveMoveCount > 0,
+        moves,
+        _jStart: 0,
+        _jEnd: journalLength,
+        _jEpoch: journalEpoch
       };
     }
 
@@ -8114,11 +9269,7 @@
     }
 
     function moveForSearch(state, dx, dy) {
-      const result = move(state, dx, dy, {
-        attemptSnapshot: searchAttemptSnapshot,
-        occupiedSnapshot: searchOccupiedSnapshot,
-        search: true
-      });
+      const result = move(state, dx, dy, { search: true });
       result.nonPlayerMoveCount = result.moved ? countNonPlayerMoves(result.moves) : 0;
       return result;
     }
@@ -8128,6 +9279,22 @@
         return;
       }
 
+      // Fast path (the solver contract): undoing the most recent move rolls
+      // the journal back and restores the buffer bit-for-bit, including
+      // elevations the legacy record-replay undo corrupted (audit: elevated
+      // gems reset to 0 on backtrack, poisoning every A* sibling branch).
+      if (
+        moveResult._jEpoch === journalEpoch &&
+        typeof moveResult._jStart === "number" &&
+        moveResult._jEnd === journalLength
+      ) {
+        journalRollback(state, moveResult._jStart);
+        return;
+      }
+
+      // Fallback for non-LIFO undo (another move ran in between): restore
+      // from the move records. Records always carry fromElevation now — the
+      // legacy gem records lacked it, which is what made this path corrupt.
       for (let index = moveResult.moves.length - 1; index >= 0; index -= 1) {
         const moveRecord = moveResult.moves[index];
 
@@ -8156,11 +9323,20 @@
 
       if (Array.isArray(moveResult.liftToggles)) {
         moveResult.liftToggles.forEach(({ x, y, raised }) => {
-          setPlayerLiftRaised(state, x, y, !raised);
+          state.liftRaised[cellIndex(x, y)] = raised ? 0 : 1;
         });
       }
+
+      state.hashValid = false;
     }
 
+    // FIX(SEMANTICS R5): solved means COLLECTED. Legacy had a second clause
+    // counting any live player-type actor merely co-located with a live gem —
+    // clones included — so the solver returned "solutions" (clone parked on a
+    // gem) that collected nothing when replayed, and a solved state could
+    // become unsolved one move later. Main players now collect gems at every
+    // arrival mode (walk, punch, carried), so the co-location clause is
+    // unnecessary as well as wrong.
     function isSolved(state) {
       for (let index = 0; index < actorCount; index += 1) {
         if (
@@ -8172,30 +9348,54 @@
         }
       }
 
-      for (let gem = 0; gem < actorCount; gem += 1) {
-        if (actorTypes[gem] !== "gem" || state.actorRemoved[gem]) {
-          continue;
-        }
-
-        for (let player = 0; player < actorCount; player += 1) {
-          if (!isPlayerActor(player) || state.actorRemoved[player]) {
-            continue;
-          }
-
-          if (
-            state.actorX[player] === state.actorX[gem] &&
-            state.actorY[player] === state.actorY[gem] &&
-            actorElevation(state, player) === actorElevation(state, gem)
-          ) {
-            return true;
-          }
-        }
-      }
-
       return false;
     }
 
+    // FIX(SEMANTICS §heuristic): the default heuristic is ADMISSIBLE. One
+    // input moves a player along exactly one axis (however many cells it
+    // slides), so reaching a gem needs at least one move per differing axis.
+    // The legacy Manhattan+elevation heuristic overestimates on ice — a
+    // 7-cell slide costs 1 move, not 7 — which made algorithm:'astar' return
+    // non-minimal "minimum move" counts on any ice level. The legacy
+    // distance heuristic remains available as heuristicDistance for
+    // weighted/greedy search modes.
     function heuristic(state) {
+      let best = Infinity;
+      let hasPlayer = false;
+      let hasGem = false;
+
+      for (let player = 0; player < actorCount; player += 1) {
+        if (!isPlayerActor(player) || state.actorRemoved[player]) {
+          continue;
+        }
+
+        hasPlayer = true;
+
+        for (let gem = 0; gem < actorCount; gem += 1) {
+          if (actorTypes[gem] !== "gem" || state.actorRemoved[gem]) {
+            continue;
+          }
+
+          hasGem = true;
+
+          // Without long-movers, every input advances a player at most one
+          // cell, so Manhattan distance is admissible. With ice/slopes/
+          // punchers, one input can cross many cells — only the axis count
+          // is a safe lower bound.
+          const cost = levelHasLongPlayerMoves
+            ? (state.actorX[player] !== state.actorX[gem] ? 1 : 0) +
+              (state.actorY[player] !== state.actorY[gem] ? 1 : 0)
+            : Math.abs(state.actorX[player] - state.actorX[gem]) +
+              Math.abs(state.actorY[player] - state.actorY[gem]);
+
+          best = Math.min(best, cost);
+        }
+      }
+
+      return hasPlayer && hasGem && Number.isFinite(best) ? best : 0;
+    }
+
+    function heuristicDistance(state) {
       let best = Infinity;
       let hasPlayer = false;
       let hasGem = false;
@@ -8246,9 +9446,11 @@
       height,
       heuristic,
       initialState,
+      heuristicDistance,
       isPlayerLift,
       isPlayerMove,
       isSolved,
+      loadWarnings,
       move,
       moveForSearch,
       pressedOrangeWallLowersAsBlock,
