@@ -1242,6 +1242,7 @@
     ghostButton: null,
     hideFinalizeTimer: 0,
     hideTimer: 0,
+    layoutAnimation: null,
     minimizeButton: null,
     minimized: false,
     path: null,
@@ -1277,6 +1278,7 @@
     "}",
     ".solver-dock[hidden] { display: none; }",
     ".solver-dock.is-open { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }",
+    ".solver-dock.is-layout-tweening { overflow: hidden; will-change: height, width; }",
     ".solver-dock__head { align-items: center; display: flex; gap: 8px; }",
     ".solver-dock__title {",
     "  font-family: var(--font-display, inherit);",
@@ -1490,12 +1492,62 @@
     return solverDock;
   }
 
-  function setSolverDockMinimized(minimized) {
+  function setSolverDockMinimized(minimized, options = {}) {
     const dock = ensureSolverDock();
-    dock.minimized = minimized === true && hasPlayableSolution();
+    const nextMinimized = minimized === true && hasPlayableSolution();
+    let startRect = dock.element.getBoundingClientRect();
+
+    if (dock.layoutAnimation) {
+      startRect = dock.element.getBoundingClientRect();
+      dock.layoutAnimation.cancel();
+      dock.layoutAnimation = null;
+      dock.element.classList.remove("is-layout-tweening");
+    }
+
+    if (dock.minimized === nextMinimized) {
+      syncSolverDockControls();
+      positionSolverDock();
+      return;
+    }
+
+    dock.minimized = nextMinimized;
     dock.element.classList.toggle("is-minimized", dock.minimized);
     syncSolverDockControls();
     positionSolverDock();
+
+    const endRect = dock.element.getBoundingClientRect();
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const shouldTween =
+      options.animate !== false &&
+      !dock.element.hidden &&
+      typeof dock.element.animate === "function" &&
+      !reduceMotion &&
+      (Math.abs(startRect.width - endRect.width) > 1 ||
+        Math.abs(startRect.height - endRect.height) > 1);
+
+    if (!shouldTween) return;
+
+    dock.element.classList.add("is-layout-tweening");
+    const animation = dock.element.animate(
+      [
+        { height: `${startRect.height}px`, width: `${startRect.width}px` },
+        { height: `${endRect.height}px`, width: `${endRect.width}px` }
+      ],
+      {
+        duration: 280,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)"
+      }
+    );
+    dock.layoutAnimation = animation;
+    animation.finished
+      .catch(() => {})
+      .finally(() => {
+        if (dock.layoutAnimation !== animation) return;
+        dock.layoutAnimation = null;
+        dock.element.classList.remove("is-layout-tweening");
+      });
   }
 
   function solverDockTopOffset() {
@@ -1560,7 +1612,7 @@
     window.clearTimeout(solverDock.hideFinalizeTimer);
     window.clearInterval(solverDock.tickTimer);
     dock.element.hidden = false;
-    setSolverDockMinimized(false);
+    setSolverDockMinimized(false, { animate: false });
     positionSolverDock();
     dock.text.textContent = (label ? label + " · " : "") + "starting search...";
     dock.bar.style.width = "0%";
@@ -1616,7 +1668,7 @@
   function dismissSolverDock() {
     if (!solverDock.element) return;
     clearSolverGhostOverlay();
-    setSolverDockMinimized(false);
+    setSolverDockMinimized(false, { animate: false });
     solverDock.element.classList.remove("is-open");
     window.setTimeout(() => {
       if (!state.isSolverBusy && solverDock.element) solverDock.element.hidden = true;
@@ -7273,6 +7325,7 @@
       return;
     }
 
+    setSolverDockMinimized(true);
     state.isSolutionPlaying = true;
     setStatus("Playing solver solution...", "warning");
     syncSolverButtonState();

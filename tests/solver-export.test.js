@@ -51,7 +51,10 @@ assert.equal(replayOptions().format, "mp4");
 assert.equal(replayOptions().accelerated, true);
 
 assert.match(authorSource, /class="solver-dock__minimize"/);
-assert.match(authorSource, /function setSolverDockMinimized\(minimized\)/);
+assert.match(authorSource, /function setSolverDockMinimized\(minimized, options = \{\}\)/);
+assert.match(authorSource, /classList\.add\("is-layout-tweening"\)/);
+assert.match(authorSource, /cubic-bezier\(0\.22, 1, 0\.36, 1\)/);
+assert.match(authorSource, /setSolverDockMinimized\(true\);[\s\S]*?state\.isSolutionPlaying = true/);
 assert.match(authorSource, /class="solver-dock__export-format"/);
 assert.match(authorSource, /option value="mp4">MP4<\/option><option value="gif">GIF<\/option>/);
 assert.match(authorSource, /solverGhostIconSvg/);
