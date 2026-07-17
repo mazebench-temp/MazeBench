@@ -11,6 +11,7 @@ const {
 const {
   createAgentRunService,
   filterPrimeCatalogForHarness,
+  primeReasoningLevels,
   primeHarnessModelCompatible
 } = require("../server/agent-runs");
 const { findPrimeResultsFile } = require("../server/token-usage");
@@ -77,6 +78,8 @@ try {
   assert.match(runSource, /VISION_RUNTIME_IMAGE = "mcr\.microsoft\.com\/playwright:v1\.60\.0-noble"/);
   assert.match(runSource, /opts\.vision \? VISION_RUNTIME_IMAGE : TEXT_RUNTIME_IMAGE/);
   assert.match(runSource, /const taskset = agentic \? "mazebench-agent" : "mazebench"/);
+  assert.doesNotMatch(runSource, /Math\.min\(500/);
+  assert.doesNotMatch(runsSource, /Math\.min\(500/);
   assert.match(liveSource, /MAZEBENCH_EVENT_V1/);
   assert.match(liveSource, /_patch_prime_codex_reasoning_summary/);
   assert.match(liveSource, /PRIME_HARNESS == "codex"/);
@@ -115,6 +118,34 @@ try {
     filterPrimeCatalogForHarness(sampleCatalog, "claude-code").models.map((model) => model.id),
     ["anthropic/claude-sonnet-5"]
   );
+  assert.deepEqual(primeReasoningLevels("openai/gpt-5.6-sol"), [
+    "low", "medium", "high", "xhigh", "max", "ultra"
+  ]);
+  assert.deepEqual(primeReasoningLevels("openai/gpt-5.6-luna"), [
+    "low", "medium", "high", "xhigh", "max"
+  ]);
+  assert.deepEqual(primeReasoningLevels("openai/gpt-5.2"), [
+    "none", "low", "medium", "high", "xhigh"
+  ]);
+  assert.deepEqual(primeReasoningLevels("openai/gpt-5-chat"), []);
+  assert.deepEqual(primeReasoningLevels("anthropic/claude-fable-5"), [
+    "low", "medium", "high", "xhigh", "max"
+  ]);
+  assert.deepEqual(primeReasoningLevels("anthropic/claude-opus-4.6"), [
+    "low", "medium", "high", "max"
+  ]);
+  assert.deepEqual(primeReasoningLevels("anthropic/claude-opus-4.1"), []);
+  assert.deepEqual(primeReasoningLevels("google/gemini-3.5-flash"), [
+    "minimal", "low", "medium", "high"
+  ]);
+  assert.deepEqual(primeReasoningLevels("google/gemini-3.1-pro-preview"), [
+    "low", "medium", "high"
+  ]);
+  assert.deepEqual(primeReasoningLevels("x-ai/grok-4.20-multi-agent"), [
+    "low", "medium", "high", "xhigh"
+  ]);
+  assert.deepEqual(primeReasoningLevels("Qwen/Qwen3.5-0.8B"), []);
+  assert.match(agentSource, /state\.execution === "prime"[\s\S]{0,180}model\.reasoning_levels/);
 
   const primeOnlyService = createAgentRunService({
     agentEnvironment: () => ({}),

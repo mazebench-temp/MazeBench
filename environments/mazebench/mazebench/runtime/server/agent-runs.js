@@ -79,6 +79,89 @@ const PRIME_HARNESSES = new Map([
   ["claude-code", { id: "claude-code", label: "Claude Code", taskset: "mazebench-agent", protocol: "Anthropic Messages" }]
 ]);
 
+const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
+
+function claudeReasoningLevels(modelId) {
+  const id = String(modelId || "").toLowerCase().replace(/\./g, "-");
+  const supportsXhigh = /(?:^|-)claude-(?:fable-5|mythos-5|opus-4-(?:7|8)|sonnet-5)(?:-|$)/.test(`-${id}`);
+  const supportsMax = supportsXhigh ||
+    /(?:^|-)claude-(?:mythos-preview|opus-4-6|sonnet-4-6)(?:-|$)/.test(`-${id}`);
+  const supportsEffort = supportsMax || /(?:^|-)claude-opus-4-5(?:-|$)/.test(`-${id}`);
+
+  if (!supportsEffort) return [];
+  return [
+    ...STANDARD_REASONING_LEVELS,
+    ...(supportsXhigh ? ["xhigh"] : []),
+    ...(supportsMax ? ["max"] : [])
+  ];
+}
+
+// Prime forwards provider-native reasoning values even though its /models
+// response does not publish per-model capability metadata. Keep this mapping
+// deliberately narrow: each entry is backed by the provider's model docs or by
+// the live Codex model metadata for Prime's OpenAI frontier variants. An empty
+// list means "provider default only"; it is safer than offering a control that
+// a model ignores or rejects.
+function primeReasoningLevels(modelId) {
+  const id = String(modelId || "").trim().toLowerCase();
+  const slash = id.indexOf("/");
+  const provider = slash === -1 ? "" : id.slice(0, slash);
+  const model = slash === -1 ? id : id.slice(slash + 1);
+
+  if (provider === "anthropic") {
+    return claudeReasoningLevels(model);
+  }
+
+  if (provider === "google") {
+    if (/^gemini-(?:3-flash-preview|3\.5-flash)$/.test(model)) {
+      return ["minimal", ...STANDARD_REASONING_LEVELS];
+    }
+    if (/^gemini-(?:3\.1-pro-preview|2\.5-(?:flash|flash-lite|pro))$/.test(model)) {
+      return [...STANDARD_REASONING_LEVELS];
+    }
+    return [];
+  }
+
+  if (provider === "x-ai") {
+    if (/^grok-4\.20-multi-agent(?:-|$)/.test(model)) {
+      return [...STANDARD_REASONING_LEVELS, "xhigh"];
+    }
+    if (/^grok-(?:4\.20|4\.5)(?:-|$)/.test(model)) {
+      return [...STANDARD_REASONING_LEVELS];
+    }
+    return [];
+  }
+
+  if (provider !== "openai") return [];
+  if (/^gpt-oss-(?:20b|120b)(?:-|$)/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS];
+  }
+  if (/-chat(?:-|$)/.test(model)) return [];
+  if (/-pro(?:-|$)/.test(model)) return ["high"];
+  if (/^gpt-5\.6-(?:sol|terra)$/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS, "xhigh", "max", "ultra"];
+  }
+  if (/^gpt-5\.6-luna$/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS, "xhigh", "max"];
+  }
+  if (/^gpt-5\.(?:[3-9]|\d{2,})(?:[.-]|$)/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS, "xhigh"];
+  }
+  if (/^gpt-5\.2(?:[.-]|$)/.test(model)) {
+    return ["none", ...STANDARD_REASONING_LEVELS, "xhigh"];
+  }
+  if (/^gpt-5\.1(?:[.-]|$)/.test(model)) {
+    return ["none", ...STANDARD_REASONING_LEVELS];
+  }
+  if (/^gpt-5-codex(?:-|$)/.test(model)) {
+    return [...STANDARD_REASONING_LEVELS];
+  }
+  if (/^gpt-5(?:-(?:mini|nano))?$/.test(model)) {
+    return ["minimal", ...STANDARD_REASONING_LEVELS];
+  }
+  return [];
+}
+
 function primeHarnessModelCompatible(modelId, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
   const id = String(modelId || "").trim().toLowerCase();
@@ -132,6 +215,11 @@ function normalizePrimeHarness(value) {
 function normalizeObservationMode(value) {
   const mode = String(value || "text").toLowerCase();
   return ["json", "vision"].includes(mode) ? mode : "text";
+}
+
+function positiveTurnBudget(value, fallback = 20) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
 function normalizedHideNamesSeed(value) {
@@ -3106,23 +3194,6 @@ function createAgentRunService({
     };
   }
 
-  function claudeReasoningLevels(modelId) {
-    const id = String(modelId || "").toLowerCase().replace(/\./g, "-");
-    const supportsXhigh = /(?:^|-)claude-(?:fable-5|mythos-5|opus-4-(?:7|8)|sonnet-5)(?:-|$)/.test(`-${id}`);
-    const supportsMax = supportsXhigh ||
-      /(?:^|-)claude-(?:mythos-preview|opus-4-6|sonnet-4-6)(?:-|$)/.test(`-${id}`);
-    const supportsEffort = supportsMax || /(?:^|-)claude-opus-4-5(?:-|$)/.test(`-${id}`);
-
-    if (!supportsEffort) return [];
-    return [
-      "low",
-      "medium",
-      "high",
-      ...(supportsXhigh ? ["xhigh"] : []),
-      ...(supportsMax ? ["max"] : [])
-    ];
-  }
-
   function claudeModelCatalog() {
     // Claude Code has no JSON model-catalog command. Its help lists most aliases,
     // while the model picker metadata embedded in the installed CLI is more
@@ -3335,6 +3406,7 @@ function createAgentRunService({
             description: "",
             group: slash === -1 ? "other" : id.slice(0, slash),
             vision: primeModelVision(id),
+            reasoning_levels: primeReasoningLevels(id),
             created_at: Number(row.created) || 0,
             pricing: row.pricing && typeof row.pricing === "object"
               ? {
@@ -3352,7 +3424,7 @@ function createAgentRunService({
         checked_at: modelCatalogCheckedAt(),
         default_model_id: models[0]?.id || "",
         note: models.length
-          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id.`
+          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id and reasoning controls are model-specific.`
           : "The Prime catalog came back empty — type a model id instead."
       };
     } catch (error) {
@@ -3570,7 +3642,7 @@ function createAgentRunService({
         `${definition.label} requires a known-compatible Prime model using ${definition.protocol}. Choose a model from the displayed catalog.`
       );
     }
-    const maxTurns = Math.max(1, Math.min(500, Number(params.max_turns) || 20));
+    const maxTurns = positiveTurnBudget(params.max_turns);
     const mode = normalizeObservationMode(
       params.mode || (params.vision === true || params.vision === "true" ? "vision" : "text")
     );
@@ -3582,10 +3654,12 @@ function createAgentRunService({
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
-    // Reasoning effort → --sampling.reasoning-effort. OpenAI reasoning models and
-    // Claude (extended thinking) honor it; others ignore it. "" = don't send one.
-    const reasoning = ["low", "medium", "high"].includes(String(params.reasoning))
-      ? String(params.reasoning)
+    // Reasoning effort → --sampling.reasoning-effort. Prime forwards native
+    // provider values, but each model supports a different subset. "" means
+    // omit the override and preserve the provider's default.
+    const requestedReasoning = String(params.reasoning || "").toLowerCase();
+    const reasoning = primeReasoningLevels(model).includes(requestedReasoning)
+      ? requestedReasoning
       : "";
     const envDir = path.join(
       rootDir,
@@ -3637,6 +3711,20 @@ function createAgentRunService({
       argv.push("--no-quit");
     }
 
+    if (autoQuit.enabled) {
+      argv.push(
+        "--auto-quit",
+        "--auto-quit-threshold",
+        String(autoQuit.threshold),
+        "--auto-quit-mode",
+        autoQuit.mode,
+        "--auto-quit-window",
+        String(autoQuit.window),
+        "--auto-quit-warning-moves",
+        "10"
+      );
+    }
+
     if (!wantVideo) {
       argv.push("--no-video");
     }
@@ -3652,6 +3740,17 @@ function createAgentRunService({
       .concat(hideNames ? ["--hide-names", "--hide-names-seed", hideNamesSeed] : [])
       .concat(reasoning ? ["--reasoning", reasoning] : [])
       .concat(!allowQuit ? ["--no-quit"] : [])
+      .concat(autoQuit.enabled
+        ? [
+            "--auto-quit",
+            "--auto-quit-threshold",
+            String(autoQuit.threshold),
+            "--auto-quit-mode",
+            autoQuit.mode,
+            "--auto-quit-window",
+            String(autoQuit.window)
+          ]
+        : [])
       .join(" ");
 
     return {
@@ -4433,13 +4532,16 @@ function createAgentRunService({
       throw new Error("This run ended by Auto-Quit. Branch from an earlier action to try a different route.");
     }
 
-    const add = Math.max(1, Math.min(MAX_LOCAL_MOVE_BUDGET, Math.floor(Number(additionalMoves) || 20)));
+    const requestedAdd = positiveTurnBudget(additionalMoves);
+    const add = meta.kind === "prime"
+      ? requestedAdd
+      : Math.min(MAX_LOCAL_MOVE_BUDGET, requestedAdd);
 
     if (meta.kind === "prime") {
       // Verifiers plays one fresh rollout per run, so "continue" gives the model
       // a bigger total budget on the same maze rather than resuming mid-state.
       const base = { ...(meta.launch_params || reconstructParams(meta)), continue_of: runId, kind: "prime" };
-      base.max_turns = Math.max(1, Math.min(500, (Number(meta.moves) || 0) + add));
+      base.max_turns = Math.max(0, Math.floor(Number(meta.moves) || 0)) + add;
       return launchRun(base);
     }
     requireLegacyLocalLaunch();
@@ -4906,6 +5008,7 @@ module.exports = {
   createAgentRunService,
   enrichedPathEnv,
   filterPrimeCatalogForHarness,
+  primeReasoningLevels,
   primeHarnessModelCompatible,
   replayMessageForCommandText
 };

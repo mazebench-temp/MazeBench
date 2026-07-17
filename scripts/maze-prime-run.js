@@ -27,6 +27,11 @@ const HOSTED_SAMPLES_FILE = "prime-evaluation-samples.json";
 const TEXT_RUNTIME_IMAGE = "node:24-bookworm-slim";
 const VISION_RUNTIME_IMAGE = "mcr.microsoft.com/playwright:v1.60.0-noble";
 
+function positiveTurnBudget(value, fallback = 20) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
 function parseArgs(argv) {
   const opts = {
     envDir: "",
@@ -46,6 +51,11 @@ function parseArgs(argv) {
     runId: "",
     vision: false,
     allowQuit: true,
+    autoQuit: false,
+    autoQuitThreshold: 10,
+    autoQuitMode: "cumulative",
+    autoQuitWindow: 100,
+    autoQuitWarningMoves: 10,
     video: true
   };
 
@@ -64,7 +74,7 @@ function parseArgs(argv) {
     else if (arg === "--run-id") opts.runId = String(next() || "");
     else if (arg === "--level") opts.levelId = String(next() || opts.levelId);
     else if (arg === "--game-won-gem-count") opts.gameWonGemCount = Math.max(1, Number(next()) || 69);
-    else if (arg === "--max-turns") opts.maxTurns = Math.max(1, Math.min(500, Number(next()) || 20));
+    else if (arg === "--max-turns") opts.maxTurns = positiveTurnBudget(next());
     else if (arg === "--hosted") opts.hosted = true;
     else if (arg === "--vision") {
       opts.vision = true;
@@ -80,6 +90,21 @@ function parseArgs(argv) {
     else if (arg === "--hide-names-seed") opts.hideNamesSeed = String(next() || "").trim().slice(0, 128);
     else if (arg === "--reasoning") opts.reasoning = String(next() || "").trim();
     else if (arg === "--no-quit") opts.allowQuit = false;
+    else if (arg === "--auto-quit") opts.autoQuit = true;
+    else if (arg === "--auto-quit-threshold") {
+      opts.autoQuitThreshold = Math.max(0, Math.min(100, Number(next()) || 0));
+    }
+    else if (arg === "--auto-quit-mode") {
+      opts.autoQuitMode = String(next() || "").trim().toLowerCase() === "rolling"
+        ? "rolling"
+        : "cumulative";
+    }
+    else if (arg === "--auto-quit-window") {
+      opts.autoQuitWindow = Math.max(1, Math.min(10_000, Math.round(Number(next()) || 100)));
+    }
+    else if (arg === "--auto-quit-warning-moves") {
+      opts.autoQuitWarningMoves = Math.max(0, Math.min(10_000, Math.round(Number(next()) || 0)));
+    }
     else if (arg === "--no-video") opts.video = false;
   }
 
@@ -187,6 +212,11 @@ function hostedEvalArgs(opts) {
     game_won_gem_count: opts.gameWonGemCount,
     max_actions: opts.maxTurns,
     allow_quit: opts.allowQuit,
+    auto_quit: opts.autoQuit,
+    auto_quit_threshold: opts.autoQuitThreshold,
+    auto_quit_mode: opts.autoQuitMode,
+    auto_quit_window: opts.autoQuitWindow,
+    auto_quit_warning_moves: opts.autoQuitWarningMoves,
     observation_mode: opts.observationMode
   };
   if (opts.observationMode === "json") {
@@ -221,7 +251,7 @@ function hostedEvalArgs(opts) {
     "-a",
     JSON.stringify(envArgs),
     "--state-columns",
-    "maze_actions,maze_scorecard,maze_replay,maze_status",
+    "maze_actions,maze_auto_quit,maze_scorecard,maze_replay,maze_status",
     "--timeout-minutes",
     "60",
     "--poll-interval",
@@ -283,6 +313,7 @@ function nestedField(value, key, depth = 0) {
 
 function hostedSampleToResultRow(sample) {
   const mazeActions = nestedField(sample, "maze_actions") || [];
+  const mazeAutoQuit = nestedField(sample, "maze_auto_quit") || {};
   const mazeScorecard = nestedField(sample, "maze_scorecard") || {};
   const mazeReplay = nestedField(sample, "maze_replay") || {};
   const observations = (Array.isArray(sample.completion) ? sample.completion : [])
@@ -301,6 +332,7 @@ function hostedSampleToResultRow(sample) {
     info: {
       ...(sample.info || {}),
       maze_actions: hydratedActions,
+      maze_auto_quit: mazeAutoQuit && typeof mazeAutoQuit === "object" ? mazeAutoQuit : {},
       maze_scorecard: mazeScorecard && typeof mazeScorecard === "object" ? mazeScorecard : {},
       maze_replay: mazeReplay && typeof mazeReplay === "object" ? mazeReplay : {}
     },
@@ -569,6 +601,20 @@ function runEval(opts) {
 
   if (!opts.allowQuit) {
     argv.push("--taskset.allow-quit", "False");
+  }
+  if (opts.autoQuit && !agentic) {
+    argv.push(
+      "--taskset.auto-quit",
+      "True",
+      "--taskset.auto-quit-threshold",
+      String(opts.autoQuitThreshold),
+      "--taskset.auto-quit-mode",
+      opts.autoQuitMode,
+      "--taskset.auto-quit-window",
+      String(opts.autoQuitWindow),
+      "--taskset.auto-quit-warning-moves",
+      String(opts.autoQuitWarningMoves)
+    );
   }
 
   // Ask the model for reasoning tokens. OpenAI reasoning models and Claude

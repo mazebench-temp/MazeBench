@@ -101,7 +101,7 @@
     allowQuit: null,
     autoQuit: null,
     autoQuitThreshold: 10,
-    autoQuitMode: "cumulative",
+    autoQuitMode: "rolling",
     autoQuitWindow: 100,
     catalogs: {},
     catalogRequests: {},
@@ -968,8 +968,10 @@
   }
 
   function reasoningOptions() {
-    if (state.execution === "prime") return ["low", "medium", "high"];
     const model = selectedModel();
+    if (state.execution === "prime") {
+      return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
+    }
     if (state.harness === "claude-code") {
       return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
     }
@@ -1326,7 +1328,7 @@
     setUnlimited(false, false);
     setAllowQuit(null, false);
     state.autoQuitThreshold = 10;
-    state.autoQuitMode = "cumulative";
+    state.autoQuitMode = "rolling";
     state.autoQuitWindow = 100;
     setAutoQuit(null, false);
     setMode(null, false);
@@ -1651,7 +1653,10 @@
           } else if (action === "continue") {
             const answer = window.prompt("How many more moves should it run?", "10");
             if (answer === null) return;
-            const moves = Math.max(1, Math.min(500, Math.floor(Number(answer) || 0)));
+            const requestedMoves = Number(answer);
+            const moves = Number.isFinite(requestedMoves) && requestedMoves > 0
+              ? Math.floor(requestedMoves)
+              : 0;
             if (!moves) {
               setStatus("Enter a positive number of moves.", true);
               return;
