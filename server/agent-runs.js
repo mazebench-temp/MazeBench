@@ -85,13 +85,41 @@ function fileHasContent(filePath) {
 // — no state beyond run.json survives a server restart, and none is needed.
 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
+const PRIME_HARNESS_CATALOG = require("../environments/mazebench/prime-harness-catalog.json");
+const PRIME_HARNESS_CERTIFICATION = require("../environments/mazebench/prime-harness-certification.json");
+if (PRIME_HARNESS_CERTIFICATION.catalog_fingerprint !== PRIME_HARNESS_CATALOG.catalog_fingerprint) {
+  throw new Error("Prime harness catalog does not match its safety certification.");
+}
+const CERTIFIED_PRIME_HARNESSES = new Set(
+  PRIME_HARNESS_CERTIFICATION.harnesses
+    .filter((entry) => entry.status === "certified")
+    .map((entry) => entry.id)
+);
+const VERIFIED_VERIFIERS_REVISION = PRIME_HARNESS_CATALOG.verifiers_revision;
 const PRIME_HARNESSES = new Map([
-  ["none", { id: "none", label: "Prime Intellect", taskset: "mazebench", protocol: "Prime model API" }],
-  ["codex", { id: "codex", label: "Codex", taskset: "mazebench-agent", protocol: "OpenAI Responses" }],
-  ["claude-code", { id: "claude-code", label: "Claude Code", taskset: "mazebench-agent", protocol: "Anthropic Messages" }]
+  ["none", {
+    id: "none",
+    label: "Prime Intellect",
+    taskset: "mazebench",
+    protocol: "Prime model API",
+    launchable: true,
+    boundary: "trusted-user-simulator",
+    observation_modes: ["text", "json", "vision"]
+  }],
+  ...PRIME_HARNESS_CATALOG.harnesses.map((definition) => [definition.id, {
+    ...definition,
+    launchable: Boolean(definition.launchable) && CERTIFIED_PRIME_HARNESSES.has(definition.id),
+    status: CERTIFIED_PRIME_HARNESSES.has(definition.id) ? "certified" : "uncertified",
+    reason: CERTIFIED_PRIME_HARNESSES.has(definition.id)
+      ? definition.reason
+      : "This generated harness route has not passed the checked-in compatibility certification.",
+    taskset: "mazebench-tools",
+    protocol: definition.adapter,
+    custom: true
+  }])
 ]);
 const UNSAFE_PRIME_AGENT_HARNESS_MESSAGE =
-  "Codex and Claude Code via Prime are disabled because the built-in coding-agent harness exposes benchmark internals. Choose Prime Intellect for an isolated run, or use the separately sandboxed Local Run path.";
+  "This Prime harness is not approved for MazeBench's isolated game-control boundary.";
 
 const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
 const PRIME_REASONING_LEVELS = ["low", "medium", "high"];
@@ -120,18 +148,14 @@ function primeReasoningLevels(_modelId) {
 
 function primeHarnessModelCompatible(modelId, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
-  const id = String(modelId || "").trim().toLowerCase();
+  const id = String(modelId || "").trim();
   if (!id) return false;
-  if (harness === "none") return true;
-
-  // Prime's /models response currently publishes ids and prices, but no wire-
-  // protocol capability bit. Stay on the strict native boundary instead of
-  // guessing whether Prime translates another vendor's payload: Codex speaks
-  // Responses and Claude Code speaks Anthropic Messages.
-  if (harness === "codex") {
-    return /^openai\/gpt-(?:4o|4\.1|5(?:[.-]|$))/i.test(id);
-  }
-  return /^anthropic\/claude-/i.test(id);
+  // Prime's interception endpoint is the compatibility layer between a
+  // harness protocol and the selected model. The live /models response does
+  // not expose a provider-name rule that can safely predict that pairing, so
+  // do not hide Codex, Claude Code, or future harnesses based on model ids.
+  // The compatibility certificate records actual launch results instead.
+  return true;
 }
 
 function primeSandboxIdsFromText(value) {
@@ -151,12 +175,21 @@ function filterPrimeCatalogForHarness(catalog, harnessId) {
   if (harness === "none") return { ...catalog, harness };
   const definition = PRIME_HARNESSES.get(harness);
   const allModels = Array.isArray(catalog?.models) ? catalog.models : [];
+  if (!definition?.launchable) {
+    return {
+      ...catalog,
+      harness,
+      models: [],
+      default_model_id: "",
+      note: definition.reason || UNSAFE_PRIME_AGENT_HARNESS_MESSAGE
+    };
+  }
   const models = allModels
     .filter((model) => primeHarnessModelCompatible(model.id, harness))
     .map((model) => ({
       ...model,
       harness_compatible: true,
-      compatibility: definition.protocol
+      compatibility: definition.adapter || definition.protocol
     }));
   return {
     ...catalog,
@@ -164,14 +197,98 @@ function filterPrimeCatalogForHarness(catalog, harnessId) {
     models,
     default_model_id: models[0]?.id || "",
     note: models.length
-      ? `${models.length} known-compatible ${definition.label} model${models.length === 1 ? "" : "s"} from ${allModels.length} live Prime models. Filtered by native ${definition.protocol} support; Prime's model list does not publish harness capability flags.`
-      : catalog?.note || `No known-compatible ${definition.label} models are currently in Prime's live catalog.`
+      ? `${models.length} live Prime model${models.length === 1 ? "" : "s"}. ${definition.label} is connected through MazeBench's ${definition.adapter || "native"} compatibility route; launch certification is recorded separately because Prime's model list has no harness capability flags.`
+      : catalog?.note || `Prime's live model catalog is currently empty.`
   };
+}
+
+function publicPrimeHarnesses() {
+  return [...PRIME_HARNESSES.values()]
+    .filter((definition) => definition.custom)
+    .map((definition) => ({
+      id: definition.id,
+      label: definition.label,
+      description: definition.description || "",
+      launchable: Boolean(definition.launchable),
+      reason: definition.reason || "",
+      protocol: definition.protocol || "",
+      boundary: definition.boundary || "",
+      observation_modes: [...(definition.observation_modes || [])],
+      default_config: { ...(definition.default_config || {}) },
+      configurable: [...(definition.configurable || [])],
+      config_schema: definition.config_schema || { properties: {} },
+      adapter: definition.adapter || "native_mcp",
+      runtime_harness_id: definition.runtime_harness_id || definition.id,
+      upstream_id: definition.upstream_id || null,
+      supports_mcp: Boolean(definition.supports_mcp),
+      status: definition.status || (definition.launchable ? "compatible" : "catalog_error"),
+      catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
+      certification_schema_version: PRIME_HARNESS_CERTIFICATION.schema_version,
+      verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
+      verifiers_revision: VERIFIED_VERIFIERS_REVISION
+    }));
+}
+
+function primeHarnessConfigValueValid(value, schema = {}) {
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.some((option) => primeHarnessConfigValueValid(value, option));
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return false;
+  if (schema.type === "null") return value === null;
+  if (schema.type === "boolean") return typeof value === "boolean";
+  if (schema.type === "integer") return Number.isInteger(value);
+  if (schema.type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (schema.type === "string") {
+    if (typeof value !== "string") return false;
+    if (schema.pattern && !(new RegExp(schema.pattern)).test(value)) return false;
+    return true;
+  }
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) return false;
+    if (Number.isInteger(schema.minItems) && value.length < schema.minItems) return false;
+    if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems) return false;
+    if (Array.isArray(schema.prefixItems)) {
+      return schema.prefixItems.every((item, index) => primeHarnessConfigValueValid(value[index], item));
+    }
+    return !schema.items || value.every((item) => primeHarnessConfigValueValid(item, schema.items));
+  }
+  if (schema.type === "object") return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return value === null || ["string", "number", "boolean"].includes(typeof value) || Array.isArray(value);
+}
+
+function normalizePrimeHarnessConfig(value, harnessId) {
+  const definition = PRIME_HARNESSES.get(normalizePrimeHarness(harnessId));
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  if (Buffer.byteLength(JSON.stringify(raw), "utf8") > 16_384) {
+    throw new Error(`${definition.label} configuration is too large.`);
+  }
+  const allowed = new Set(definition.configurable || []);
+  const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    throw new Error(`Unsupported ${definition.label} configuration: ${unknown.join(", ")}.`);
+  }
+  const config = { ...(definition.default_config || {}) };
+  for (const [key, value] of Object.entries(raw)) {
+    const schema = definition.config_schema?.properties?.[key] || {};
+    if (!primeHarnessConfigValueValid(value, schema)) {
+      throw new Error(`${definition.label} configuration field "${key}" does not match its pinned Verifiers schema.`);
+    }
+    config[key] = value;
+  }
+  return config;
 }
 
 function normalizePrimeHarness(value) {
   const requested = String(value || "none").trim().toLowerCase();
-  const normalized = requested === "claude" ? "claude-code" : requested;
+  const aliases = {
+    claude: "claude_code",
+    "claude-code": "claude_code",
+    default: "null",
+    "kimi-code": "kimi_code",
+    "mini-swe-agent": "mini_swe_agent",
+    "terminus-2": "terminus_2"
+  };
+  const normalized = aliases[requested] || requested;
   if (!PRIME_HARNESSES.has(normalized)) {
     throw new Error(
       `Unknown Prime harness "${value}". Supported harnesses: ${[...PRIME_HARNESSES.keys()].join(", ")}.`
@@ -3515,6 +3632,17 @@ function createAgentRunService({
     return normalized === "prime" ? filterPrimeCatalogForHarness(value, harness) : value;
   }
 
+  function listPrimeHarnesses() {
+    return {
+      harnesses: publicPrimeHarnesses(),
+      verifiers_revision: VERIFIED_VERIFIERS_REVISION,
+      verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
+      catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
+      certification: PRIME_HARNESS_CERTIFICATION.boundary,
+      policy: PRIME_HARNESS_CATALOG.policy
+    };
+  }
+
   function normalizedGameForRun(gameId) {
     const game = getGame(String(gameId || "maze"));
 
@@ -3685,9 +3813,9 @@ function createAgentRunService({
   // Keep hosted execution as an API-level opt-in for evaluation workflows.
   function buildPrimeCommand(params, runDir, runId, game) {
     const harness = normalizePrimeHarness(params.harness);
-    if (harness !== "none") {
-      throw new Error(UNSAFE_PRIME_AGENT_HARNESS_MESSAGE);
-    }
+    const definition = PRIME_HARNESSES.get(harness);
+    if (!definition.launchable) throw new Error(definition.reason || UNSAFE_PRIME_AGENT_HARNESS_MESSAGE);
+    const harnessConfig = normalizePrimeHarnessConfig(params.harness_config, harness);
     const model = String(params.model_name || params.model || "").trim();
     if (harness !== "none" && !primeHarnessModelCompatible(model, harness)) {
       const definition = PRIME_HARNESSES.get(harness);
@@ -3701,6 +3829,9 @@ function createAgentRunService({
       params.mode || (params.vision === true || params.vision === "true" ? "vision" : "text")
     );
     const vision = mode === "vision";
+    if (!(definition.observation_modes || []).includes(mode)) {
+      throw new Error(`${definition.label} does not support MazeBench ${mode} observations through its approved boundary.`);
+    }
     const omniscient = mode === "json" && (params.omniscient === true || params.omniscient === "true");
     const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
     const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
@@ -3714,11 +3845,7 @@ function createAgentRunService({
     const reasoning = primeReasoningLevels(model).includes(requestedReasoning)
       ? requestedReasoning
       : "";
-    const envDir = path.join(
-      rootDir,
-      "environments",
-      harness === "none" ? "mazebench" : "mazebench_agent"
-    );
+    const envDir = path.join(rootDir, "environments", "mazebench");
     const levelId = String(params.level_id || "level_HxI");
     const gemTotal = buildWorlds.countWorldGems(game);
 
@@ -3732,6 +3859,8 @@ function createAgentRunService({
       runId,
       "--harness",
       harness,
+      "--harness-config-json",
+      JSON.stringify(harnessConfig),
       "--level",
       levelId,
       "--game-won-gem-count",
@@ -3793,6 +3922,7 @@ function createAgentRunService({
     const display = ["node", "scripts/maze-prime-run.js"]
       .concat(hosted ? ["--hosted"] : [])
       .concat(["--out", "<run>", "--harness", harness])
+      .concat(Object.keys(harnessConfig).length ? ["--harness-config", JSON.stringify(harnessConfig)] : [])
       .concat(unlimited ? ["--unlimited"] : ["--max-turns", String(maxTurns)])
       .concat(model ? ["--model", model] : [])
       .concat(vision ? ["--vision"] : [])
@@ -3820,6 +3950,16 @@ function createAgentRunService({
       argv,
       display,
       harness,
+      harnessConfig,
+      harnessLabel: definition.label,
+      harnessBoundary: definition.boundary,
+      harnessAdapter: definition.adapter || "user_simulator",
+      runtimeHarnessId: definition.runtime_harness_id || definition.id,
+      upstreamHarnessId: definition.upstream_id || null,
+      harnessCatalogFingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
+      verifiersVersion: PRIME_HARNESS_CATALOG.verifiers_version,
+      runtimeImage: harness === "none" ? null : (vision ? "mcr.microsoft.com/playwright:v1.60.0-noble" : "node:24-bookworm-slim"),
+      taskset: definition.taskset,
       model,
       maxTurns,
       unlimited,
@@ -3894,6 +4034,19 @@ function createAgentRunService({
           model: "prime",
           model_name: command.model || "(prime default)",
           harness: command.harness,
+          harness_label: command.harnessLabel,
+          harness_version: command.harnessConfig.version || null,
+          harness_source: "pinned-prime-verifiers",
+          harness_config: command.harnessConfig,
+          harness_boundary: command.harnessBoundary,
+          harness_adapter: command.harnessAdapter,
+          harness_runtime_id: command.runtimeHarnessId,
+          harness_upstream_id: command.upstreamHarnessId,
+          harness_catalog_fingerprint: command.harnessCatalogFingerprint,
+          harness_runtime_image: command.runtimeImage,
+          harness_taskset: command.taskset,
+          verifiers_version: command.verifiersVersion,
+          verifiers_revision: VERIFIED_VERIFIERS_REVISION,
           game_id: "maze",
           game_title: "Maze Bench Environment",
           level_id: command.levelId,
@@ -3915,6 +4068,12 @@ function createAgentRunService({
             ...autoQuitLaunchParams(command.autoQuit),
             unlimited: command.unlimited,
             harness: command.harness,
+            harness_version: command.harnessConfig.version || null,
+            harness_config: command.harnessConfig,
+            harness_adapter: command.harnessAdapter,
+            harness_runtime_id: command.runtimeHarnessId,
+            harness_catalog_fingerprint: command.harnessCatalogFingerprint,
+            verifiers_revision: VERIFIED_VERIFIERS_REVISION,
             ...(command.hideNames ? { hide_names_seed: command.hideNamesSeed } : {})
           },
           continue_of: params.continue_of || null,
@@ -3928,7 +4087,7 @@ function createAgentRunService({
             ? "Prime Hosted Evaluation. Sample artifacts sync as Prime publishes them; per-turn streaming requires local Agent execution."
             : command.harness === "none"
               ? "Local Prime Verifiers evaluation using Prime inference. Moves, boards, reasoning, and usage stream into this page after every model turn."
-              : `${PRIME_HARNESSES.get(command.harness).label} runs as a built-in Verifiers harness in a Prime sandbox; inference, moves, and usage stream through Prime.`
+              : `${command.harnessLabel} runs in a Prime sandbox and receives only MazeBench's isolated MCP game controls; the trusted evaluator retains game state and scoring.`
         };
       } else {
         let effectiveParams = params;
@@ -4296,6 +4455,7 @@ function createAgentRunService({
       return {
         kind: "prime",
         harness: meta.harness || "none",
+        harness_config: meta.harness_config || {},
         model_name: model,
         mode: normalizeObservationMode(meta.mode),
         vision: meta.mode === "vision",
@@ -5167,6 +5327,7 @@ function createAgentRunService({
     getRunProgress,
     launchRun,
     launchRuns,
+    listPrimeHarnesses,
     listProviderModels,
     listRuns,
     pauseRun,
@@ -5187,8 +5348,10 @@ module.exports = {
   createAgentRunService,
   enrichedPathEnv,
   filterPrimeCatalogForHarness,
+  normalizePrimeHarnessConfig,
   primeReasoningLevels,
   primeHarnessModelCompatible,
   primeSandboxIdsFromText,
+  publicPrimeHarnesses,
   replayMessageForCommandText
 };
