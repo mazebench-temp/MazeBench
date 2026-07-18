@@ -3958,205 +3958,68 @@ html.has-run-world-map {
   opacity: 0.42;
 }
 
-.run-summarize {
-  border-color: rgba(101, 243, 212, 0.38);
-  color: #b9fff0;
-}
-
-.run-review-result {
+.run-notes {
   background:
-    linear-gradient(135deg, rgba(101, 243, 212, 0.055), transparent 34%),
+    linear-gradient(135deg, rgba(124, 143, 255, 0.055), transparent 42%),
     rgba(7, 12, 29, 0.92);
-  border: 1px solid rgba(101, 243, 212, 0.25);
-  position: relative;
-  transition: border-color 180ms ease, background 180ms ease;
+  border-color: rgba(124, 143, 255, 0.24);
 }
 
-.run-review-result[hidden] { display: none; }
-
-.run-review-result.is-running {
-  background:
-    linear-gradient(135deg, rgba(52, 231, 240, 0.075), transparent 42%),
-    rgba(7, 12, 29, 0.94);
-  border-color: rgba(52, 231, 240, 0.38);
-}
-
-.run-review-result.is-failed {
-  background:
-    linear-gradient(135deg, rgba(255, 103, 135, 0.07), transparent 42%),
-    rgba(7, 12, 29, 0.94);
-  border-color: rgba(255, 103, 135, 0.34);
-}
-
-.run-review-result__head,
-.run-review-dialog__head,
-.run-review-dialog__actions {
+.run-notes__head,
+.run-notes__actions {
   align-items: center;
   display: flex;
-  gap: 14px;
+  gap: 18px;
   justify-content: space-between;
 }
 
-.run-review-result__head > div {
-  display: grid;
-  gap: 4px;
-}
-
-.run-review-result__head h2 {
+.run-notes__head h2,
+.run-notes__head p {
   margin: 0;
 }
 
-.run-review-result__head span {
-  color: #65f3d4;
-  font: 800 9px var(--font-mono, ui-monospace, monospace);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.run-notes__head p {
+  margin-top: 6px;
 }
 
-.run-review-result__head strong {
-  color: #cbd2f4;
-  font: 600 11px var(--font-mono, ui-monospace, monospace);
-}
-
-.run-review-result__actions {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-}
-
-.run-review-status {
-  align-items: center;
-  background: rgba(101, 243, 212, 0.08);
-  border: 1px solid rgba(101, 243, 212, 0.24);
-  border-radius: 999px;
-  color: #b9fff0;
-  display: inline-flex;
-  font: 800 10px var(--font-mono, ui-monospace, monospace);
-  gap: 7px;
-  letter-spacing: 0.08em;
-  min-height: 28px;
-  padding: 5px 10px;
-  text-transform: uppercase;
-}
-
-.run-review-status i {
-  background: currentColor;
-  border-radius: 50%;
-  display: block;
-  height: 7px;
-  width: 7px;
-}
-
-.run-review-result.is-running .run-review-status i {
-  animation: run-review-pulse 1.15s ease-in-out infinite;
-  box-shadow: 0 0 0 0 rgba(52, 231, 240, 0.45);
-}
-
-.run-review-result.is-failed .run-review-status {
-  background: rgba(255, 103, 135, 0.08);
-  border-color: rgba(255, 103, 135, 0.28);
-  color: #ff9bb0;
-}
-
-@keyframes run-review-pulse {
-  50% { box-shadow: 0 0 0 6px rgba(52, 231, 240, 0); opacity: 0.58; }
-}
-
-.run-review-message {
-  margin: 18px 0 0;
-  max-width: 880px;
-}
-
-.run-review-content {
-  color: #e4e8ff;
-  font-size: 13px;
-  line-height: 1.72;
-  margin-top: 18px;
-  overflow-wrap: anywhere;
-}
-
-.run-review-content h1,
-.run-review-content h2,
-.run-review-content h3 {
-  color: #fff;
-  line-height: 1.25;
-  margin: 24px 0 9px;
-}
-
-.run-review-content h1 { font-size: 20px; }
-.run-review-content h2 { font-size: 16px; }
-.run-review-content h3 { font-size: 14px; }
-.run-review-content p { margin: 9px 0; }
-.run-review-content ul,
-.run-review-content ol { margin: 9px 0; padding-left: 24px; }
-.run-review-content code {
-  background: rgba(124, 143, 255, 0.12);
-  border-radius: 4px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  padding: 1px 4px;
-}
-
-.run-review-dialog {
-  align-items: center;
-  background: rgba(2, 4, 13, 0.76);
-  display: flex;
-  inset: 0;
-  justify-content: center;
-  padding: 24px;
-  position: fixed;
-  z-index: 120;
-}
-
-.run-review-dialog[hidden] { display: none; }
-
-.run-review-dialog__card {
-  background:
-    radial-gradient(circle at 88% 0%, rgba(101, 243, 212, 0.09), transparent 32%),
-    #0a0f24;
-  border: 1px solid rgba(124, 143, 255, 0.3);
-  border-radius: 16px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
-  max-height: min(720px, 90vh);
-  max-width: 680px;
-  overflow: auto;
-  padding: 24px;
-  width: 100%;
-}
-
-.run-review-dialog__head h2 { margin: 3px 0 0; }
-
-.run-review-dialog__fields {
-  display: grid;
-  gap: 13px;
-  grid-template-columns: 0.8fr 1.4fr 1fr;
-  margin: 22px 0 12px;
-}
-
-.run-review-dialog__fields label {
-  color: #aeb7dd;
-  display: grid;
+.run-notes__status,
+.run-notes__actions > span {
+  color: #8e98c4;
   font: 700 10px var(--font-mono, ui-monospace, monospace);
-  gap: 7px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.run-review-dialog__fields select {
-  background: rgba(8, 13, 31, 0.96);
-  border: 1px solid rgba(124, 143, 255, 0.28);
-  border-radius: 9px;
-  color: #f3f5ff;
-  font: 600 12px var(--font-mono, ui-monospace, monospace);
-  min-width: 0;
-  padding: 11px 34px 11px 11px;
-  text-transform: none;
+.run-notes__status.is-dirty {
+  color: #ffd56b;
+}
+
+.run-notes__input {
+  background: rgba(4, 8, 22, 0.82);
+  border: 1px solid rgba(124, 143, 255, 0.24);
+  border-radius: 12px;
+  color: #edf0ff;
+  display: block;
+  font: 500 14px/1.65 var(--font-body, system-ui, sans-serif);
+  margin-top: 18px;
+  min-height: 150px;
+  padding: 15px 16px;
+  resize: vertical;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
   width: 100%;
 }
 
-.run-review-dialog__actions {
-  border-top: 1px solid rgba(124, 143, 255, 0.16);
-  margin-top: 20px;
-  padding-top: 16px;
+.run-notes__input:focus {
+  border-color: rgba(52, 231, 240, 0.58);
+  box-shadow: 0 0 0 3px rgba(52, 231, 240, 0.08);
+  outline: none;
+}
+
+.run-notes__input::placeholder {
+  color: #69739d;
+}
+
+.run-notes__actions {
+  margin-top: 12px;
 }
 
 .agent-feed {
@@ -4511,18 +4374,9 @@ html.has-run-world-map {
     width: 100%;
   }
 
-  .run-review-dialog__fields {
-    grid-template-columns: 1fr;
-  }
-
-  .run-review-result__head {
+  .run-notes__head {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .run-review-result__actions {
-    justify-content: space-between;
-    width: 100%;
   }
 
   .agent-feed {

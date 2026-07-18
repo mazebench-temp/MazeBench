@@ -274,6 +274,18 @@ function createRequestRouter({
         return;
       }
 
+      if (segments[4] === "notes" && request.method === "GET") {
+        sendJson(response, 200, { notes: agentRuns.getRunNotes(runId) });
+        return;
+      }
+
+      if (segments[4] === "notes" && request.method === "PUT") {
+        const payload = await readJsonBody(request);
+        const notes = agentRuns.setRunNotes(runId, payload?.notes);
+        sendJson(response, 200, { notes, message: notes.notes ? "Run notes saved." : "Run notes cleared." });
+        return;
+      }
+
       if (segments[4] === "progress" && request.method === "GET") {
         const progress = agentRuns.getRunProgress(runId, {
           afterTurn: Number(url.searchParams.get("after_turn")) || 0,

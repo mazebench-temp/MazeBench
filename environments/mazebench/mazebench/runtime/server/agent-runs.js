@@ -341,6 +341,8 @@ const PAUSE_BOUNDARY_FILE = "pause-boundary.json";
 const PAUSE_CAPABILITY_FILE = "cold-pause-capability.json";
 const RUN_FAVORITE_FILE = "favorite.json";
 const RUN_REVIEW_FILE = "run-review.json";
+const RUN_NOTES_FILE = "run-notes.json";
+const MAX_RUN_NOTES_LENGTH = 50_000;
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{4,80}$/i;
 const SERVABLE_RUN_FILES = new Set([
   "run.json",
@@ -353,6 +355,7 @@ const SERVABLE_RUN_FILES = new Set([
   "prime-evaluation.json",
   "prime-evaluation-samples.json",
   RUN_REVIEW_FILE,
+  RUN_NOTES_FILE,
   "run-review.log",
   "scorecard.json",
   "maze_scorecard.json",
@@ -641,6 +644,45 @@ function createAgentRunService({
 
   function runFavoritePath(runId) {
     return path.join(runDirFor(runId), RUN_FAVORITE_FILE);
+  }
+
+  function runNotesPath(runId) {
+    return path.join(runDirFor(runId), RUN_NOTES_FILE);
+  }
+
+  function getRunNotes(runId) {
+    if (!readRunMeta(runId)) throw new Error(`Unknown run "${runId}".`);
+    const saved = loadJson(runNotesPath(runId), null);
+    return {
+      schema_version: 1,
+      notes: String(saved?.notes || ""),
+      updated_at: saved?.updated_at || null
+    };
+  }
+
+  function setRunNotes(runId, value) {
+    if (!readRunMeta(runId)) throw new Error(`Unknown run "${runId}".`);
+    if (typeof value !== "string") throw new Error("Run notes must be text.");
+    const notes = value.replace(/\r\n?/g, "\n").trim();
+    if (notes.length > MAX_RUN_NOTES_LENGTH) {
+      throw new Error(`Run notes must be ${MAX_RUN_NOTES_LENGTH.toLocaleString()} characters or fewer.`);
+    }
+
+    const target = runNotesPath(runId);
+    if (!notes) {
+      fs.rmSync(target, { force: true });
+      return getRunNotes(runId);
+    }
+
+    const saved = {
+      schema_version: 1,
+      notes,
+      updated_at: new Date().toISOString()
+    };
+    const temporary = `${target}.${process.pid}.${crypto.randomBytes(3).toString("hex")}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(saved, null, 2)}\n`, "utf8");
+    fs.renameSync(temporary, target);
+    return saved;
   }
 
   function isRunFavorite(runId) {
@@ -2219,6 +2261,7 @@ function createAgentRunService({
     const modelName = resolvedRunModelName(runId, meta);
     const scorecard = loadJson(path.join(runDir, "maze_scorecard.json"), null);
     const review = loadJson(path.join(runDir, RUN_REVIEW_FILE), null);
+    const runNotes = loadJson(path.join(runDir, RUN_NOTES_FILE), null);
     const observedRooms = new Set(
       [meta.level_id, ...actions.map((action) => action.current_room)].filter(Boolean)
     );
@@ -2283,6 +2326,8 @@ function createAgentRunService({
       video_status: videoStatus,
       has_reasoning: fs.existsSync(path.join(runDir, "reasoning.json")),
       favorited: isRunFavorite(runId),
+      run_notes: String(runNotes?.notes || ""),
+      run_notes_updated_at: runNotes?.updated_at || null,
       review_status: String(review?.status || "idle"),
       review_provider: String(review?.provider || ""),
       review_model: String(review?.model || ""),
@@ -5897,6 +5942,7 @@ function createAgentRunService({
     generateRunReview,
     getEnvironment,
     getEnvironmentAsync,
+    getRunNotes,
     getRunReview,
     getRunObservation,
     getRunProgress,
@@ -5911,6 +5957,7 @@ function createAgentRunService({
     resolveRunFilePath,
     resumeRun,
     setRunFavorite,
+    setRunNotes,
     setRunMoveTarget,
     syncPrimeEvaluation,
     startDocker,

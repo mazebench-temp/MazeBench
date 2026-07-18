@@ -18,22 +18,9 @@
   const feedResult = document.getElementById("run-feed-result");
   const feedExportButton = document.getElementById("run-feed-export");
   const feedTextExportButton = document.getElementById("run-feed-export-txt");
-  const summarizeButton = document.getElementById("run-summarize");
-  const reviewDialog = document.getElementById("run-review-dialog");
-  const reviewCloseButton = document.getElementById("run-review-close");
-  const reviewCancelButton = document.getElementById("run-review-cancel");
-  const reviewStartButton = document.getElementById("run-review-start");
-  const reviewAgainButton = document.getElementById("run-review-again");
-  const reviewProvider = document.getElementById("run-review-provider");
-  const reviewModel = document.getElementById("run-review-model");
-  const reviewReasoning = document.getElementById("run-review-reasoning");
-  const reviewPickerNote = document.getElementById("run-review-picker-note");
-  const reviewResult = document.getElementById("run-review-result");
-  const reviewByline = document.getElementById("run-review-byline");
-  const reviewStatus = document.getElementById("run-review-status");
-  const reviewStatusText = document.getElementById("run-review-status-text");
-  const reviewMessage = document.getElementById("run-review-message");
-  const reviewContent = document.getElementById("run-review-content");
+  const notesInput = document.getElementById("run-notes-input");
+  const notesSaveButton = document.getElementById("run-notes-save");
+  const notesStatus = document.getElementById("run-notes-status");
   const logEl = document.getElementById("run-log");
   const stopButton = document.getElementById("stop-run");
   const primeEvaluationLink = document.getElementById("open-prime-evaluation");
@@ -239,8 +226,7 @@
     renderedFeedQuery: "",
     feedRenderLimit: FEED_RENDER_BATCH,
     expandedReasoning: new Set(),
-    reviewCatalogs: new Map(),
-    reviewPollTimer: null,
+    savedNotes: String(initial.run_notes || ""),
     review: null
   };
 
@@ -1059,12 +1045,6 @@
           ? "Retry Prime sync"
           : "Sync to Prime";
       primeSyncButton.title = run.prime_evaluation_sync_error || "Upload this evaluation to the Prime dashboard";
-    }
-    if (summarizeButton) {
-      const reviewing = run.review_status === "running" || state.review?.status === "running";
-      summarizeButton.disabled = !run.reviewable || reviewing;
-      summarizeButton.querySelector("span").textContent = reviewing ? "Summarizing…" : "Summarize";
-      summarizeButton.title = run.review_error || "Ask Codex or Claude Code for a full review of this play";
     }
     pauseButton.hidden = !run.pausable;
     resumeButton.hidden = !run.resumable;
@@ -2822,174 +2802,37 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function reviewInlineMarkdown(value) {
-    return escapeText(value)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  function renderNotesState(message = "") {
+    if (!notesInput || !notesSaveButton || !notesStatus) return;
+    const dirty = notesInput.value.trim() !== state.savedNotes;
+    notesSaveButton.disabled = !dirty;
+    notesStatus.textContent = message || (dirty ? "Unsaved changes" : state.savedNotes ? "Saved" : "No notes yet");
+    notesStatus.classList.toggle("is-dirty", dirty);
   }
 
-  function reviewMarkdown(value) {
-    const lines = String(value || "").split(/\r?\n/);
-    const html = [];
-    let list = "";
-    const closeList = () => {
-      if (list) html.push(`</${list}>`);
-      list = "";
-    };
-    for (const line of lines) {
-      const heading = line.match(/^(#{1,3})\s+(.+)$/);
-      const bullet = line.match(/^\s*[-*]\s+(.+)$/);
-      const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-      if (heading) {
-        closeList();
-        const level = heading[1].length;
-        html.push(`<h${level}>${reviewInlineMarkdown(heading[2])}</h${level}>`);
-      } else if (bullet || numbered) {
-        const nextList = bullet ? "ul" : "ol";
-        if (list !== nextList) {
-          closeList();
-          list = nextList;
-          html.push(`<${list}>`);
-        }
-        html.push(`<li>${reviewInlineMarkdown((bullet || numbered)[1])}</li>`);
-      } else if (!line.trim()) {
-        closeList();
-      } else {
-        closeList();
-        html.push(`<p>${reviewInlineMarkdown(line)}</p>`);
-      }
-    }
-    closeList();
-    return html.join("");
-  }
-
-  function renderRunReview(review) {
-    state.review = review || null;
-    if (!review) return;
-    const status = review.status || "idle";
-    state.run.review_status = status;
-    state.run.review_error = review.error || "";
-    renderControls(state.run);
-    if (!reviewResult) return;
-
-    reviewResult.hidden = status === "idle";
-    reviewResult.classList.toggle("is-running", status === "running");
-    reviewResult.classList.toggle("is-completed", status === "completed");
-    reviewResult.classList.toggle("is-failed", status === "failed");
-    if (reviewByline) {
-      reviewByline.textContent = review.provider && review.model
-        ? `${review.provider === "claude" ? "Claude Code" : "Codex"} · ${review.model}${review.reasoning ? ` · ${review.reasoning} reasoning` : ""}`
-        : "";
-    }
-    if (reviewStatus) reviewStatus.hidden = status === "idle";
-    if (reviewStatusText) {
-      reviewStatusText.textContent = status === "running"
-        ? "Analyzing"
-        : status === "completed"
-          ? "Complete"
-          : status === "failed"
-            ? "Failed"
-            : "";
-    }
-    if (reviewAgainButton) reviewAgainButton.hidden = status === "running";
-    if (reviewMessage) {
-      reviewMessage.hidden = status === "completed";
-      reviewMessage.textContent = status === "running"
-        ? "Reading the complete run, actions, reasoning, scorecard, and saved artifacts. This can take several minutes; the result is saved with the run."
-        : status === "failed"
-          ? review.error || "The reviewer returned no report."
-          : "";
-    }
-    if (reviewContent) {
-      reviewContent.hidden = status !== "completed" || !review.review;
-      reviewContent.replaceChildren();
-    }
-
-    if (status === "completed" && review.review) {
-      reviewContent.innerHTML = reviewMarkdown(review.review);
-    } else if (status === "failed") {
-      setStatus(`Run review failed — ${review.error || "the reviewer returned no report."}`, true);
-    }
-  }
-
-  async function refreshRunReview() {
-    clearTimeout(state.reviewPollTimer);
+  async function saveRunNotes() {
+    if (!notesInput || !notesSaveButton) return;
+    notesSaveButton.disabled = true;
+    notesSaveButton.textContent = "Saving…";
     try {
-      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/summary`, {
-        headers: { accept: "application/json" }
+      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/notes`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ notes: notesInput.value })
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || `Review status failed (${response.status}).`);
-      renderRunReview(payload.review);
-      if (payload.review?.status === "running") {
-        state.reviewPollTimer = setTimeout(refreshRunReview, 2000);
-      }
+      if (!response.ok) throw new Error(payload.error || `Could not save notes (${response.status}).`);
+      state.savedNotes = String(payload.notes?.notes || "");
+      state.run.run_notes = state.savedNotes;
+      notesInput.value = state.savedNotes;
+      renderNotesState(state.savedNotes ? "Saved just now" : "Notes cleared");
     } catch (error) {
+      renderNotesState("Save failed");
       setStatus(error.message, true);
-    }
-  }
-
-  function updateReviewerReasoning() {
-    const catalog = state.reviewCatalogs.get(reviewProvider.value);
-    const selected = (catalog?.models || []).find((model) => model.id === reviewModel.value);
-    const levels = Array.isArray(selected?.reasoning_levels) ? selected.reasoning_levels : [];
-    reviewReasoning.innerHTML = '<option value="">Default</option>' + levels
-      .map((level) => `<option value="${escapeText(level)}">${escapeText(titleCase(level))}</option>`)
-      .join("");
-    const preferred = ["max", "xhigh", "high"].find((level) => levels.includes(level));
-    if (preferred) reviewReasoning.value = preferred;
-  }
-
-  async function loadReviewerModels({ refresh = false } = {}) {
-    const provider = reviewProvider.value;
-    const cached = state.reviewCatalogs.get(provider);
-    if (cached && !refresh) {
-      renderReviewerModels(cached);
-      return;
-    }
-    reviewModel.innerHTML = '<option value="">Loading models…</option>';
-    reviewModel.disabled = true;
-    reviewStartButton.disabled = true;
-    try {
-      const response = await fetch(`/api/agent/models/${encodeURIComponent(provider)}${refresh ? "?refresh=1" : ""}`);
-      const catalog = await response.json();
-      if (!response.ok) throw new Error(catalog.error || `Model catalog failed (${response.status}).`);
-      state.reviewCatalogs.set(provider, catalog);
-      renderReviewerModels(catalog);
-    } catch (error) {
-      reviewPickerNote.textContent = error.message;
-      reviewModel.innerHTML = '<option value="">No models available</option>';
     } finally {
-      reviewModel.disabled = false;
+      notesSaveButton.textContent = "Save notes";
+      notesSaveButton.disabled = notesInput.value.trim() === state.savedNotes;
     }
-  }
-
-  function renderReviewerModels(catalog) {
-    const models = Array.isArray(catalog?.models) ? catalog.models : [];
-    reviewModel.innerHTML = models.length
-      ? models.map((model) => `<option value="${escapeText(model.id)}">${escapeText(model.label || model.id)}</option>`).join("")
-      : '<option value="">No models available</option>';
-    const priorModel = state.review?.provider === reviewProvider.value ? state.review.model : "";
-    const preferred = models.find((model) => model.id === priorModel)
-      || models.find((model) => model.id === catalog.default_model_id)
-      || models[0];
-    if (preferred) reviewModel.value = preferred.id;
-    reviewPickerNote.textContent = catalog?.note || catalog?.source || "";
-    reviewStartButton.disabled = !reviewModel.value;
-    updateReviewerReasoning();
-  }
-
-  function closeReviewDialog() {
-    reviewDialog.hidden = true;
-    summarizeButton?.focus();
-  }
-
-  async function openReviewDialog() {
-    reviewDialog.hidden = false;
-    if (state.review?.provider) reviewProvider.value = state.review.provider;
-    await loadReviewerModels();
-    reviewProvider.focus();
   }
 
   function renderFeed({ resetScroll = false } = {}) {
@@ -3695,45 +3538,14 @@
     }
   });
 
-  summarizeButton?.addEventListener("click", openReviewDialog);
-  reviewAgainButton?.addEventListener("click", openReviewDialog);
-  reviewCloseButton?.addEventListener("click", closeReviewDialog);
-  reviewCancelButton?.addEventListener("click", closeReviewDialog);
-  reviewDialog?.addEventListener("click", (event) => {
-    if (event.target === reviewDialog) closeReviewDialog();
-  });
-  reviewProvider?.addEventListener("change", () => loadReviewerModels());
-  reviewModel?.addEventListener("change", () => {
-    reviewStartButton.disabled = !reviewModel.value;
-    updateReviewerReasoning();
-  });
-  reviewStartButton?.addEventListener("click", async () => {
-    reviewStartButton.disabled = true;
-    reviewStartButton.textContent = "Starting reviewer…";
-    try {
-      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/summary`, {
-        method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          provider: reviewProvider.value,
-          model: reviewModel.value,
-          reasoning: reviewReasoning.value
-        })
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || `Could not start review (${response.status}).`);
-      closeReviewDialog();
-      renderRunReview(payload.review);
-      setStatus(`${reviewProvider.value === "claude" ? "Claude Code" : "Codex"} is reviewing the complete run…`);
-      reviewResult?.scrollIntoView({ behavior: "smooth", block: "start" });
-      state.reviewPollTimer = setTimeout(refreshRunReview, 1000);
-    } catch (error) {
-      setStatus(error.message, true);
-    } finally {
-      reviewStartButton.textContent = "Generate full review";
-      reviewStartButton.disabled = !reviewModel.value;
+  notesInput?.addEventListener("input", () => renderNotesState());
+  notesInput?.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      if (!notesSaveButton.disabled) void saveRunNotes();
     }
   });
+  notesSaveButton?.addEventListener("click", saveRunNotes);
 
   deleteButton?.addEventListener("click", async () => {
     if (!window.confirm("Delete this run and its artifacts? This can't be undone.")) return;
@@ -3757,11 +3569,6 @@
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && reviewDialog && !reviewDialog.hidden) {
-      event.preventDefault();
-      closeReviewDialog();
-      return;
-    }
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     if (!mainReplayControls && state.activeReplay === "primary") return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -3796,6 +3603,7 @@
   describeRun(initial);
   renderStats(initial);
   renderMainReplayControls();
-  if (initial.review_status && initial.review_status !== "idle") void refreshRunReview();
+  if (notesInput) notesInput.value = state.savedNotes;
+  renderNotesState();
   poll();
 })();

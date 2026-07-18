@@ -13,6 +13,7 @@ assert.match(agentSource, /data-action="favorite"/);
 assert.match(agentSource, /aria-pressed="\$\{run\.favorited \? "true" : "false"\}"/);
 assert.match(agentSource, /JSON\.stringify\(\{ favorite \}\)/);
 assert.match(routerSource, /segments\[4\] === "favorite"/);
+assert.match(routerSource, /segments\[4\] === "notes"/);
 assert.match(siteTheme, /\.run-favorite\[aria-pressed="true"\]/);
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-run-favorite-"));
@@ -54,6 +55,19 @@ const service = createAgentRunService({
 
 try {
   assert.equal(service.summarizeRun(runId).favorited, false);
+  assert.deepEqual(service.getRunNotes(runId), {
+    schema_version: 1,
+    notes: "",
+    updated_at: null
+  });
+
+  const savedNotes = service.setRunNotes(runId, "## Result\r\n\r\nReached the second room.");
+  const notesPath = path.join(runDir, "run-notes.json");
+  assert.equal(savedNotes.notes, "## Result\n\nReached the second room.");
+  assert.equal(JSON.parse(fs.readFileSync(notesPath, "utf8")).notes, savedNotes.notes);
+  assert.equal(service.summarizeRun(runId).run_notes, savedNotes.notes);
+  assert.throws(() => service.setRunNotes(runId, null), /must be text/);
+  assert.throws(() => service.setRunNotes(runId, "x".repeat(50_001)), /50,000 characters/);
 
   const favorite = service.setRunFavorite(runId, true);
   const markerPath = path.join(runDir, "favorite.json");
@@ -71,6 +85,10 @@ try {
   const unfavorite = service.setRunFavorite(runId, false);
   assert.equal(unfavorite.favorited, false);
   assert.equal(fs.existsSync(markerPath), false);
+  assert.equal(fs.existsSync(notesPath), true);
+  assert.equal(service.getRunNotes(runId).notes, savedNotes.notes);
+  service.setRunNotes(runId, "  ");
+  assert.equal(fs.existsSync(notesPath), false);
   assert.throws(() => service.setRunFavorite(runId, "yes"), /true or false/);
   assert.throws(() => service.setRunFavorite("missing-run-123", true), /Unknown run/);
 } finally {

@@ -1284,45 +1284,24 @@ function createPageRenderer({
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"></path><path d="m17 7-10 10"></path></svg>
               </button>
             </div>
-            <button id="run-summarize" class="button run-feed-export run-summarize" type="button" title="Ask Codex or Claude Code for a full review of this play" aria-haspopup="dialog" disabled><span>Summarize</span></button>
             <button id="run-feed-export" class="button run-feed-export" type="button" title="Export every move and its reasoning as JSON" disabled>${VIDEO_ICONS.download}<span>Export JSON</span></button>
             <button id="run-feed-export-txt" class="button run-feed-export" type="button" title="Export every move and its reasoning as plain text" disabled>${VIDEO_ICONS.download}<span>Export TXT</span></button>
           </div>
           <div id="run-feed" class="agent-feed" aria-label="Moves and reasoning log"></div>
-          <div id="run-review-dialog" class="run-review-dialog" role="dialog" aria-modal="true" aria-labelledby="run-review-title" hidden>
-            <div class="run-review-dialog__card">
-              <div class="run-review-dialog__head">
-                <div><span class="run-world-map__eyebrow">Post-run analyst</span><h2 id="run-review-title">Summarize this play</h2></div>
-                <button id="run-review-close" class="run-world-map__close" type="button" aria-label="Close reviewer picker">×</button>
-              </div>
-              <p class="muted">The reviewer gets read-only access to the game, the complete reasoning log, actions, scorecard, and saved run artifacts.</p>
-              <div class="run-review-dialog__fields">
-                <label><span>Reviewer</span><select id="run-review-provider"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
-                <label><span>Model</span><select id="run-review-model"><option value="">Loading models…</option></select></label>
-                <label><span>Reasoning effort</span><select id="run-review-reasoning"><option value="">Default</option></select></label>
-              </div>
-              <p id="run-review-picker-note" class="muted"></p>
-              <div class="run-review-dialog__actions">
-                <button id="run-review-cancel" class="button--ghost" type="button">Cancel</button>
-                <button id="run-review-start" class="button--primary" type="button" disabled>Generate full review</button>
-              </div>
-            </div>
-          </div>
         </section>`;
-    const reviewSection = `<section id="run-review-result" class="panel run-review-result" aria-labelledby="run-review-heading" aria-live="polite" hidden>
-          <div class="run-review-result__head">
+    const notesSection = `<section id="run-notes-section" class="panel run-notes" aria-labelledby="run-notes-heading">
+          <div class="run-notes__head">
             <div>
-              <span>Post-run analysis</span>
-              <h2 id="run-review-heading">Run summary</h2>
-              <strong id="run-review-byline"></strong>
+              <h2 id="run-notes-heading">Run notes</h2>
+              <p class="muted">Add context or conclusions about this run. For starred runs, these notes appear as the summary on MazeJam.</p>
             </div>
-            <div class="run-review-result__actions">
-              <span id="run-review-status" class="run-review-status"><i aria-hidden="true"></i><span id="run-review-status-text"></span></span>
-              <button id="run-review-again" class="button--ghost" type="button">Review again</button>
-            </div>
+            <span id="run-notes-status" class="run-notes__status" role="status" aria-live="polite"></span>
           </div>
-          <p id="run-review-message" class="run-review-message muted"></p>
-          <div id="run-review-content" class="run-review-content" hidden></div>
+          <textarea id="run-notes-input" class="run-notes__input" rows="7" maxlength="50000" placeholder="Write notes about the run… Markdown is supported on MazeJam."></textarea>
+          <div class="run-notes__actions">
+            <span>Up to 50,000 characters</span>
+            <button id="run-notes-save" class="button--primary" type="button" disabled>Save notes</button>
+          </div>
         </section>`;
     // Agent Runner's default Prime path evaluates locally against Prime
     // inference, so its board and move artifacts arrive after every turn.
@@ -1412,7 +1391,7 @@ function createPageRenderer({
 
         ${mazeSections}
 
-        ${reviewSection}
+        ${notesSection}
 
         <section class="panel">
           <h2>Runner log</h2>
@@ -1420,7 +1399,7 @@ function createPageRenderer({
         </section>
         ${replayExportSection}
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260718-run-review-2" defer></script>`
+        <script src="/agent-run.js?v=20260718-run-notes-1" defer></script>`
     });
   }
 
