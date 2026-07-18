@@ -141,7 +141,7 @@ def _materialize_workspace(runtime: Path) -> Path:
 
     if current_version != packaged_version or not _is_repo_root(workspace):
         workspace.mkdir(parents=True, exist_ok=True)
-        for name in ("shared", "server", "public", "scripts", "vendor"):
+        for name in ("shared", "server", "public", "scripts", "vendor", "environments"):
             source = runtime / name
             if source.is_dir():
                 shutil.copytree(source, workspace / name, dirs_exist_ok=True)
