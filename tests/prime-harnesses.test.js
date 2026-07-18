@@ -136,34 +136,17 @@ try {
     filterPrimeCatalogForHarness(sampleCatalog, "claude-code").models.map((model) => model.id),
     ["anthropic/claude-sonnet-5"]
   );
-  assert.deepEqual(primeReasoningLevels("openai/gpt-5.6-sol"), [
-    "low", "medium", "high", "xhigh", "max", "ultra"
-  ]);
-  assert.deepEqual(primeReasoningLevels("openai/gpt-5.6-luna"), [
-    "low", "medium", "high", "xhigh", "max"
-  ]);
-  assert.deepEqual(primeReasoningLevels("openai/gpt-5.2"), [
-    "none", "low", "medium", "high", "xhigh"
-  ]);
-  assert.deepEqual(primeReasoningLevels("openai/gpt-5-chat"), []);
-  assert.deepEqual(primeReasoningLevels("anthropic/claude-fable-5"), [
-    "low", "medium", "high", "xhigh", "max"
-  ]);
-  assert.deepEqual(primeReasoningLevels("anthropic/claude-opus-4.6"), [
-    "low", "medium", "high", "max"
-  ]);
-  assert.deepEqual(primeReasoningLevels("anthropic/claude-opus-4.1"), []);
-  assert.deepEqual(primeReasoningLevels("google/gemini-3.5-flash"), [
-    "minimal", "low", "medium", "high"
-  ]);
-  assert.deepEqual(primeReasoningLevels("google/gemini-3.1-pro-preview"), [
-    "low", "medium", "high"
-  ]);
-  assert.deepEqual(primeReasoningLevels("x-ai/grok-4.20-multi-agent"), [
-    "low", "medium", "high", "xhigh"
-  ]);
-  assert.deepEqual(primeReasoningLevels("Qwen/Qwen3.5-0.8B"), []);
-  assert.match(agentSource, /state\.execution === "prime"[\s\S]{0,180}model\.reasoning_levels/);
+  for (const modelId of [
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5-chat",
+    "anthropic/claude-fable-5",
+    "google/gemini-3.5-flash",
+    "x-ai/grok-4.20-multi-agent",
+    "Qwen/Qwen3.5-0.8B"
+  ]) {
+    assert.deepEqual(primeReasoningLevels(modelId), ["low", "medium", "high"]);
+  }
+  assert.match(agentSource, /state\.execution === "prime"[\s\S]{0,100}return \["low", "medium", "high"\]/);
 
   const primeOnlyService = createAgentRunService({
     agentEnvironment: () => ({}),
