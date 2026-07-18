@@ -1284,35 +1284,37 @@ function createPageRenderer({
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"></path><path d="m17 7-10 10"></path></svg>
               </button>
             </div>
-            <button id="run-summarize" class="button run-feed-export run-summarize" type="button" title="Ask Codex or Claude Code for a full review of this play" aria-haspopup="dialog" disabled><span>Summarize</span></button>
             <button id="run-feed-export" class="button run-feed-export" type="button" title="Export every move and its reasoning as JSON" disabled>${VIDEO_ICONS.download}<span>Export JSON</span></button>
             <button id="run-feed-export-txt" class="button run-feed-export" type="button" title="Export every move and its reasoning as plain text" disabled>${VIDEO_ICONS.download}<span>Export TXT</span></button>
           </div>
-          <section id="run-review-result" class="run-review-result" hidden>
-            <div class="run-review-result__head">
-              <div><span>Post-run analysis</span><strong id="run-review-byline"></strong></div>
-              <button id="run-review-again" class="button--ghost" type="button">Review again</button>
-            </div>
-            <div id="run-review-content" class="run-review-content"></div>
-          </section>
           <div id="run-feed" class="agent-feed" aria-label="Moves and reasoning log"></div>
-          <div id="run-review-dialog" class="run-review-dialog" role="dialog" aria-modal="true" aria-labelledby="run-review-title" hidden>
-            <div class="run-review-dialog__card">
-              <div class="run-review-dialog__head">
-                <div><span class="run-world-map__eyebrow">Post-run analyst</span><h2 id="run-review-title">Summarize this play</h2></div>
-                <button id="run-review-close" class="run-world-map__close" type="button" aria-label="Close reviewer picker">×</button>
+        </section>`;
+    const notesSection = `<section id="run-notes-section" class="panel run-notes" aria-labelledby="run-notes-heading">
+          <div class="run-notes__shell">
+            <div class="run-notes__head">
+              <div class="run-notes__intro">
+                <span class="run-notes__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M13.5 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.5"></path><path d="m12 12 7.2-7.2a1.4 1.4 0 0 1 2 2L14 14l-3 1 1-3Z"></path></svg>
+                </span>
+                <div>
+                  <span class="run-notes__eyebrow">Leaderboard annotation</span>
+                  <h2 id="run-notes-heading">Run notes</h2>
+                  <p>Add the context that matters. When this run is starred, these notes become its MazeJam summary.</p>
+                </div>
               </div>
-              <p class="muted">The reviewer gets read-only access to the game, the complete reasoning log, actions, scorecard, and saved run artifacts.</p>
-              <div class="run-review-dialog__fields">
-                <label><span>Reviewer</span><select id="run-review-provider"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
-                <label><span>Model</span><select id="run-review-model"><option value="">Loading models…</option></select></label>
-                <label><span>Reasoning effort</span><select id="run-review-reasoning"><option value="">Default</option></select></label>
+              <span id="run-notes-status" class="run-notes__status" role="status" aria-live="polite"><i aria-hidden="true"></i><span id="run-notes-status-text"></span></span>
+            </div>
+            <textarea id="run-notes-input" class="run-notes__input" rows="6" maxlength="50000" aria-label="Notes about this agent run" placeholder="What should people know about this run?"></textarea>
+            <div class="run-notes__bottom">
+              <div class="run-notes__meta">
+                <span>Markdown supported</span>
+                <span id="run-notes-count">0 / 50,000</span>
+                <span class="run-notes__shortcut">⌘ Enter to save</span>
               </div>
-              <p id="run-review-picker-note" class="muted"></p>
-              <div class="run-review-dialog__actions">
-                <button id="run-review-cancel" class="button--ghost" type="button">Cancel</button>
-                <button id="run-review-start" class="button--primary" type="button" disabled>Generate full review</button>
-              </div>
+              <button id="run-notes-save" class="button--primary run-notes__save" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5Z"></path><path d="M8 4v6h8V4"></path><path d="M8 20v-6h8v6"></path></svg>
+                <span id="run-notes-save-label">Save notes</span>
+              </button>
             </div>
           </div>
         </section>`;
@@ -1404,13 +1406,15 @@ function createPageRenderer({
 
         ${mazeSections}
 
+        ${notesSection}
+
         <section class="panel">
           <h2>Runner log</h2>
           <pre id="run-log" class="agent-log"></pre>
         </section>
         ${replayExportSection}
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260718-run-review-1" defer></script>`
+        <script src="/agent-run.js?v=20260718-run-notes-2" defer></script>`
     });
   }
 
