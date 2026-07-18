@@ -1694,6 +1694,13 @@
     return "agent-chip--failed";
   }
 
+  function runModeLabel(value) {
+    const mode = String(value || "text").trim().toLowerCase();
+    if (mode === "vision") return "Vision";
+    if (mode === "json") return "JSON";
+    return "ASCII";
+  }
+
   function runCard(run) {
     const statusLabel =
       run.status === "pausing"
@@ -1757,6 +1764,7 @@
             <span class="run-card__world">${escapeText(run.game_title || run.game_id)}</span>
             ${showStartRoom ? `<span class="run-card__badge">Start ${escapeText(levelLabel(run.level_id))}</span>` : ""}
             <span class="run-card__badge run-card__badge--reasoning">${escapeText(reasoningEffort)} reasoning</span>
+            <span class="run-card__badge run-card__badge--mode">${escapeText(runModeLabel(run.mode))}</span>
             ${Number(run.explorer_instances) > 0
               ? `<span class="run-card__badge">${escapeText(run.auxiliary_actions || 0)} auxiliary · ${escapeText(run.explorer_instances)} instance${Number(run.explorer_instances) === 1 ? "" : "s"}</span>`
               : ""}
