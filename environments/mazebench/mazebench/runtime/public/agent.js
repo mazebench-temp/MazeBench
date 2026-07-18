@@ -1660,7 +1660,7 @@
 
   // ---- runs list (unchanged behavior) ---------------------------------------
 
-  const runsView = { page: 1, pageSize: 5, provider: "", model: "", status: "", query: "", sort: "newest" };
+  const runsView = { page: 1, pageSize: 5, provider: "", model: "", status: "", starred: false, query: "", sort: "newest" };
   const runProgressCache = new Map();
 
   function formatRunDuration(value) {
@@ -1692,6 +1692,13 @@
     if (status === "waiting" || status === "paused") return "agent-chip--paused";
     if (status === "finished") return "agent-chip--done";
     return "agent-chip--failed";
+  }
+
+  function runModeLabel(value) {
+    const mode = String(value || "text").trim().toLowerCase();
+    if (mode === "vision") return "Vision";
+    if (mode === "json") return "JSON";
+    return "ASCII";
   }
 
   function runCard(run) {
@@ -1757,6 +1764,7 @@
             <span class="run-card__world">${escapeText(run.game_title || run.game_id)}</span>
             ${showStartRoom ? `<span class="run-card__badge">Start ${escapeText(levelLabel(run.level_id))}</span>` : ""}
             <span class="run-card__badge run-card__badge--reasoning">${escapeText(reasoningEffort)} reasoning</span>
+            <span class="run-card__badge run-card__badge--mode">${escapeText(runModeLabel(run.mode))}</span>
             ${Number(run.explorer_instances) > 0
               ? `<span class="run-card__badge">${escapeText(run.auxiliary_actions || 0)} auxiliary · ${escapeText(run.explorer_instances)} instance${Number(run.explorer_instances) === 1 ? "" : "s"}</span>`
               : ""}
@@ -1796,6 +1804,7 @@
     if (runsView.provider) params.set("provider", runsView.provider);
     if (runsView.model) params.set("model", runsView.model);
     if (runsView.status) params.set("status", runsView.status);
+    if (runsView.starred) params.set("starred", "1");
     if (runsView.query) params.set("q", runsView.query);
     return params.toString();
   }
@@ -1943,6 +1952,7 @@
     onFilter("runs-provider", "provider");
     onFilter("runs-model", "model");
     onFilter("runs-status", "status");
+    onFilter("runs-starred", "starred", (value) => value === "1");
     onFilter("runs-sort", "sort");
     onFilter("runs-page-size", "pageSize", (value) => Number(value) || 5);
 
