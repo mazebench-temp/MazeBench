@@ -76,6 +76,7 @@ const MIRRORED_FILES = [
   "scripts/maze-mcp-server.js",
   "scripts/maze-prime-live-eval.py",
   "scripts/maze-prime-run.js",
+  "scripts/prime-create-evaluation.js",
   "scripts/maze-export-replay.js",
   "scripts/maze-export-solution.js",
   "scripts/playwright-process.js",

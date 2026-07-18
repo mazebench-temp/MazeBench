@@ -339,6 +339,7 @@ const PROVIDER_RETRY_MAX_MS = 15 * 60_000;
 const PAUSE_REQUEST_FILE = "pause-request.json";
 const PAUSE_BOUNDARY_FILE = "pause-boundary.json";
 const PAUSE_CAPABILITY_FILE = "cold-pause-capability.json";
+const RUN_REVIEW_FILE = "run-review.json";
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{4,80}$/i;
 const SERVABLE_RUN_FILES = new Set([
   "run.json",
@@ -350,11 +351,80 @@ const SERVABLE_RUN_FILES = new Set([
   "agent-events.jsonl",
   "prime-evaluation.json",
   "prime-evaluation-samples.json",
+  RUN_REVIEW_FILE,
+  "run-review.log",
   "scorecard.json",
   "maze_scorecard.json",
   "maze_actions.txt",
   "maze_replay.mp4"
 ]);
+
+function runReviewPrompt(runId, runDir, rootDir) {
+  return `You are the post-run analyst for MazeBench agent run ${runId}. Produce a candid, detailed review of how the agent played and reasoned.
+
+You have read-only access to the complete run directory at ${runDir} and the MazeBench game implementation at ${rootDir}. Do not modify any file. Read the game source only when it helps explain mechanics; the recorded evaluator artifacts are authoritative about what actually happened.
+
+Inspect the full run, not only the last few turns. Prioritize run.json, maze_scorecard.json, actions.jsonl, reasoning.json, prime-reasoning.jsonl, agent-events.jsonl, launcher.log, and eval-output/results.jsonl when present. Correlate reasoning with actions and outcomes. Treat valid:false actions and their errors as rejected attempts that did not change game state. Do not attempt to decode binary video files.
+
+Write a standalone Markdown report with these sections:
+1. Overall verdict and concise scorecard.
+2. Strategy and thought-process narrative across the run.
+3. What it understood and did well, with specific action numbers.
+4. Bad ideas, mistakes, invalid actions, repeated confusion, and wasted effort, with specific action numbers.
+5. How well its beliefs matched the actual game state and mechanics.
+6. Important turning points and interesting anecdotes from the reasoning logs.
+7. Efficiency, exploration, recovery behavior, and use of memory/tools/other agents when applicable.
+8. A better strategy it should have followed.
+9. Final lessons and concrete recommendations for the next attempt.
+
+Distinguish evidence from inference. Quote only short phrases from the reasoning logs and otherwise summarize. Be thorough, specific, readable, and honest.`;
+}
+
+function runReviewCommand({ provider, model, reasoning, runDir, rootDir, outputPath, prompt }) {
+  if (provider === "codex") {
+    const argv = [
+      "exec",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--skip-git-repo-check",
+      "-C", runDir,
+      "--sandbox", "read-only",
+      "-c", 'approval_policy="never"',
+      "-c", 'web_search="disabled"',
+      "-c", "tools.web_search=false",
+      "--disable", "multi_agent",
+      "--disable", "apps",
+      "--disable", "plugins",
+      "--output-last-message", outputPath
+    ];
+    if (model) argv.push("--model", model);
+    if (reasoning) argv.push("-c", `model_reasoning_effort=${JSON.stringify(reasoning)}`);
+    argv.push(prompt);
+    return { bin: "codex", argv };
+  }
+
+  if (provider === "claude") {
+    const argv = [
+      "-p", prompt,
+      "--output-format", "text",
+      "--no-session-persistence",
+      "--safe-mode",
+      "--disable-slash-commands",
+      "--no-chrome",
+      "--permission-mode", "dontAsk",
+      "--tools", "Read,Glob,Grep",
+      "--allowedTools", "Read,Glob,Grep",
+      "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent",
+      "--add-dir", rootDir
+    ];
+    if (model) argv.push("--model", model);
+    if (reasoning) argv.push("--effort", reasoning);
+    return { bin: "claude", argv };
+  }
+
+  throw new Error('Review provider must be "codex" or "claude".');
+}
 
 function branchLaunchParams(meta, sourceParams, runId, turn) {
   const params = { ...(sourceParams || {}) };
@@ -383,10 +453,26 @@ function collectedAllWorldGems(gemCount, gemTotal) {
   return Number.isFinite(collected) && Number.isFinite(total) && total >= 0 && collected >= total;
 }
 
+function primeEvaluationReward(sample, scorecard = null) {
+  const scalar = Number(sample?.reward);
+  if (Number.isFinite(scalar)) return scalar;
+  const components = Object.values(sample?.rewards || {})
+    .map(Number)
+    .filter(Number.isFinite);
+  if (components.length) return components.reduce((sum, value) => sum + value, 0);
+  const metricReward = Number(sample?.metrics?.reward);
+  if (Number.isFinite(metricReward)) return metricReward;
+  const percent = Number(scorecard?.result?.percent);
+  return Number.isFinite(percent) ? percent / 100 : 0;
+}
+
 function createAgentRunService({
   agentEnvironment,
   agentEnvironmentAsync,
   allowLegacyLocalLaunch = true,
+  primeEvaluationCreator = {},
+  reviewBins = {},
+  syncPrimeEvaluations = false,
   ensureDirectory,
   getGame,
   buildWorlds,
@@ -399,8 +485,11 @@ function createAgentRunService({
   const primeRunnerScript = path.join(rootDir, "scripts", "maze-prime-run.js");
   const renderFrameScript = path.join(rootDir, "scripts", "maze-render-frame.js");
   const replayScript = path.join(rootDir, "scripts", "maze-export-replay.js");
+  const primeEvaluationCreatorScript = path.join(rootDir, "scripts", "prime-create-evaluation.js");
   const liveChildren = new Map();
   const videoChildren = new Map();
+  const primeSyncChildren = new Map();
+  const reviewChildren = new Map();
   const liveFrameLocks = new Map();
   const resolvedRunModels = new Map();
   const legacyClaudeSnapshotTimers = new Map();
@@ -741,6 +830,391 @@ function createAgentRunService({
 
   function readPrimeEvaluation(runId) {
     return loadJson(path.join(runDirFor(runId), "prime-evaluation.json"), null);
+  }
+
+  function writePrimeEvaluation(runId, value) {
+    const target = path.join(runDirFor(runId), "prime-evaluation.json");
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.renameSync(temporary, target);
+    return value;
+  }
+
+  function primePushEvaluationId(value) {
+    const text = String(value || "").replace(/\u001b\[[0-9;]*m/g, "");
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      try {
+        const payload = JSON.parse(lines[index]);
+        const id = String(payload?.evaluation_id || payload?.eval_id || "");
+        if (id) return id;
+      } catch (_error) {
+        /* Prime also prints human-readable progress before its final JSON. */
+      }
+    }
+    const jsonMatch = text.match(/"evaluation_id"\s*:\s*"([a-z0-9]+)"/i);
+    if (jsonMatch) return jsonMatch[1];
+    return text.match(/Evaluation ID:\s*([a-z0-9]+)/i)?.[1] || "";
+  }
+
+  function primeEnvironmentForRun(meta) {
+    return String(
+      meta.prime_environment ||
+      process.env.MAZEBENCH_PRIME_ENVIRONMENT ||
+      "mazebench/mazebench"
+    );
+  }
+
+  function primeEvalMetadata(runId, meta, environment, existing = {}) {
+    return {
+      ...existing,
+      env_id: environment,
+      model: String(meta.model_name || meta.model || "prime"),
+      framework: existing.framework || "verifiers",
+      task_type: existing.task_type || "agent-evaluation",
+      mazebench_run_id: runId,
+      mazebench_harness: String(meta.harness || "none"),
+      mazebench_harness_label: String(meta.harness_label || "Prime Intellect"),
+      mazebench_observation_mode: String(meta.mode || "text"),
+      mazebench_execution: "local",
+      mazebench_run_status: String(meta.status || ""),
+      num_examples: Number(existing.num_examples) || 1,
+      rollouts_per_example: Number(existing.rollouts_per_example) || 1
+    };
+  }
+
+  function syncPrimeEvaluation(runId) {
+    const meta = readRunMeta(runId);
+    if (!meta) throw new Error(`Unknown run "${runId}".`);
+    if (meta.kind !== "prime") throw new Error("Only Prime-backed runs can sync to Prime Evals.");
+    if (meta.prime_execution === "hosted") return summarizeRun(runId);
+    if (!["paused", "finished", "stopped", "failed"].includes(meta.status)) {
+      throw new Error("Finish, stop, or pause the run before syncing it to Prime Evals.");
+    }
+
+    const resultsPath = findPrimeResultsFile(runDirFor(runId));
+    if (!fileHasContent(resultsPath)) {
+      throw new Error("This run does not have a completed results.jsonl to sync yet.");
+    }
+    const existingState = readPrimeEvaluation(runId) || {};
+    // Never create a duplicate for a fully synced run. A failed upload can
+    // safely resume against its already-created evaluation id with --eval.
+    if (existingState.evaluation_id && existingState.sync_status === "synced") {
+      return summarizeRun(runId);
+    }
+    if (primeSyncChildren.has(runId)) return summarizeRun(runId);
+
+    const runDir = runDirFor(runId);
+    const resultsDir = path.join(runDir, ".prime-eval-sync");
+    fs.mkdirSync(resultsDir, { recursive: true });
+    const scorecard = loadJson(path.join(runDir, "maze_scorecard.json"), null);
+    const normalizedResults = fs.readFileSync(resultsPath, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => line.trim())
+      .map((line) => {
+        const sample = JSON.parse(line);
+        return JSON.stringify({ ...sample, reward: primeEvaluationReward(sample, scorecard) });
+      });
+    if (!normalizedResults.length) {
+      throw new Error("This run does not have a valid result sample to sync yet.");
+    }
+    fs.writeFileSync(path.join(resultsDir, "results.jsonl"), `${normalizedResults.join("\n")}\n`, "utf8");
+    const metadataPath = path.join(resultsDir, "metadata.json");
+    const environment = primeEnvironmentForRun(meta);
+    const existingMetadata = {
+      ...(loadJson(path.join(path.dirname(resultsPath), "metadata.json"), {}) || {}),
+      ...(loadJson(metadataPath, {}) || {})
+    };
+    fs.writeFileSync(
+      metadataPath,
+      `${JSON.stringify(primeEvalMetadata(runId, meta, environment, existingMetadata), null, 2)}\n`,
+      "utf8"
+    );
+
+    const evalName = `MazeBench Agent ${runId}`;
+    const startedAt = new Date().toISOString();
+    writePrimeEvaluation(runId, {
+      ...existingState,
+      evaluation_id: existingState.evaluation_id || "",
+      environment,
+      model: String(meta.model_name || meta.model || "prime"),
+      name: evalName,
+      status: "UPLOADING",
+      sync_status: "syncing",
+      sync_started_at: startedAt,
+      sync_error: null,
+      updated_at: startedAt
+    });
+
+    let settled = false;
+    const fail = (detailValue) => {
+      if (settled) return;
+      settled = true;
+      primeSyncChildren.delete(runId);
+      const current = readPrimeEvaluation(runId) || {};
+      const completedAt = new Date().toISOString();
+      const detail = String(detailValue || "Prime evaluation sync failed.")
+        .replace(/\u001b\[[0-9;]*m/g, "")
+        .trim()
+        .slice(-2000);
+      writePrimeEvaluation(runId, {
+        ...current,
+        status: "SYNC_FAILED",
+        sync_status: "failed",
+        sync_completed_at: completedAt,
+        sync_error: detail || "Prime evaluation sync failed.",
+        updated_at: completedAt
+      });
+    };
+
+    const pushEvaluation = (evaluationId) => {
+      if (settled) return;
+      const evaluationStartedAt = new Date().toISOString();
+      writePrimeEvaluation(runId, {
+        ...(readPrimeEvaluation(runId) || {}),
+        evaluation_id: evaluationId,
+        status: "UPLOADING",
+        sync_status: "syncing",
+        sync_error: null,
+        updated_at: evaluationStartedAt
+      });
+      const child = spawn(
+        "prime",
+        [
+          "eval", "push", resultsDir,
+          "--eval", evaluationId,
+          "--name", evalName,
+          "--output", "json",
+          "--plain"
+        ],
+        { cwd: rootDir, env: enrichedPathEnv(), stdio: ["ignore", "pipe", "pipe"] }
+      );
+      child.unref();
+      primeSyncChildren.set(runId, child);
+      let output = "";
+      const consume = (chunk) => {
+        output = `${output}${chunk.toString()}`.slice(-2 * 1024 * 1024);
+      };
+      child.stdout.on("data", consume);
+      child.stderr.on("data", consume);
+      child.on("error", (error) => fail(error.message));
+      child.on("close", (code) => {
+        if (settled) return;
+        if (code !== 0) {
+          fail(output || `prime eval push exited with status ${code ?? "unknown"}.`);
+          return;
+        }
+        settled = true;
+        primeSyncChildren.delete(runId);
+        const completedAt = new Date().toISOString();
+        writePrimeEvaluation(runId, {
+          ...(readPrimeEvaluation(runId) || {}),
+          evaluation_id: evaluationId,
+          status: "COMPLETED",
+          sync_status: "synced",
+          sync_completed_at: completedAt,
+          sync_error: null,
+          updated_at: completedAt,
+          viewer_url: `https://app.primeintellect.ai/dashboard/evaluations/${evaluationId}`
+        });
+      });
+    };
+
+    if (existingState.evaluation_id) {
+      pushEvaluation(existingState.evaluation_id);
+      return summarizeRun(runId);
+    }
+
+    // prime-evals 0.2.3 incorrectly treats every owner-qualified environment
+    // as team-owned. Resolve the Hub environment to its database id first so
+    // personal, team, and public environments all upload through the same path.
+    const creatorArgs = [
+      ...(Array.isArray(primeEvaluationCreator.args)
+        ? primeEvaluationCreator.args
+        : [primeEvaluationCreatorScript]),
+      "--environment", environment,
+      "--name", evalName,
+      "--model", String(meta.model_name || meta.model || "prime"),
+      "--metadata", metadataPath
+    ];
+    const creator = spawn(
+      String(primeEvaluationCreator.bin || process.execPath),
+      creatorArgs,
+      { cwd: rootDir, env: enrichedPathEnv(), stdio: ["ignore", "pipe", "pipe"] }
+    );
+    creator.unref();
+    primeSyncChildren.set(runId, creator);
+    let creatorOutput = "";
+    const consumeCreator = (chunk) => {
+      creatorOutput = `${creatorOutput}${chunk.toString()}`.slice(-2 * 1024 * 1024);
+    };
+    creator.stdout.on("data", consumeCreator);
+    creator.stderr.on("data", consumeCreator);
+    creator.on("error", (error) => fail(error.message));
+    creator.on("close", (code) => {
+      if (settled) return;
+      const evaluationId = code === 0 ? primePushEvaluationId(creatorOutput) : "";
+      if (!evaluationId) {
+        fail(creatorOutput || `Prime evaluation creation exited with status ${code ?? "unknown"}.`);
+        return;
+      }
+      pushEvaluation(evaluationId);
+    });
+    return summarizeRun(runId);
+  }
+
+  function maybeSyncPrimeEvaluation(runId, meta = readRunMeta(runId)) {
+    if (!syncPrimeEvaluations || meta?.kind !== "prime" || meta.prime_execution === "hosted") return false;
+    if (!["paused", "finished", "stopped", "failed"].includes(meta.status)) return false;
+    const state = readPrimeEvaluation(runId);
+    if (state?.sync_status === "synced" || primeSyncChildren.has(runId)) return false;
+    if (!fileHasContent(findPrimeResultsFile(runDirFor(runId)))) return false;
+    try {
+      syncPrimeEvaluation(runId);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function getRunReview(runId) {
+    const meta = readRunMeta(runId);
+    if (!meta) throw new Error(`Unknown run "${runId}".`);
+    const review = loadJson(path.join(runDirFor(runId), RUN_REVIEW_FILE), {
+      status: "idle",
+      provider: "",
+      model: "",
+      reasoning: "",
+      review: "",
+      error: ""
+    });
+    if (review.status === "running" && !reviewChildren.has(runId)) {
+      return writeRunReview(runId, {
+        ...review,
+        status: "failed",
+        completed_at: new Date().toISOString(),
+        review: "",
+        error: "The MazeBench server restarted while this review was running. Start the review again."
+      });
+    }
+    return review;
+  }
+
+  function writeRunReview(runId, value) {
+    const target = path.join(runDirFor(runId), RUN_REVIEW_FILE);
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.renameSync(temporary, target);
+    return value;
+  }
+
+  function generateRunReview(runId, params = {}) {
+    const meta = readRunMeta(runId);
+    if (!meta) throw new Error(`Unknown run "${runId}".`);
+    if (!["paused", "finished", "stopped", "failed"].includes(meta.status)) {
+      throw new Error("Pause or finish the run before asking another model to review it.");
+    }
+    if (!fileHasContent(path.join(runDirFor(runId), "actions.jsonl"))) {
+      throw new Error("This run has no recorded actions to review.");
+    }
+
+    const provider = String(params.provider || "codex").trim().toLowerCase();
+    if (!["codex", "claude"].includes(provider)) {
+      throw new Error('Review provider must be "codex" or "claude".');
+    }
+    const model = String(params.model || "").trim();
+    if (!model || model.length > 200 || /[\r\n\0]/.test(model)) {
+      throw new Error("Choose a valid reviewer model.");
+    }
+    const reasoning = String(params.reasoning || "").trim().toLowerCase();
+    if (reasoning && !["low", "medium", "high", "xhigh", "max", "ultra"].includes(reasoning)) {
+      throw new Error("Choose a supported reviewer reasoning effort.");
+    }
+    const environment = getEnvironment({ fresh: true });
+    if (!environment[provider]) {
+      const label = provider === "claude" ? "Claude Code" : "Codex";
+      const login = provider === "claude" ? "claude auth login" : "codex login";
+      throw new Error(`${label} is not signed in. Run \`${login}\`, then try again.`);
+    }
+    if (reviewChildren.has(runId)) return getRunReview(runId);
+
+    const runDir = runDirFor(runId);
+    const generationId = crypto.randomUUID();
+    const outputPath = path.join(runDir, `.run-review-${generationId}.md`);
+    const logPath = path.join(runDir, "run-review.log");
+    const prompt = runReviewPrompt(runId, runDir, rootDir);
+    const command = runReviewCommand({ provider, model, reasoning, runDir, rootDir, outputPath, prompt });
+    const startedAt = new Date().toISOString();
+    writeRunReview(runId, {
+      schema_version: 1,
+      generation_id: generationId,
+      status: "running",
+      provider,
+      model,
+      reasoning,
+      started_at: startedAt,
+      completed_at: null,
+      review: "",
+      error: ""
+    });
+
+    const child = spawn(String(reviewBins[provider] || command.bin), command.argv, {
+      cwd: runDir,
+      env: enrichedPathEnv(),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    child.unref();
+    reviewChildren.set(runId, child);
+    let stdout = "";
+    let log = "";
+    let settled = false;
+    const append = (chunk, isStdout) => {
+      const text = chunk.toString();
+      log = `${log}${text}`.slice(-8 * 1024 * 1024);
+      if (isStdout) stdout = `${stdout}${text}`.slice(-8 * 1024 * 1024);
+      try {
+        fs.appendFileSync(logPath, text, "utf8");
+      } catch (_error) {
+        /* the final state still reports provider errors */
+      }
+    };
+    child.stdout.on("data", (chunk) => append(chunk, true));
+    child.stderr.on("data", (chunk) => append(chunk, false));
+    const finish = (code, spawnError = null) => {
+      if (settled) return;
+      settled = true;
+      reviewChildren.delete(runId);
+      const current = loadJson(path.join(runDir, RUN_REVIEW_FILE), {});
+      if (current.generation_id !== generationId) return;
+      let review = provider === "codex" && fileHasContent(outputPath)
+        ? fs.readFileSync(outputPath, "utf8").trim()
+        : stdout.trim();
+      fs.rmSync(outputPath, { force: true });
+      const completedAt = new Date().toISOString();
+      if (code === 0 && review) {
+        writeRunReview(runId, {
+          ...current,
+          status: "completed",
+          completed_at: completedAt,
+          review,
+          error: ""
+        });
+        return;
+      }
+      const error = String(spawnError?.message || log || `Reviewer exited with status ${code ?? "unknown"}.`)
+        .trim()
+        .slice(-4000);
+      writeRunReview(runId, {
+        ...current,
+        status: "failed",
+        completed_at: completedAt,
+        review: "",
+        error: error || "The reviewer did not return a report."
+      });
+    };
+    child.on("error", (error) => finish(null, error));
+    child.on("close", (code) => finish(code));
+    return getRunReview(runId);
   }
 
   function readPrimeRolloutFailure(runId) {
@@ -1688,9 +2162,20 @@ function createAgentRunService({
 
     const actions = readActions(runId);
     const last = actions[actions.length - 1] || null;
-    const primeEvaluation = meta.kind === "prime" ? readPrimeEvaluation(runId) : null;
+    let primeEvaluation = meta.kind === "prime" ? readPrimeEvaluation(runId) : null;
+    if (primeEvaluation?.sync_status === "syncing" && !primeSyncChildren.has(runId)) {
+      primeEvaluation = writePrimeEvaluation(runId, {
+        ...primeEvaluation,
+        status: "SYNC_FAILED",
+        sync_status: "failed",
+        sync_completed_at: new Date().toISOString(),
+        sync_error: "The MazeBench server restarted while this Prime upload was running. Retry the sync.",
+        updated_at: new Date().toISOString()
+      });
+    }
     const modelName = resolvedRunModelName(runId, meta);
     const scorecard = loadJson(path.join(runDir, "maze_scorecard.json"), null);
+    const review = loadJson(path.join(runDir, RUN_REVIEW_FILE), null);
     const observedRooms = new Set(
       [meta.level_id, ...actions.map((action) => action.current_room)].filter(Boolean)
     );
@@ -1754,8 +2239,24 @@ function createAgentRunService({
       has_video: hasVideo,
       video_status: videoStatus,
       has_reasoning: fs.existsSync(path.join(runDir, "reasoning.json")),
+      review_status: String(review?.status || "idle"),
+      review_provider: String(review?.provider || ""),
+      review_model: String(review?.model || ""),
+      review_reasoning: String(review?.reasoning || ""),
+      review_error: String(review?.error || ""),
+      review_ready: Boolean(review?.status === "completed" && review?.review),
+      reviewable:
+        ["paused", "finished", "stopped", "failed"].includes(meta.status) &&
+        fileHasContent(path.join(runDir, "actions.jsonl")),
       prime_evaluation_id: String(primeEvaluation?.evaluation_id || primeEvaluation?.id || ""),
       prime_evaluation_status: String(primeRolloutFailure ? "FAILED" : primeEvaluation?.status || ""),
+      prime_evaluation_sync_status: String(primeEvaluation?.sync_status || ""),
+      prime_evaluation_sync_error: String(primeEvaluation?.sync_error || ""),
+      prime_evaluation_syncable:
+        meta.kind === "prime" &&
+        meta.prime_execution !== "hosted" &&
+        ["paused", "finished", "stopped", "failed"].includes(meta.status) &&
+        fileHasContent(findPrimeResultsFile(runDir)),
       prime_evaluation_url: String(
         primeEvaluation?.viewer_url ||
         (primeEvaluation?.evaluation_id
@@ -4204,12 +4705,14 @@ function createAgentRunService({
       }
 
       if (current.status === "stopped") {
+        maybeSyncPrimeEvaluation(runId, current);
         return;
       }
 
       // A manual pause SIGSTOPs the process without killing it; ignore any exit
       // that races with that (the resume path drives the status instead).
       if (current.status === "paused") {
+        maybeSyncPrimeEvaluation(runId, current);
         return;
       }
 
@@ -4257,6 +4760,7 @@ function createAgentRunService({
           : terminalRunMeta(current, "failed", { exit_code: code, finished_at: now });
       }
       writeRunMeta(runId, updated);
+      maybeSyncPrimeEvaluation(runId, updated);
       if (current.model === "claude") startNextWaitingClaudeRun();
     });
     child.on("error", (error) => {
@@ -4275,6 +4779,7 @@ function createAgentRunService({
         runId,
         terminalRunMeta(current, "failed", { launch_error: error instanceof Error ? error.message : String(error) })
       );
+      maybeSyncPrimeEvaluation(runId, readRunMeta(runId));
       if (current.model === "claude") startNextWaitingClaudeRun();
     });
   }
@@ -4903,12 +5408,16 @@ function createAgentRunService({
     const sessionPath = path.join(runDir, "session.json");
     const resultsPath = findPrimeResultsFile(runDir);
     const actionsPath = path.join(runDir, "actions.jsonl");
-    const replayInputPath = fileHasContent(resultsPath)
-      ? resultsPath
+    // actions.jsonl is the trusted evaluator's authoritative record. It also
+    // marks rejected attempts, which must remain visual no-ops; replaying raw
+    // model completions from results.jsonl can otherwise switch to a room the
+    // agent was never allowed to visit.
+    const replayInputPath = fileHasContent(actionsPath)
+      ? actionsPath
       : fs.existsSync(sessionPath)
         ? sessionPath
-        : fileHasContent(actionsPath)
-          ? actionsPath
+        : fileHasContent(resultsPath)
+          ? resultsPath
           : "";
     if (!replayInputPath) {
       throw new Error("This run has no completed eval result, saved session, or action log to render.");
@@ -5148,6 +5657,25 @@ function createAgentRunService({
     const meta = readRunMeta(runId);
     const runDir = runDirFor(runId);
 
+    const primeSync = primeSyncChildren.get(runId);
+    if (primeSync?.pid) {
+      try {
+        primeSync.kill("SIGTERM");
+      } catch (_error) {
+        /* sync process already exited */
+      }
+      primeSyncChildren.delete(runId);
+    }
+    const reviewer = reviewChildren.get(runId);
+    if (reviewer?.pid) {
+      try {
+        reviewer.kill("SIGTERM");
+      } catch (_error) {
+        /* reviewer already exited */
+      }
+      reviewChildren.delete(runId);
+    }
+
     if (meta?.kind === "prime" && ["running", "stopping"].includes(meta.status)) {
       cancelPrimeEvaluation(runId);
       stopPrimeAgentSandboxes(runId);
@@ -5287,6 +5815,7 @@ function createAgentRunService({
     stopAutoQuitMonitor(runId);
     const stopped = terminalRunMeta(readRunMeta(runId), "stopped", { exit_code: meta.exit_code ?? null });
     writeRunMeta(runId, stopped);
+    maybeSyncPrimeEvaluation(runId, stopped);
     if (meta.model === "claude") startNextWaitingClaudeRun();
 
     return summarizeRun(runId);
@@ -5321,8 +5850,10 @@ function createAgentRunService({
     continueRun,
     deleteRun,
     generateRunVideo,
+    generateRunReview,
     getEnvironment,
     getEnvironmentAsync,
+    getRunReview,
     getRunObservation,
     getRunProgress,
     launchRun,
@@ -5336,6 +5867,7 @@ function createAgentRunService({
     resolveRunFilePath,
     resumeRun,
     setRunMoveTarget,
+    syncPrimeEvaluation,
     startDocker,
     stopRun,
     summarizeRun
@@ -5351,7 +5883,10 @@ module.exports = {
   normalizePrimeHarnessConfig,
   primeReasoningLevels,
   primeHarnessModelCompatible,
+  primeEvaluationReward,
   primeSandboxIdsFromText,
   publicPrimeHarnesses,
-  replayMessageForCommandText
+  replayMessageForCommandText,
+  runReviewCommand,
+  runReviewPrompt
 };

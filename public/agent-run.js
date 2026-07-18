@@ -18,9 +18,23 @@
   const feedResult = document.getElementById("run-feed-result");
   const feedExportButton = document.getElementById("run-feed-export");
   const feedTextExportButton = document.getElementById("run-feed-export-txt");
+  const summarizeButton = document.getElementById("run-summarize");
+  const reviewDialog = document.getElementById("run-review-dialog");
+  const reviewCloseButton = document.getElementById("run-review-close");
+  const reviewCancelButton = document.getElementById("run-review-cancel");
+  const reviewStartButton = document.getElementById("run-review-start");
+  const reviewAgainButton = document.getElementById("run-review-again");
+  const reviewProvider = document.getElementById("run-review-provider");
+  const reviewModel = document.getElementById("run-review-model");
+  const reviewReasoning = document.getElementById("run-review-reasoning");
+  const reviewPickerNote = document.getElementById("run-review-picker-note");
+  const reviewResult = document.getElementById("run-review-result");
+  const reviewByline = document.getElementById("run-review-byline");
+  const reviewContent = document.getElementById("run-review-content");
   const logEl = document.getElementById("run-log");
   const stopButton = document.getElementById("stop-run");
   const primeEvaluationLink = document.getElementById("open-prime-evaluation");
+  const primeSyncButton = document.getElementById("sync-prime-evaluation");
   const pauseButton = document.getElementById("pause-run");
   const resumeButton = document.getElementById("resume-run");
   const continueButton = document.getElementById("continue-run");
@@ -221,7 +235,10 @@
     feedQuery: "",
     renderedFeedQuery: "",
     feedRenderLimit: FEED_RENDER_BATCH,
-    expandedReasoning: new Set()
+    expandedReasoning: new Set(),
+    reviewCatalogs: new Map(),
+    reviewPollTimer: null,
+    review: null
   };
 
   function setStatus(message, isError = false) {
@@ -1028,6 +1045,23 @@
     if (primeEvaluationLink) {
       primeEvaluationLink.hidden = !run.prime_evaluation_url;
       if (run.prime_evaluation_url) primeEvaluationLink.href = run.prime_evaluation_url;
+    }
+    if (primeSyncButton) {
+      const syncing = run.prime_evaluation_sync_status === "syncing";
+      primeSyncButton.hidden = run.prime_evaluation_sync_status === "synced" || !run.prime_evaluation_syncable;
+      primeSyncButton.disabled = syncing;
+      primeSyncButton.textContent = syncing
+        ? "Syncing to Prime…"
+        : run.prime_evaluation_sync_status === "failed"
+          ? "Retry Prime sync"
+          : "Sync to Prime";
+      primeSyncButton.title = run.prime_evaluation_sync_error || "Upload this evaluation to the Prime dashboard";
+    }
+    if (summarizeButton) {
+      const reviewing = run.review_status === "running" || state.review?.status === "running";
+      summarizeButton.disabled = !run.reviewable || reviewing;
+      summarizeButton.querySelector("span").textContent = reviewing ? "Summarizing…" : "Summarize";
+      summarizeButton.title = run.review_error || "Ask Codex or Claude Code for a full review of this play";
     }
     pauseButton.hidden = !run.pausable;
     resumeButton.hidden = !run.resumable;
@@ -2785,6 +2819,142 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function reviewInlineMarkdown(value) {
+    return escapeText(value)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  }
+
+  function reviewMarkdown(value) {
+    const lines = String(value || "").split(/\r?\n/);
+    const html = [];
+    let list = "";
+    const closeList = () => {
+      if (list) html.push(`</${list}>`);
+      list = "";
+    };
+    for (const line of lines) {
+      const heading = line.match(/^(#{1,3})\s+(.+)$/);
+      const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+      const numbered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (heading) {
+        closeList();
+        const level = heading[1].length;
+        html.push(`<h${level}>${reviewInlineMarkdown(heading[2])}</h${level}>`);
+      } else if (bullet || numbered) {
+        const nextList = bullet ? "ul" : "ol";
+        if (list !== nextList) {
+          closeList();
+          list = nextList;
+          html.push(`<${list}>`);
+        }
+        html.push(`<li>${reviewInlineMarkdown((bullet || numbered)[1])}</li>`);
+      } else if (!line.trim()) {
+        closeList();
+      } else {
+        closeList();
+        html.push(`<p>${reviewInlineMarkdown(line)}</p>`);
+      }
+    }
+    closeList();
+    return html.join("");
+  }
+
+  function renderRunReview(review) {
+    state.review = review || null;
+    if (!review) return;
+    state.run.review_status = review.status || "idle";
+    state.run.review_error = review.error || "";
+    renderControls(state.run);
+    if (review.status === "completed" && review.review) {
+      reviewResult.hidden = false;
+      reviewByline.textContent = `${review.provider === "claude" ? "Claude Code" : "Codex"} · ${review.model}${review.reasoning ? ` · ${review.reasoning} reasoning` : ""}`;
+      reviewContent.innerHTML = reviewMarkdown(review.review);
+    } else if (review.status === "failed") {
+      setStatus(`Run review failed — ${review.error || "the reviewer returned no report."}`, true);
+    }
+  }
+
+  async function refreshRunReview() {
+    clearTimeout(state.reviewPollTimer);
+    try {
+      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/summary`, {
+        headers: { accept: "application/json" }
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `Review status failed (${response.status}).`);
+      renderRunReview(payload.review);
+      if (payload.review?.status === "running") {
+        state.reviewPollTimer = setTimeout(refreshRunReview, 2000);
+      }
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  }
+
+  function updateReviewerReasoning() {
+    const catalog = state.reviewCatalogs.get(reviewProvider.value);
+    const selected = (catalog?.models || []).find((model) => model.id === reviewModel.value);
+    const levels = Array.isArray(selected?.reasoning_levels) ? selected.reasoning_levels : [];
+    reviewReasoning.innerHTML = '<option value="">Default</option>' + levels
+      .map((level) => `<option value="${escapeText(level)}">${escapeText(titleCase(level))}</option>`)
+      .join("");
+    const preferred = ["max", "xhigh", "high"].find((level) => levels.includes(level));
+    if (preferred) reviewReasoning.value = preferred;
+  }
+
+  async function loadReviewerModels({ refresh = false } = {}) {
+    const provider = reviewProvider.value;
+    const cached = state.reviewCatalogs.get(provider);
+    if (cached && !refresh) {
+      renderReviewerModels(cached);
+      return;
+    }
+    reviewModel.innerHTML = '<option value="">Loading models…</option>';
+    reviewModel.disabled = true;
+    reviewStartButton.disabled = true;
+    try {
+      const response = await fetch(`/api/agent/models/${encodeURIComponent(provider)}${refresh ? "?refresh=1" : ""}`);
+      const catalog = await response.json();
+      if (!response.ok) throw new Error(catalog.error || `Model catalog failed (${response.status}).`);
+      state.reviewCatalogs.set(provider, catalog);
+      renderReviewerModels(catalog);
+    } catch (error) {
+      reviewPickerNote.textContent = error.message;
+      reviewModel.innerHTML = '<option value="">No models available</option>';
+    } finally {
+      reviewModel.disabled = false;
+    }
+  }
+
+  function renderReviewerModels(catalog) {
+    const models = Array.isArray(catalog?.models) ? catalog.models : [];
+    reviewModel.innerHTML = models.length
+      ? models.map((model) => `<option value="${escapeText(model.id)}">${escapeText(model.label || model.id)}</option>`).join("")
+      : '<option value="">No models available</option>';
+    const priorModel = state.review?.provider === reviewProvider.value ? state.review.model : "";
+    const preferred = models.find((model) => model.id === priorModel)
+      || models.find((model) => model.id === catalog.default_model_id)
+      || models[0];
+    if (preferred) reviewModel.value = preferred.id;
+    reviewPickerNote.textContent = catalog?.note || catalog?.source || "";
+    reviewStartButton.disabled = !reviewModel.value;
+    updateReviewerReasoning();
+  }
+
+  function closeReviewDialog() {
+    reviewDialog.hidden = true;
+    summarizeButton?.focus();
+  }
+
+  async function openReviewDialog() {
+    reviewDialog.hidden = false;
+    if (state.review?.provider) reviewProvider.value = state.review.provider;
+    await loadReviewerModels();
+    reviewProvider.focus();
+  }
+
   function renderFeed({ resetScroll = false } = {}) {
     const query = state.feedQuery.trim();
     if (state.renderedFeedVersion === state.feedVersion && state.renderedFeedQuery === query) return;
@@ -3283,6 +3453,7 @@
       // "running" while the video builds; don't treat a terminal-without-video
       // Prime run as still-rendering (the video step is best-effort there).
       const waitingForVideo = !running && progress.run.video_status === "rendering";
+      const waitingForPrimeSync = !running && progress.run.prime_evaluation_sync_status === "syncing";
       if (running) {
         if (progress.run.status === "pausing") {
           setStatus(`Pausing after move ${progress.run.pause_after_turn || "the next completed action"}…`);
@@ -3307,6 +3478,9 @@
         setStatus(progress.run.status === "paused"
           ? "Paused — rendering a replay snapshot…"
           : "Rendering the replay video…");
+        state.timer = setTimeout(poll, 2000);
+      } else if (waitingForPrimeSync) {
+        setStatus("Run ended — syncing the evaluation to your Prime dashboard…");
         state.timer = setTimeout(poll, 2000);
       } else if (progress.run.status === "waiting") {
         setStatus("Waiting for the active Claude Code run to finish.");
@@ -3370,6 +3544,20 @@
       await runAction("stop");
       setStatus("Stopping…");
     } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
+
+  primeSyncButton?.addEventListener("click", async () => {
+    try {
+      primeSyncButton.disabled = true;
+      primeSyncButton.textContent = "Syncing to Prime…";
+      await runAction("prime-sync");
+      setStatus("Syncing the evaluation to your Prime dashboard…");
+      clearTimeout(state.timer);
+      state.timer = setTimeout(poll, 500);
+    } catch (error) {
+      primeSyncButton.disabled = false;
       setStatus(error.message, true);
     }
   });
@@ -3470,6 +3658,45 @@
     }
   });
 
+  summarizeButton?.addEventListener("click", openReviewDialog);
+  reviewAgainButton?.addEventListener("click", openReviewDialog);
+  reviewCloseButton?.addEventListener("click", closeReviewDialog);
+  reviewCancelButton?.addEventListener("click", closeReviewDialog);
+  reviewDialog?.addEventListener("click", (event) => {
+    if (event.target === reviewDialog) closeReviewDialog();
+  });
+  reviewProvider?.addEventListener("change", () => loadReviewerModels());
+  reviewModel?.addEventListener("change", () => {
+    reviewStartButton.disabled = !reviewModel.value;
+    updateReviewerReasoning();
+  });
+  reviewStartButton?.addEventListener("click", async () => {
+    reviewStartButton.disabled = true;
+    reviewStartButton.textContent = "Starting reviewer…";
+    try {
+      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/summary`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          provider: reviewProvider.value,
+          model: reviewModel.value,
+          reasoning: reviewReasoning.value
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `Could not start review (${response.status}).`);
+      closeReviewDialog();
+      renderRunReview(payload.review);
+      setStatus(`${reviewProvider.value === "claude" ? "Claude Code" : "Codex"} is reviewing the complete run…`);
+      state.reviewPollTimer = setTimeout(refreshRunReview, 1000);
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      reviewStartButton.textContent = "Generate full review";
+      reviewStartButton.disabled = !reviewModel.value;
+    }
+  });
+
   deleteButton?.addEventListener("click", async () => {
     if (!window.confirm("Delete this run and its artifacts? This can't be undone.")) return;
     try {
@@ -3492,6 +3719,11 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && reviewDialog && !reviewDialog.hidden) {
+      event.preventDefault();
+      closeReviewDialog();
+      return;
+    }
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     if (!mainReplayControls && state.activeReplay === "primary") return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -3526,5 +3758,6 @@
   describeRun(initial);
   renderStats(initial);
   renderMainReplayControls();
+  if (initial.review_status && initial.review_status !== "idle") void refreshRunReview();
   poll();
 })();
