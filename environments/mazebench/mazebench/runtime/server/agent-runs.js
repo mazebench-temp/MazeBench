@@ -86,6 +86,8 @@ const PRIME_HARNESSES = new Map([
   ["codex", { id: "codex", label: "Codex", taskset: "mazebench-agent", protocol: "OpenAI Responses" }],
   ["claude-code", { id: "claude-code", label: "Claude Code", taskset: "mazebench-agent", protocol: "Anthropic Messages" }]
 ]);
+const UNSAFE_PRIME_AGENT_HARNESS_MESSAGE =
+  "Codex and Claude Code via Prime are disabled because the built-in coding-agent harness exposes benchmark internals. Choose Prime Intellect for an isolated run, or use the separately sandboxed Local Run path.";
 
 const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
 
@@ -184,6 +186,18 @@ function primeHarnessModelCompatible(modelId, harnessId) {
     return /^openai\/gpt-(?:4o|4\.1|5(?:[.-]|$))/i.test(id);
   }
   return /^anthropic\/claude-/i.test(id);
+}
+
+function primeSandboxIdsFromText(value) {
+  const ids = new Set();
+  const text = String(value || "");
+  for (const pattern of [
+    /\bsandbox\s+([a-z0-9]{12,64})\s+up\b/gi,
+    /\bsandbox-job-([a-z0-9]{12,64})\b/gi
+  ]) {
+    for (const match of text.matchAll(pattern)) ids.add(match[1]);
+  }
+  return [...ids];
 }
 
 function filterPrimeCatalogForHarness(catalog, harnessId) {
@@ -1213,7 +1227,10 @@ function createAgentRunService({
     };
     writeRunMeta(runId, updated);
     stopAutoQuitMonitor(runId);
-    if (meta.kind === "prime") cancelPrimeEvaluation(runId);
+    if (meta.kind === "prime") {
+      cancelPrimeEvaluation(runId);
+      stopPrimeAgentSandboxes(runId);
+    }
     stopLegacyClaudeSnapshots(runId);
     stopLiveRenderer(runId, { force: true });
     stopDetachedRunRenderers(runId, { force: true });
@@ -3643,6 +3660,9 @@ function createAgentRunService({
   // Keep hosted execution as an API-level opt-in for evaluation workflows.
   function buildPrimeCommand(params, runDir, runId, game) {
     const harness = normalizePrimeHarness(params.harness);
+    if (harness !== "none") {
+      throw new Error(UNSAFE_PRIME_AGENT_HARNESS_MESSAGE);
+    }
     const model = String(params.model_name || params.model || "").trim();
     if (harness !== "none" && !primeHarnessModelCompatible(model, harness)) {
       const definition = PRIME_HARNESSES.get(harness);
@@ -4833,12 +4853,59 @@ function createAgentRunService({
     return result.status === 0;
   }
 
+  function stopPrimeAgentSandboxes(runId) {
+    const runDir = runDirFor(runId);
+    const ids = new Set();
+    for (const filePath of [
+      path.join(runDir, "launcher.log"),
+      path.join(runDir, "eval-output", "eval.log")
+    ]) {
+      try {
+        primeSandboxIdsFromText(fs.readFileSync(filePath, "utf8")).forEach((id) => ids.add(id));
+      } catch (_error) {
+        /* the sandbox may not have started or logged its id yet */
+      }
+    }
+    if (!ids.size) return false;
+
+    const sandboxIds = [...ids];
+    const result = spawnSync(
+      "prime",
+      ["sandbox", "delete", ...sandboxIds, "--yes", "--plain"],
+      {
+        cwd: rootDir,
+        encoding: "utf8",
+        env: enrichedPathEnv(),
+        timeout: 30_000,
+        maxBuffer: 2 * 1024 * 1024
+      }
+    );
+    const record = {
+      sandbox_ids: sandboxIds,
+      stopped_at: result.status === 0 ? new Date().toISOString() : null,
+      error: result.status === 0
+        ? null
+        : String(result.stderr || result.stdout || "Prime sandbox cleanup failed.").trim()
+    };
+    try {
+      fs.writeFileSync(
+        path.join(runDir, "prime-sandbox-cleanup.json"),
+        `${JSON.stringify(record, null, 2)}\n`,
+        "utf8"
+      );
+    } catch (_error) {
+      /* cleanup must still proceed when its audit record cannot be written */
+    }
+    return result.status === 0;
+  }
+
   function deleteRun(runId) {
     const meta = readRunMeta(runId);
     const runDir = runDirFor(runId);
 
     if (meta?.kind === "prime" && ["running", "stopping"].includes(meta.status)) {
       cancelPrimeEvaluation(runId);
+      stopPrimeAgentSandboxes(runId);
     }
 
     // Remove the daemon-owned container first; killing only the attached docker
@@ -4925,6 +4992,7 @@ function createAgentRunService({
           }
         }
         signalRunProcess(meta, "SIGKILL");
+        if (meta.kind === "prime") stopPrimeAgentSandboxes(runId);
       }
       return summarizeRun(runId);
     }
@@ -4932,6 +5000,7 @@ function createAgentRunService({
     writeRunMeta(runId, { ...meta, status: "stopping" });
     stopAutoQuitMonitor(runId);
     if (meta.kind === "prime") cancelPrimeEvaluation(runId);
+    if (meta.kind === "prime") stopPrimeAgentSandboxes(runId);
     stopLegacyClaudeSnapshots(runId);
     stopLiveRenderer(runId, { force: true });
 
@@ -5035,5 +5104,6 @@ module.exports = {
   filterPrimeCatalogForHarness,
   primeReasoningLevels,
   primeHarnessModelCompatible,
+  primeSandboxIdsFromText,
   replayMessageForCommandText
 };

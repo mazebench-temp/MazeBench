@@ -26,6 +26,8 @@ const HOSTED_STATE_FILE = "prime-evaluation.json";
 const HOSTED_SAMPLES_FILE = "prime-evaluation-samples.json";
 const TEXT_RUNTIME_IMAGE = "node:24-bookworm-slim";
 const VISION_RUNTIME_IMAGE = "mcr.microsoft.com/playwright:v1.60.0-noble";
+const UNSAFE_AGENT_HARNESS_MESSAGE =
+  "Codex and Claude Code via Prime are disabled: the built-in coding-agent harness exposes the benchmark runtime and hidden state. Use the isolated Prime Intellect harness instead.";
 
 function positiveTurnBudget(value, fallback = 20) {
   const number = Number(value);
@@ -115,6 +117,9 @@ function parseArgs(argv) {
   }
   if (!["none", "codex", "claude-code"].includes(opts.harness)) {
     throw new Error(`Unknown Prime harness "${opts.harness}".`);
+  }
+  if (opts.harness !== "none") {
+    throw new Error(UNSAFE_AGENT_HARNESS_MESSAGE);
   }
   if (opts.hosted && opts.harness !== "none") {
     throw new Error("Prime coding-agent harnesses currently run through the local evaluator with a Prime sandbox.");

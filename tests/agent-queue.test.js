@@ -108,6 +108,25 @@ try {
   });
   assert.equal(replayMessageForCommandText("not a command"), null);
 
+  assert.throws(
+    () => service.launchRuns({
+      kind: "prime",
+      harness: "codex",
+      model_name: "openai/gpt-5.6-luna",
+      max_turns: 10
+    }),
+    /built-in coding-agent harness exposes benchmark internals/
+  );
+  assert.throws(
+    () => service.launchRuns({
+      kind: "prime",
+      harness: "claude-code",
+      model_name: "anthropic\/claude-sonnet-5",
+      max_turns: 10
+    }),
+    /built-in coding-agent harness exposes benchmark internals/
+  );
+
   const [livePrime] = service.launchRuns({
     kind: "prime",
     model_name: "Qwen/Qwen3.5-0.8B",
