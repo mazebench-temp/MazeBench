@@ -67,6 +67,8 @@ assert.match(pages, /rel="preload" as="image" href="\/logos\/prime\.png"[^>]*fet
 assert.doesNotMatch(agentScript, /logos\/(?:codex|claude|prime)\.png" alt="" loading="lazy"/);
 assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 3);
 assert.match(agentScript, /const HARNESSES = \[/);
+assert.match(agentScript, /function runModeLabel\(value\)/);
+assert.match(agentScript, /run-card__badge--mode[^\n]*runModeLabel\(run\.mode\)/);
 assert.match(agentScript, /id: "none",\s*name: "Prime Intellect",\s*logo: '<img src="\/logos\/prime\.png"/);
 assert.match(agentScript, /id: "codex",\s*name: "Codex"/);
 assert.match(agentScript, /id: "claude-code",\s*name: "Claude Code"/);
