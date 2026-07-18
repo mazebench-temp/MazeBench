@@ -136,17 +136,18 @@ try {
     filterPrimeCatalogForHarness(sampleCatalog, "claude-code").models.map((model) => model.id),
     ["anthropic/claude-sonnet-5"]
   );
-  for (const modelId of [
-    "openai/gpt-5.6-sol",
-    "openai/gpt-5-chat",
-    "anthropic/claude-fable-5",
-    "google/gemini-3.5-flash",
-    "x-ai/grok-4.20-multi-agent",
-    "Qwen/Qwen3.5-0.8B"
-  ]) {
+  for (const modelId of ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]) {
     assert.deepEqual(primeReasoningLevels(modelId), ["low", "medium", "high"]);
   }
-  assert.match(agentSource, /state\.execution === "prime"[\s\S]{0,100}return \["low", "medium", "high"\]/);
+  for (const modelId of [
+    "openai/gpt-5.6-sol",
+    "anthropic/claude-fable-5",
+    "google/gemini-3.5-flash",
+    "Qwen/Qwen3.5-0.8B"
+  ]) {
+    assert.deepEqual(primeReasoningLevels(modelId), []);
+  }
+  assert.match(agentSource, /state\.execution === "prime"[\s\S]{0,180}model\.reasoning_levels/);
 
   const primeOnlyService = createAgentRunService({
     agentEnvironment: () => ({}),

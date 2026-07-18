@@ -107,11 +107,13 @@ function claudeReasoningLevels(modelId) {
   ];
 }
 
-// Prime exposes one stable cross-provider contract. Provider-native extensions
-// such as minimal, xhigh, max, and ultra can consume the answer channel and
-// yield empty game commands, so never advertise or forward them.
-function primeReasoningLevels(_modelId) {
-  return [...PRIME_REASONING_LEVELS];
+// Prime documents reasoning_effort for GPT-OSS models. Do not infer support
+// from another provider's native API: unsupported knobs can produce a
+// reasoning-only response with no game command.
+function primeReasoningLevels(modelId) {
+  return /^openai\/gpt-oss-(?:20b|120b)(?:-|$)/i.test(String(modelId || "").trim())
+    ? [...PRIME_REASONING_LEVELS]
+    : [];
 }
 
 function primeHarnessModelCompatible(modelId, harnessId) {
@@ -3391,7 +3393,7 @@ function createAgentRunService({
         checked_at: modelCatalogCheckedAt(),
         default_model_id: models[0]?.id || "",
         note: models.length
-          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id and Prime reasoning is limited to off, low, medium, or high.`
+          ? `${models.length} live models. Prices are USD per million tokens; image support is inferred from the model id and reasoning controls appear only where Prime documents support.`
           : "The Prime catalog came back empty — type a model id instead."
       };
     } catch (error) {
@@ -3625,8 +3627,8 @@ function createAgentRunService({
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
-    // Reasoning effort → --sampling.reasoning-effort. Prime's stable contract
-    // is off/low/medium/high. "" omits the override and preserves the default.
+    // Reasoning effort → --sampling.reasoning-effort for documented models.
+    // "" omits the override and preserves the provider default.
     const requestedReasoning = String(params.reasoning || "").toLowerCase();
     const reasoning = primeReasoningLevels(model).includes(requestedReasoning)
       ? requestedReasoning
