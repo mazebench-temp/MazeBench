@@ -23,7 +23,6 @@ _NEW_IMPORT = """from openai import (
     InternalServerError,
     RateLimitError,
 )
-from openai.types.chat import ChatCompletionMessage
 
 
 TRANSIENT_MODEL_ERRORS = (
@@ -46,40 +45,24 @@ _OLD_CHAT = """async def chat(
 _NEW_CHAT = """async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
+    empty_attempts = 0
     for attempt in range(1, 7):
         try:
-            model_name = model.rsplit("/", 1)[-1]
-            use_responses = (
-                not tools
-                and model.startswith("openai/")
-                and model_name.startswith(("gpt-5", "o1", "o3", "o4"))
-            )
-            if use_responses:
-                response = await client.responses.create(
-                    model=model,
-                    input=messages,
-                    reasoning={"summary": "auto"},
-                    include=["reasoning.encrypted_content"],
-                )
-                summaries = []
-                for item in response.output:
-                    if getattr(item, "type", "") != "reasoning":
-                        continue
-                    for part in getattr(item, "summary", None) or []:
-                        text = str(getattr(part, "text", "") or "").strip()
-                        if text:
-                            summaries.append(text)
-                return ChatCompletionMessage.model_validate(
-                    {
-                        "role": "assistant",
-                        "content": response.output_text,
-                        "reasoning_content": "\\n".join(summaries) or None,
-                    }
-                )
             completion = await client.chat.completions.create(
                 model=model, messages=messages, tools=tools or None
             )
-            return completion.choices[0].message
+            message = completion.choices[0].message
+            content = message.content
+            has_content = bool(content.strip()) if isinstance(content, str) else bool(content)
+            if has_content or message.tool_calls or getattr(message, "refusal", None):
+                return message
+            empty_attempts += 1
+            if empty_attempts >= 3:
+                raise RuntimeError(
+                    "Prime returned an empty assistant response three times; "
+                    "the turn was not sent to the environment."
+                )
+            await asyncio.sleep(empty_attempts)
         except TRANSIENT_MODEL_ERRORS:
             if attempt >= 6:
                 raise
@@ -95,7 +78,7 @@ PROGRAM_SOURCE = DEFAULT_PROGRAM_SOURCE.replace(_OLD_IMPORT, _NEW_IMPORT).replac
 
 
 class MazeBenchHarness(DefaultHarness):
-    """Responses summaries for OpenAI reasoning models plus bounded retries."""
+    """Prime chat-completions harness with bounded transport/blank retries."""
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)

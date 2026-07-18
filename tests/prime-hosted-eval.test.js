@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -59,11 +60,46 @@ try {
     path.join(__dirname, "..", "environments", "mazebench", "mazebench", "harness.py"),
     "utf8"
   );
-  assert.match(mazeHarnessSource, /client\.responses\.create\(/);
-  assert.match(mazeHarnessSource, /reasoning=\{"summary": "auto"\}/);
-  assert.match(mazeHarnessSource, /include=\["reasoning\.encrypted_content"\]/);
-  assert.match(mazeHarnessSource, /and model_name\.startswith\(\("gpt-5", "o1", "o3", "o4"\)\)/);
   assert.match(mazeHarnessSource, /client\.chat\.completions\.create\(/);
+  assert.doesNotMatch(mazeHarnessSource, /client\.responses\.create\(/);
+  assert.doesNotMatch(mazeHarnessSource, /reasoning=\{"summary": "auto"\}/);
+  assert.match(mazeHarnessSource, /empty_attempts >= 3/);
+  assert.match(mazeHarnessSource, /the turn was not sent to the environment/);
+  const retryProbe = execFileSync(
+    "uv",
+    [
+      "run",
+      "--project",
+      path.join(__dirname, "..", "environments", "mazebench"),
+      "python",
+      "-c",
+      `import asyncio
+from types import SimpleNamespace
+from mazebench.harness import PROGRAM_SOURCE
+scope = {"__name__": "maze_harness_test"}
+exec(compile(PROGRAM_SOURCE, "maze-harness-program.py", "exec"), scope)
+class Completions:
+    def __init__(self, contents): self.contents, self.calls = iter(contents), 0
+    async def create(self, **kwargs):
+        self.calls += 1
+        message = SimpleNamespace(content=next(self.contents), tool_calls=None, refusal=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+async def probe():
+    completions = Completions(["", "", "up"])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    message = await scope["chat"](client, "openai/gpt-5.6-sol", [], [])
+    assert message.content == "up" and completions.calls == 3
+    completions = Completions(["", "", ""])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    try: await scope["chat"](client, "openai/gpt-5.6-sol", [], [])
+    except RuntimeError as error: assert "not sent to the environment" in str(error)
+    else: raise AssertionError("three blank responses must fail before the environment")
+asyncio.run(probe())
+print("chat blank retry ready")`
+    ],
+    { encoding: "utf8" }
+  );
+  assert.match(retryProbe, /chat blank retry ready/);
 
   assert.equal(
     providerReasoningText([
@@ -96,7 +132,7 @@ try {
     "--run-id",
     "site-run-1",
     "--model",
-    "Qwen/Qwen3.5-0.8B",
+    "openai/gpt-oss-20b",
     "--max-turns",
     "750",
     "--level",
@@ -120,6 +156,14 @@ try {
     "--reasoning", "max"
   ]);
   assert.equal(legacyReasoningOptions.reasoning, "");
+
+  const unsupportedReasoningOptions = parseArgs([
+    "--hosted",
+    "--out", outDir,
+    "--model", "openai/gpt-5.6-sol",
+    "--reasoning", "high"
+  ]);
+  assert.equal(unsupportedReasoningOptions.reasoning, "");
 
   const argv = hostedEvalArgs(options);
   assert.deepEqual(argv.slice(0, 4), ["eval", "run", "mazebench/mazebench", "--hosted"]);

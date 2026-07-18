@@ -35,6 +35,10 @@ function positiveTurnBudget(value, fallback = 20) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
+function primeModelSupportsReasoning(modelId) {
+  return /^openai\/gpt-oss-(?:20b|120b)(?:-|$)/i.test(String(modelId || "").trim());
+}
+
 function parseArgs(argv) {
   const opts = {
     envDir: "",
@@ -125,7 +129,8 @@ function parseArgs(argv) {
   if (opts.hosted && opts.harness !== "none") {
     throw new Error("Prime coding-agent harnesses currently run through the local evaluator with a Prime sandbox.");
   }
-  opts.reasoning = PRIME_REASONING_LEVELS.has(String(opts.reasoning).toLowerCase())
+  opts.reasoning = primeModelSupportsReasoning(opts.model) &&
+    PRIME_REASONING_LEVELS.has(String(opts.reasoning).toLowerCase())
     ? String(opts.reasoning).toLowerCase()
     : "";
   return opts;
@@ -638,8 +643,8 @@ function runEval(opts) {
     );
   }
 
-  // Prime's stable cross-provider reasoning contract is low/medium/high. Other
-  // provider-native values are normalized to off during argument parsing.
+  // Prime documents low/medium/high reasoning effort for GPT-OSS. Unsupported
+  // model/value combinations are normalized to off during argument parsing.
   if (opts.reasoning) {
     argv.push("--sampling.reasoning-effort", opts.reasoning);
   }
