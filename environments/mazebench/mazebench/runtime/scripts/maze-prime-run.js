@@ -1027,7 +1027,11 @@ function writeMoveArtifacts(resultsPath, outDir) {
 }
 
 function replayExportArgs(resultsPath, outDir, opts) {
-  const argv = [EXPORT_REPLAY, resultsPath, "--out-dir", outDir, "--draft"];
+  const actionLogPath = path.join(outDir, "actions.jsonl");
+  const replayInputPath = fs.existsSync(actionLogPath) && fs.statSync(actionLogPath).size > 0
+    ? actionLogPath
+    : resultsPath;
+  const argv = [EXPORT_REPLAY, replayInputPath, "--out-dir", outDir, "--draft"];
 
   if (opts.observationMode === "ascii") {
     argv.push("--width", "1280", "--height", "720", "--ascii-side-by-side");

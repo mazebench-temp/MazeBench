@@ -407,7 +407,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   const primeVideoArgs = loadJson(path.join(primeVideoDir, "video-args.json"), []);
-  assert.equal(primeVideoArgs[0], primeVideoResults);
+  assert.equal(primeVideoArgs[0], path.join(primeVideoDir, "actions.jsonl"));
   service.cancelRunVideo(primeVideoId);
   service.deleteRun(primeVideoId);
 
