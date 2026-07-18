@@ -20,7 +20,10 @@
   const feedTextExportButton = document.getElementById("run-feed-export-txt");
   const notesInput = document.getElementById("run-notes-input");
   const notesSaveButton = document.getElementById("run-notes-save");
+  const notesSaveLabel = document.getElementById("run-notes-save-label");
   const notesStatus = document.getElementById("run-notes-status");
+  const notesStatusText = document.getElementById("run-notes-status-text");
+  const notesCount = document.getElementById("run-notes-count");
   const logEl = document.getElementById("run-log");
   const stopButton = document.getElementById("stop-run");
   const primeEvaluationLink = document.getElementById("open-prime-evaluation");
@@ -2802,18 +2805,21 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function renderNotesState(message = "") {
-    if (!notesInput || !notesSaveButton || !notesStatus) return;
+  function renderNotesState(message = "", explicitState = "") {
+    if (!notesInput || !notesSaveButton || !notesStatus || !notesStatusText) return;
     const dirty = notesInput.value.trim() !== state.savedNotes;
+    const status = explicitState || (dirty ? "dirty" : state.savedNotes ? "saved" : "empty");
     notesSaveButton.disabled = !dirty;
-    notesStatus.textContent = message || (dirty ? "Unsaved changes" : state.savedNotes ? "Saved" : "No notes yet");
-    notesStatus.classList.toggle("is-dirty", dirty);
+    notesStatus.dataset.state = status;
+    notesStatusText.textContent = message || (dirty ? "Unsaved" : state.savedNotes ? "Saved" : "No notes yet");
+    if (notesCount) notesCount.textContent = `${notesInput.value.length.toLocaleString()} / 50,000`;
   }
 
   async function saveRunNotes() {
     if (!notesInput || !notesSaveButton) return;
     notesSaveButton.disabled = true;
-    notesSaveButton.textContent = "Saving…";
+    if (notesSaveLabel) notesSaveLabel.textContent = "Saving…";
+    renderNotesState("Saving…", "saving");
     try {
       const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/notes`, {
         method: "PUT",
@@ -2825,12 +2831,12 @@
       state.savedNotes = String(payload.notes?.notes || "");
       state.run.run_notes = state.savedNotes;
       notesInput.value = state.savedNotes;
-      renderNotesState(state.savedNotes ? "Saved just now" : "Notes cleared");
+      renderNotesState(state.savedNotes ? "Saved just now" : "Notes cleared", "saved");
     } catch (error) {
-      renderNotesState("Save failed");
+      renderNotesState("Save failed", "error");
       setStatus(error.message, true);
     } finally {
-      notesSaveButton.textContent = "Save notes";
+      if (notesSaveLabel) notesSaveLabel.textContent = "Save notes";
       notesSaveButton.disabled = notesInput.value.trim() === state.savedNotes;
     }
   }

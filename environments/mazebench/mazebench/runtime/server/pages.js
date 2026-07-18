@@ -1290,17 +1290,32 @@ function createPageRenderer({
           <div id="run-feed" class="agent-feed" aria-label="Moves and reasoning log"></div>
         </section>`;
     const notesSection = `<section id="run-notes-section" class="panel run-notes" aria-labelledby="run-notes-heading">
-          <div class="run-notes__head">
-            <div>
-              <h2 id="run-notes-heading">Run notes</h2>
-              <p class="muted">Add context or conclusions about this run. For starred runs, these notes appear as the summary on MazeJam.</p>
+          <div class="run-notes__shell">
+            <div class="run-notes__head">
+              <div class="run-notes__intro">
+                <span class="run-notes__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M13.5 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.5"></path><path d="m12 12 7.2-7.2a1.4 1.4 0 0 1 2 2L14 14l-3 1 1-3Z"></path></svg>
+                </span>
+                <div>
+                  <span class="run-notes__eyebrow">Leaderboard annotation</span>
+                  <h2 id="run-notes-heading">Run notes</h2>
+                  <p>Add the context that matters. When this run is starred, these notes become its MazeJam summary.</p>
+                </div>
+              </div>
+              <span id="run-notes-status" class="run-notes__status" role="status" aria-live="polite"><i aria-hidden="true"></i><span id="run-notes-status-text"></span></span>
             </div>
-            <span id="run-notes-status" class="run-notes__status" role="status" aria-live="polite"></span>
-          </div>
-          <textarea id="run-notes-input" class="run-notes__input" rows="7" maxlength="50000" placeholder="Write notes about the run… Markdown is supported on MazeJam."></textarea>
-          <div class="run-notes__actions">
-            <span>Up to 50,000 characters</span>
-            <button id="run-notes-save" class="button--primary" type="button" disabled>Save notes</button>
+            <textarea id="run-notes-input" class="run-notes__input" rows="6" maxlength="50000" aria-label="Notes about this agent run" placeholder="What should people know about this run?"></textarea>
+            <div class="run-notes__bottom">
+              <div class="run-notes__meta">
+                <span>Markdown supported</span>
+                <span id="run-notes-count">0 / 50,000</span>
+                <span class="run-notes__shortcut">⌘ Enter to save</span>
+              </div>
+              <button id="run-notes-save" class="button--primary run-notes__save" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5Z"></path><path d="M8 4v6h8V4"></path><path d="M8 20v-6h8v6"></path></svg>
+                <span id="run-notes-save-label">Save notes</span>
+              </button>
+            </div>
           </div>
         </section>`;
     // Agent Runner's default Prime path evaluates locally against Prime
@@ -1399,7 +1414,7 @@ function createPageRenderer({
         </section>
         ${replayExportSection}
         <script>window.__AGENT_RUN__ = ${serializeForScript(run)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260718-run-notes-1" defer></script>`
+        <script src="/agent-run.js?v=20260718-run-notes-2" defer></script>`
     });
   }
 

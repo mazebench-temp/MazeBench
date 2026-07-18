@@ -16,6 +16,8 @@ assert.ok(pages.indexOf("${mazeSections}") < pages.indexOf("${notesSection}"));
 assert.ok(pages.indexOf("${notesSection}") < pages.indexOf("<h2>Runner log</h2>"));
 assert.match(pages, /id="run-notes-input"[^>]+maxlength="50000"/);
 assert.match(pages, /id="run-notes-save"/);
+assert.match(pages, /class="run-notes__icon"/);
+assert.match(pages, /id="run-notes-count">0 \/ 50,000/);
 assert.doesNotMatch(pages, /id="run-summarize"|id="run-review-result"|Post-run analyst/);
 assert.match(runScript, /function feedSearchTerms\(query\)/);
 assert.match(runScript, /return terms\.every\(\(term\) => text\.includes\(term\)\)/);
@@ -31,6 +33,8 @@ assert.match(runScript, /feedTextExportButton\?\.addEventListener\("click", expo
 assert.match(runScript, /function saveRunNotes\(\)/);
 assert.match(runScript, /\/api\/agent\/runs\/\$\{encodeURIComponent\(runId\)\}\/notes/);
 assert.match(runScript, /notesInput\?\.addEventListener\("input"/);
+assert.match(runScript, /notesStatus\.dataset\.state = status/);
+assert.match(runScript, /notesInput\.value\.length\.toLocaleString\(\)/);
 assert.doesNotMatch(runScript, /renderRunReview|openReviewDialog|run-summarize/);
 assert.match(runScript, /data-feed-expand=/);
 assert.match(runScript, /function isMultiAgentRun\(\)/);
@@ -44,7 +48,8 @@ assert.match(siteTheme, /\.agent-feed__reasoning\.is-collapsible:not\(\.is-expan
 assert.match(siteTheme, /\.agent-feed mark \{/);
 assert.match(siteTheme, /\.agent-log \{[\s\S]*?overflow-anchor: none/);
 assert.match(siteTheme, /\.run-notes__input/);
-assert.match(siteTheme, /\.run-notes__status\.is-dirty/);
+assert.match(siteTheme, /\.run-notes__status\[data-state="dirty"\]/);
+assert.match(siteTheme, /\.run-notes__save/);
 assert.doesNotMatch(siteTheme, /box-shadow: inset 3px 0 0/);
 
 console.log("agent-run-feed-source: OK — move logs are searchable, exportable, and clean in single-agent mode.");
