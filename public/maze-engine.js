@@ -2294,7 +2294,8 @@
       dy,
       gateState,
       orangeButtonsPressed,
-      excludedActors = new Set()
+      excludedActors = new Set(),
+      options = {}
     ) {
       const riders = [];
       const memberSet = new Set(members);
@@ -2326,10 +2327,17 @@
             continue;
           }
 
-          const riderMembers = isCloneActor(actor)
+          // An actively moving support carries a clone group as one input
+          // entity. A passively pushed box, however, carries only the clone
+          // actually standing on it: an unrelated blocked sibling must not
+          // leave that supported clone floating behind the box.
+          const riderMembers = isCloneActor(actor) && options.individualCloneRiders !== true
             ? cloneGroupMembers(state, actorGroupIds[actor])
             : [actor];
-          const riderGroupKey = isCloneActor(actor) ? actorGroupIds[actor] || "" : null;
+          const riderGroupKey =
+            isCloneActor(actor) && options.individualCloneRiders !== true
+              ? actorGroupIds[actor] || ""
+              : null;
 
           if (
             riderMembers.some((riderMember) => excludedActors.has(riderMember)) ||
@@ -7110,7 +7118,8 @@
           dy,
           gateState,
           orangeButtonsPressed,
-          ignoredActors
+          ignoredActors,
+          { individualCloneRiders: true }
         ).forEach((rider) => riderAwareIgnoredActors.add(rider.actorIndex));
 
         while (true) {
@@ -7137,7 +7146,8 @@
             dy,
             gateState,
             orangeButtonsPressed,
-            ignoredActors
+            ignoredActors,
+            { individualCloneRiders: true }
           );
 
           let addedRider = false;
@@ -7312,7 +7322,8 @@
           dy,
           gateState,
           orangeButtonsPressed,
-          ignoredActors
+          ignoredActors,
+          { individualCloneRiders: true }
         );
       }
 

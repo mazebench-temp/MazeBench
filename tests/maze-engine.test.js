@@ -5148,6 +5148,52 @@ for (const boxType of ["box", "weightless_box"]) {
   );
 }
 
+{
+  // A clone standing on a remote member of a pushed rigid carrier must ride
+  // that member even when another clone in its group prevents the group from
+  // walking in the input direction. Carrier motion is passive per rider; it
+  // must not depend on every member of the rider's clone group translating.
+  const { engine, state } = createState({
+    width: 4,
+    height: 2,
+    terrain: floorTerrain(4, 2),
+    actors: [
+      { type: "player", x: 3, y: 1, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "M0", x: 1, y: 1, elevation: 0, removed: false },
+      { type: "clone", groupId: "c0", x: 1, y: 0, elevation: 1, removed: false },
+      { type: "clone", groupId: "c0", x: 3, y: 0, elevation: 0, removed: false },
+      { type: "clone", groupId: "c1", x: 0, y: 1, elevation: 0, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, 1, 0);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual(
+    [
+      [state.actorX[1], state.actorY[1], state.actorElevation[1]],
+      [state.actorX[2], state.actorY[2], state.actorElevation[2]],
+      [state.actorX[3], state.actorY[3], state.actorElevation[3]],
+      [state.actorX[4], state.actorY[4], state.actorElevation[4]],
+      [state.actorX[5], state.actorY[5], state.actorElevation[5]]
+    ],
+    [
+      [2, 0, 0],
+      [2, 1, 0],
+      [2, 0, 1],
+      [3, 0, 0],
+      [1, 1, 0]
+    ],
+    "the pushed carrier moves its supported clone while the blocked sibling stays put"
+  );
+  assert.equal(
+    result.moves.filter((move) => move.actorIndex === 3 && !move.visualOnly).length,
+    1,
+    "the passively carried clone moves exactly once"
+  );
+}
+
 for (const riderType of ["player", "clone"]) {
   // A raised attached lift is the rider's immediate surface, but its
   // underlying pushblock remains the moving carrier.
