@@ -40,6 +40,8 @@ const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.
 const TEXT_RUNTIME_IMAGE = "node:24-bookworm-slim";
 const VISION_RUNTIME_IMAGE = "mcr.microsoft.com/playwright:v1.60.0-noble";
 const PRIME_REASONING_LEVELS = new Set(["low", "medium", "high"]);
+const PRIME_PROVIDER_RETRY_ATTEMPTS = 3;
+const PRIME_PROVIDER_RETRY_BASE_MS = 30_000;
 
 function harnessDefinition(harnessId) {
   return harnessId === "none" ? null : PRIME_HARNESSES.get(harnessId);
@@ -494,6 +496,45 @@ function localRolloutError(resultsPath) {
   const providerError = providerMatches[providerMatches.length - 1];
   if (providerError) return `${providerError[1]}: ${providerError[2]}`;
   return [error.type, error.message].filter(Boolean).join(": ") || "The local Prime rollout stopped with an error.";
+}
+
+function retryablePrimeProviderError(message) {
+  const text = String(message || "");
+  if (!/\bProviderError\b/i.test(text)) return false;
+  const statuses = [...text.matchAll(/(?:upstream\s+|status(?:_code)?[^0-9]{0,12})([1-5][0-9]{2})\b/gi)]
+    .map((match) => Number(match[1]));
+  const status = statuses[statuses.length - 1] || 0;
+  return [404, 408, 409, 425, 429].includes(status) || status >= 500;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runEvalWithProviderRetry(opts) {
+  if (opts.hosted) return runEval(opts);
+
+  for (let attempt = 1; attempt <= PRIME_PROVIDER_RETRY_ATTEMPTS; attempt += 1) {
+    const code = await runEval(opts);
+    const evalOutDir = path.join(opts.outDir, "eval-output");
+    const rolloutError = localRolloutError(findResults(evalOutDir));
+    const actionPath = path.join(opts.outDir, "actions.jsonl");
+    const hasActions = fs.existsSync(actionPath) && fs.statSync(actionPath).size > 0;
+    const retryable = !hasActions && retryablePrimeProviderError(rolloutError);
+
+    if (!retryable || attempt === PRIME_PROVIDER_RETRY_ATTEMPTS) return code;
+
+    const retryDelay = PRIME_PROVIDER_RETRY_BASE_MS * (2 ** (attempt - 1));
+    const archive = path.join(opts.outDir, `eval-output-provider-failure-${attempt}-${Date.now()}`);
+    if (fs.existsSync(evalOutDir)) fs.renameSync(evalOutDir, archive);
+    console.error(
+      `[mazebench] transient Prime provider routing failure before action 1; ` +
+      `retrying evaluation ${attempt + 1}/${PRIME_PROVIDER_RETRY_ATTEMPTS} in ${Math.round(retryDelay / 1000)}s: ${rolloutError}`
+    );
+    await delay(retryDelay);
+  }
+
+  return 1;
 }
 
 function runHostedEval(opts) {
@@ -1059,7 +1100,7 @@ function runReplayExport(resultsPath, outDir, opts) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   writeInitialStatus(opts);
-  const code = await runEval(opts);
+  const code = await runEvalWithProviderRetry(opts);
 
   const resultsPath = findResults(path.join(opts.outDir, "eval-output"));
 
@@ -1127,6 +1168,7 @@ module.exports = {
   parseArgs,
   providerReasoningText,
   replayExportArgs,
+  retryablePrimeProviderError,
   verifierTurnBudgetArgs,
   writeMoveArtifacts,
   writeHostedLiveArtifacts,

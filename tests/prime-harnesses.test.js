@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const {
   agenticConversationTurns,
   parseArgs,
+  retryablePrimeProviderError,
   writeMoveArtifacts
 } = require("../scripts/maze-prime-run");
 const {
@@ -118,6 +119,10 @@ try {
   assert.match(liveSource, /PRIME_HARNESS == "codex"/);
   assert.match(liveSource, /reasoning\.get\("summary"\) == "auto"/);
   assert.match(runSource, /MAZEBENCH_PRIME_HARNESS: opts\.harness/);
+  assert.match(runSource, /runEvalWithProviderRetry/);
+  assert.match(runSource, /eval-output-provider-failure/);
+  assert.match(runsSource, /actions\.length === 0 \|\| fileHasContent\(primeResumeCheckpointPath\(runId\)\)/);
+  assert.match(runsSource, /if \(readActions\(runId\)\.length > 0\)/);
   assert.match(liveSource, /_patch_prime_usage_schema/);
   assert.match(liveSource, /cache_write_tokens/);
   assert.match(liveSource, /"timestamp": action\.get\("timestamp"\) or _utc_timestamp\(\)/);
@@ -155,6 +160,17 @@ try {
   assert.equal(primeHarnessModelCompatible("google/gemini-3.5-flash", "default"), true);
   assert.equal(primeHarnessModelCompatible("anthropic/claude-sonnet-5", "bash"), true);
   assert.equal(primeHarnessModelCompatible("openai/gpt-5.4", "kimi_code"), true);
+  assert.equal(primeHarnessModelCompatible("moonshotai/kimi-k3", "codex"), true);
+  assert.equal(
+    retryablePrimeProviderError(
+      'ProviderError: upstream 404: {"error":{"message":"Requested resource not found."}}'
+    ),
+    true
+  );
+  assert.equal(retryablePrimeProviderError("ProviderError: upstream 429: rate limited"), true);
+  assert.equal(retryablePrimeProviderError("ProviderError: upstream 503: unavailable"), true);
+  assert.equal(retryablePrimeProviderError("ProviderError: upstream 400: unsupported parameter"), false);
+  assert.equal(retryablePrimeProviderError("ordinary harness error"), false);
   const publicHarnesses = publicPrimeHarnesses();
   assert.deepEqual(
     publicHarnesses.filter((harness) => harness.launchable).map((harness) => harness.id),

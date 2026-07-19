@@ -2435,7 +2435,7 @@ function createAgentRunService({
         (meta.kind === "prime" &&
           meta.prime_execution !== "hosted" &&
           meta.status === "failed" &&
-          fileHasContent(primeResumeCheckpointPath(runId))),
+          (actions.length === 0 || fileHasContent(primeResumeCheckpointPath(runId)))),
       continuable:
         !meta.auto_quit_triggered &&
         (meta.status === "finished" || meta.status === "stopped"),
@@ -5120,14 +5120,15 @@ function createAgentRunService({
     if (meta.kind !== "prime") requireLegacyLocalLaunch();
 
     if (meta.kind === "prime" && ["paused", "failed"].includes(meta.status)) {
-      const checkpoint = ensurePrimeResumeCheckpoint(runId);
       const base = {
         ...(meta.launch_params || reconstructParams(meta)),
         kind: "prime",
         continue_of: runId,
-        resume_checkpoint: checkpoint,
         resume_source_run: runId
       };
+      if (readActions(runId).length > 0) {
+        base.resume_checkpoint = ensurePrimeResumeCheckpoint(runId);
+      }
       if (meta.unlimited) {
         base.unlimited = true;
         delete base.max_turns;
