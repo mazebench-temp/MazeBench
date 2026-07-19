@@ -64,12 +64,23 @@ function accountActionsHtml(remoteStatus) {
   if (remoteStatus?.connected) {
     const name =
       remoteStatus.user?.name || remoteStatus.user?.display_name || remoteStatus.user?.mazebench_user_id || "Account";
-    return `<a class="account-button account-icon-button" href="/build" title="${escapeHtml(name)} — synced with ${escapeHtml(
+    const accountUrl = remoteAccountUrl(remoteStatus.origin);
+    return `<a class="account-button account-icon-button" href="${escapeHtml(accountUrl)}" title="${escapeHtml(name)} — managed by ${escapeHtml(
       remoteStatus.origin || "mazebench.com"
-    )}">${ACCOUNT_ICON_SVG}</a>`;
+    )}" target="_blank" rel="noopener noreferrer">${ACCOUNT_ICON_SVG}</a>`;
   }
 
   return "";
+}
+
+function remoteAccountUrl(origin) {
+  try {
+    const remote = new URL(String(origin || "https://mazebench.com"));
+    if (remote.protocol !== "http:" && remote.protocol !== "https:") throw new Error("invalid protocol");
+    return new URL("/user", remote).href;
+  } catch {
+    return "https://mazebench.com/user";
+  }
 }
 
 function topbar({ rightHtml = "", extraNavHtml = "", extraHtml = "" } = {}) {

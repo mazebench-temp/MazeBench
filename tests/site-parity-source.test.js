@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 
@@ -19,6 +20,7 @@ const replayExporter = fs.readFileSync(path.join(root, "scripts", "maze-export-r
 const visionRenderer = fs.readFileSync(path.join(root, "scripts", "maze-render-frame.js"), "utf8");
 const favicon = fs.readFileSync(path.join(root, "public", "favicon.svg"), "utf8");
 const router = fs.readFileSync(path.join(root, "server", "router.js"), "utf8");
+const { createRemoteService } = require(path.join(root, "server", "remote.js"));
 const {
   defaultReplayOptions,
   nativeFrameCountIsAcceptable,
@@ -27,6 +29,7 @@ const {
   targetVideoBitrate,
   visionTiltDegreesForAsciiView
 } = require(path.join(root, "scripts", "maze-export-replay.js"));
+const { accountActionsHtml } = require(path.join(root, "server", "page-chrome.js"));
 
 assert.match(buildScript, /world-card new-world-card/);
 assert.match(buildScript, /world-card world-card--draft/);
@@ -55,6 +58,29 @@ assert.match(pages, /\["Edit", `\/author\/maze\//);
 assert.doesNotMatch(pages, /\["Edit Levels", `\/author\/maze\//);
 assert.doesNotMatch(pageChrome, /href="\/play">Play<\/a>/);
 assert.match(pageChrome, /<span class="brand-mark"[^>]*>\$\{BRAND_MARK_SVG\}<\/span>Maze Bench/);
+const remoteAccountHtml = accountActionsHtml({
+  connected: true,
+  origin: "https://dev.mazebench.com",
+  user: { mazebench_user_id: "player_one", name: "Player One" }
+});
+assert.match(remoteAccountHtml, /href="https:\/\/dev\.mazebench\.com\/user"/);
+assert.match(remoteAccountHtml, /target="_blank" rel="noopener noreferrer"/);
+assert.doesNotMatch(remoteAccountHtml, /href="\/build"/);
+const remoteConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-remote-security-"));
+try {
+  const remote = createRemoteService({
+    buildWorlds: {},
+    ensureDirectory: (directory) => fs.mkdirSync(directory, { recursive: true }),
+    getGame: () => null,
+    loadJson: () => null,
+    rootDir: remoteConfigRoot
+  });
+  remote.disconnect();
+  const remoteConfigMode = fs.statSync(path.join(remoteConfigRoot, "data", "remote.json")).mode & 0o777;
+  assert.equal(remoteConfigMode, 0o600, "the local hosted-session cache must be owner-readable only");
+} finally {
+  fs.rmSync(remoteConfigRoot, { recursive: true, force: true });
+}
 assert.match(playTheme, /\.wm \{ fill: #ffd15c; stroke: #ffd15c; stroke-width: 1\.5; \}/);
 assert.doesNotMatch(playTheme, /mbChromL|mbChromR|mbWrtick|mbWbtick/);
 assert.match(playTheme, /translate: 0 calc\(-1 \* var\(--mb-logo-lift, 0px\)\)/);

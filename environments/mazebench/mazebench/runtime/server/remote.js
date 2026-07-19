@@ -34,7 +34,13 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
 
   function writeConfig(config) {
     ensureDirectory(dataDir);
-    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600
+    });
+    // writeFile's mode only applies when creating a file. Tighten existing
+    // configs too because this file contains the hosted session cookie.
+    fs.chmodSync(configPath, 0o600);
   }
 
   function sanitizeOrigin(value) {
