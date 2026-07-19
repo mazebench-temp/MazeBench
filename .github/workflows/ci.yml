@@ -6,8 +6,31 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
+  # Keep the merge gate dependency-free and quick. The complete browser,
+  # Python packaging, and wheel matrix still run after every push to main.
+  pr-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Core PR smoke suite
+        run: npm run test:pr
+
   test:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
@@ -50,9 +73,10 @@ jobs:
           name: dist
           path: dist/
 
-  # Prove the supported Python range on every run: the oldest we claim
+  # Prove the supported Python range on every full run: the oldest we claim
   # (requires-python >= 3.9) and the newest stable release.
   wheel-smoke:
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
     strategy:

@@ -20,14 +20,16 @@ Benchmark agents must never be able to inspect MazeBenchEngine or any other repo
 - Do not commit or push ordinary work directly to `main` unless the user explicitly overrides this rule.
 - Start work from the current `origin/main` on a focused `codex/<task>` branch.
 - Commit and push the branch, run the relevant tests, and open a pull request for the user to review.
-- Do not merge the pull request until the user says the branch is approved. After approval, merge it and verify `main` CI.
-- After the merge and green `main` CI, remove every fully merged, no-longer-needed topic or release branch from `origin` and locally, remove any dedicated worktree, and prune stale tracking references. Never delete `main`, a branch with an open pull request, or any branch containing unmerged work.
+- Do not merge the pull request until the user says the branch is approved. After approval, enable auto-merge against the exact reviewed head SHA once the required PR smoke check is queued. For ordinary changes, hand off as soon as GitHub accepts auto-merge; report the PR as queued rather than merged until GitHub confirms it, and do not synchronously poll the duplicate full `main` CI. Releases, deployments, migrations, failing checks, and explicit user requests to monitor through completion still require synchronous verification.
+- GitHub automatically deletes merged remote branches. At the start of the next repository task, confirm any queued merge completed, then remove its clean local topic branch and dedicated worktree and prune stale tracking references. Never delete `main`, a branch with an open pull request, a dirty worktree, or a branch containing unmerged work.
 - Treat a branch as empty when it has no commits ahead of current `origin/main`. If an empty branch has no open pull request, delete it from `origin` and locally immediately; do not open or merge an empty pull request just to remove it.
 - A branch push, pull request, or merge does not by itself authorize a package release.
 
 ## Explicit release gate
 
 After an approved change is merged to `main` and CI is green, explicitly ask whether the user wants a new PyPI release. Include the proposed next version in the question and briefly state why the change warrants that version bump.
+
+For an ordinary auto-merged handoff, defer this release question until the next repository task confirms that `main` CI is green; do not keep the prior task open solely to wait for the release gate. Never defer it during an explicitly requested release or deployment workflow.
 
 Do not create a release tag, publish a GitHub Release, manually dispatch the PyPI workflow, or upload to PyPI until the user answers yes.
 
