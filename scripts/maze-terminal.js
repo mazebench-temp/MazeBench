@@ -1735,6 +1735,90 @@ function worldCoordinatesForDisplay(playData, yaw, x, y) {
   }
 }
 
+function hiddenLayeredSceneBounds(playData, engine, state, yaw) {
+  const normalizedYaw = normalizeYaw(yaw);
+  const dimensions = displayDimensions(playData, normalizedYaw);
+  const typeNames = terrainTypeNameByValue(engine.terrainTypes);
+  let minX = dimensions.width;
+  let minY = dimensions.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  const include = (displayX, displayY) => {
+    minX = Math.min(minX, displayX);
+    minY = Math.min(minY, displayY);
+    maxX = Math.max(maxX, displayX);
+    maxY = Math.max(maxY, displayY);
+  };
+
+  for (let displayY = 0; displayY < dimensions.height; displayY += 1) {
+    for (let displayX = 0; displayX < dimensions.width; displayX += 1) {
+      const { x, y } = worldCoordinatesForDisplay(
+        playData,
+        normalizedYaw,
+        displayX,
+        displayY
+      );
+      const hasTerrain = semanticTerrainLayersAt(playData, state, typeNames, x, y)
+        .some((layer) => layer.type !== "empty");
+      if (hasTerrain) {
+        include(displayX, displayY);
+      }
+    }
+  }
+
+  for (let index = 0; index < engine.actorCount; index += 1) {
+    if (state.actorRemoved[index]) {
+      continue;
+    }
+    const display = displayCoordinatesForWorld(
+      playData,
+      normalizedYaw,
+      state.actorX[index],
+      state.actorY[index]
+    );
+    include(display.x, display.y);
+  }
+
+  return maxX === -1
+    ? null
+    : { ...dimensions, maxX, maxY, minX, minY };
+}
+
+// trimCanvasRows intentionally removes the renderer's synthetic perspective
+// margin. In hidden-name mode, however, authored empty cells later receive a
+// stable glyph of their own. Preserve empty rows and columns at the board edge
+// here so that glyph substitution can make the complete grid visible without
+// also exposing the synthetic camera padding.
+function padHiddenLayeredScene(text, playData, engine, state, options) {
+  const pitch = clampPitch(options.pitch);
+  const rowStep = Math.max(1, TILE_GRANULARITY - pitch);
+  const dimensions = displayDimensions(playData, normalizeYaw(options.yaw));
+  const fullWidth = dimensions.width * TILE_GRANULARITY;
+  const blankRow = " ".repeat(fullWidth);
+  const bounds = hiddenLayeredSceneBounds(playData, engine, state, options.yaw);
+
+  if (!bounds) {
+    return Array.from({ length: dimensions.height * rowStep }, () => blankRow).join("\n");
+  }
+
+  const rows = String(text || "").split("\n");
+  const renderedWidth = Math.max(0, ...rows.map((row) => row.length));
+  const leftPadding = bounds.minX * TILE_GRANULARITY;
+  const rightPadding = Math.max(0, fullWidth - leftPadding - renderedWidth);
+  const paddedRows = rows.map((row) =>
+    `${" ".repeat(leftPadding)}${row.padEnd(renderedWidth)}${" ".repeat(rightPadding)}`
+  );
+  const topPadding = bounds.minY * rowStep;
+  const bottomPadding = (dimensions.height - 1 - bounds.maxY) * rowStep;
+
+  return [
+    ...Array.from({ length: topPadding }, () => blankRow),
+    ...paddedRows,
+    ...Array.from({ length: bottomPadding }, () => blankRow)
+  ].join("\n");
+}
+
 function terrainTopAt(
   playData,
   state,
@@ -2407,6 +2491,9 @@ function renderAsciiDetailed(playData, engine, state, options, trackOwners = fal
     : renderAsciiLayeredScene(playData, engine, state, options, trackOwners);
 
   if (options.hideNames === true) {
+    if (clampPitch(options.pitch) !== MAX_PITCH) {
+      rendered.text = padHiddenLayeredScene(rendered.text, playData, engine, state, options);
+    }
     rendered.text = hideAsciiGlyphNames(rendered.text, options.hideNamesSeed);
   }
   return rendered;
