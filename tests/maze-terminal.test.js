@@ -481,6 +481,41 @@ function syntheticFloor(width, height) {
 }
 
 {
+  const actors = [
+    { type: "player", x: 3, y: 0, elevation: 0, removed: false },
+    { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 0, removed: false },
+    { type: "weightless_box", groupId: "M0", x: 2, y: 0, elevation: 0, removed: false }
+  ];
+  const playData = {
+    actors,
+    gameId: "maze",
+    height: 1,
+    levelId: "board_state_hash_actor_order",
+    terrain: syntheticFloor(4, 1),
+    width: 4
+  };
+  const reorderedPlayData = {
+    ...playData,
+    actors: [actors[1], actors[2], actors[0]]
+  };
+  assert.equal(
+    boardStateHash(syntheticContext(reorderedPlayData), new Set()),
+    boardStateHash(syntheticContext(playData), new Set()),
+    "equivalent actor lists hash identically regardless of engine array order"
+  );
+
+  const regroupedPlayData = {
+    ...playData,
+    actors: actors.map((actor, index) => index === 1 ? { ...actor, groupId: "M1" } : actor)
+  };
+  assert.notEqual(
+    boardStateHash(syntheticContext(regroupedPlayData), new Set()),
+    boardStateHash(syntheticContext(playData), new Set()),
+    "gameplay-relevant actor group identity remains part of the canonical state"
+  );
+}
+
+{
   assert.equal(cameraDirectionForInteractiveKey("w"), "up");
   assert.equal(cameraDirectionForInteractiveKey("W"), "up");
   assert.equal(cameraDirectionForInteractiveKey("s"), "down");
