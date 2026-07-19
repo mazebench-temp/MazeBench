@@ -107,7 +107,7 @@
     levelId: null, // null = use the world's default from its metadata
     mode: null,
     omniscient: false,
-    hideNames: false,
+    hideNames: true,
     hideNamesSeed: "1",
     toolUse: null,
     orchestration: null,
@@ -1351,6 +1351,8 @@
     const hasObservation = Boolean(state.mode);
     const hasToolUse = Boolean(state.toolUse);
     const hasOrchestration = Boolean(state.orchestration);
+    const hasBudget = state.unlimited || moveBudget() > 0;
+    const localBudgetReady = hasObservation && hasToolUse && hasOrchestration;
 
     const setCardVisibility = (card, show) => {
       if (!card) return;
@@ -1361,12 +1363,12 @@
 
     setCardVisibility(localSettings?.querySelector(".setting-card--tool-use"), hasObservation);
     setCardVisibility(localSettings?.querySelector(".setting-card--orchestration"), hasObservation && state.toolUse === "offline");
-    setCardVisibility(localSettings?.querySelector(".setting-card--budget"), hasObservation && hasToolUse && hasOrchestration);
-    setCardVisibility(localSettings?.querySelector(".setting-card--give-up"), hasObservation && hasToolUse && hasOrchestration);
-    setCardVisibility(localSettings?.querySelector(".setting-card--auto-quit"), hasObservation && hasToolUse && hasOrchestration && state.allowQuit !== null);
+    setCardVisibility(localSettings?.querySelector(".setting-card--budget"), localBudgetReady);
+    setCardVisibility(localSettings?.querySelector(".setting-card--give-up"), localBudgetReady && hasBudget);
+    setCardVisibility(localSettings?.querySelector(".setting-card--auto-quit"), localBudgetReady && hasBudget && state.allowQuit !== null);
     setCardVisibility(primeSettings?.querySelector(".setting-card--budget"), hasObservation);
-    setCardVisibility(primeSettings?.querySelector(".setting-card--give-up"), hasObservation);
-    setCardVisibility(primeSettings?.querySelector(".setting-card--auto-quit"), hasObservation && state.allowQuit !== null);
+    setCardVisibility(primeSettings?.querySelector(".setting-card--give-up"), hasObservation && hasBudget);
+    setCardVisibility(primeSettings?.querySelector(".setting-card--auto-quit"), hasObservation && hasBudget && state.allowQuit !== null);
   }
 
   function setMode(mode, syncSteps = true) {
@@ -1524,6 +1526,9 @@
     });
     setUnlimited(false, false);
     setAllowQuit(null, false);
+    state.omniscient = false;
+    state.hideNames = true;
+    state.hideNamesSeed = "1";
     state.autoQuitThreshold = 10;
     state.autoQuitMode = "rolling";
     state.autoQuitWindow = 100;
@@ -1543,6 +1548,7 @@
       const input = document.getElementById(id);
       if (input) input.disabled = state.unlimited;
     });
+    syncRunSettingCards();
     if (syncSteps) syncComposerSteps();
   }
 
@@ -2090,6 +2096,7 @@
   function wireConfigurationSummary() {
     ["run-moves", "run-prime-turns"].forEach((id) => {
       document.getElementById(id)?.addEventListener("input", () => {
+        syncRunSettingCards();
         syncComposerSteps();
       });
     });

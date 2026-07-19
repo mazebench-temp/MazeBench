@@ -1133,7 +1133,7 @@ function createPageRenderer({
           </div>
         </div>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260719-launch-transition-1" defer></script>`
+        <script src="/agent.js?v=20260719-run-defaults-1" defer></script>`
     });
   }
 
