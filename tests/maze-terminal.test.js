@@ -1138,6 +1138,84 @@ function syntheticFloor(width, height) {
 }
 
 {
+  const emptyRows = () => Array.from(
+    { length: 2 },
+    () => Array.from({ length: 3 }, () => ({ type: "empty" }))
+  );
+  const renderHiddenRows = (terrain, levelId) => bodyRows(renderScreen(syntheticContext({
+    actors: [],
+    gameId: "maze",
+    height: 4,
+    levelId,
+    terrain,
+    width: 3
+  }, {
+    hideNames: true,
+    hideNamesSeed: "leading-empty-seed",
+    pitch: 1
+  })));
+  const hiddenRows = renderHiddenRows(
+    [...emptyRows(), ...syntheticFloor(3, 2)],
+    "hidden_ascii_leading_empty_rows"
+  );
+
+  assert.equal(hiddenRows.length, 13);
+  assert.equal(hiddenRows.every((row) => row.length === 12), true);
+  const emptyGlyph = hiddenRows[0][0];
+  hiddenRows.slice(0, 6).forEach((row) => {
+    assert.equal(row, emptyGlyph.repeat(12));
+  });
+  assert.notEqual(hiddenRows[6][0], emptyGlyph);
+
+  const trailingRows = renderHiddenRows(
+    [...syntheticFloor(3, 2), ...emptyRows()],
+    "hidden_ascii_trailing_empty_rows"
+  );
+  assert.equal(trailingRows.length, 13);
+  trailingRows.slice(-6).forEach((row) => {
+    assert.equal(row, emptyGlyph.repeat(12));
+  });
+
+  const fullyEmptyRows = renderHiddenRows(
+    [...emptyRows(), ...emptyRows()],
+    "hidden_ascii_fully_empty_grid"
+  );
+  assert.equal(fullyEmptyRows.length, 12);
+  fullyEmptyRows.forEach((row) => {
+    assert.equal(row, emptyGlyph.repeat(12));
+  });
+}
+
+{
+  const renderRows = (yaw) => bodyRows(runTerminal([
+    "--level", "level_GxE",
+    "--view", "top-diagonal",
+    "--yaw", String(yaw),
+    "--hide-names",
+    "--hide-names-seed", "1",
+    "--once"
+  ]));
+  const rows = renderRows(0);
+
+  assert.equal(rows.length, 50, "level_GxE keeps all 16 projected grid rows");
+  assert.equal(rows.every((row) => row.length === 64), true);
+  rows.slice(0, 18).forEach((row) => {
+    assert.equal(row, "}".repeat(64));
+  });
+  assert.equal(rows[18], "}}}}}}}}}}}}jjjj}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}");
+
+  [1, 2, 3].forEach((yaw) => {
+    const rotatedRows = renderRows(yaw);
+    assert.equal(rotatedRows.length, 50, `yaw ${yaw} keeps the full projected height`);
+    assert.equal(
+      rotatedRows.every((row) => row.length === 64),
+      true,
+      `yaw ${yaw} keeps the full projected width`
+    );
+  });
+}
+
+{
   const output = renderSynthetic({
     actors: [],
     gameId: "maze",
