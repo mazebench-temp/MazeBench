@@ -34,6 +34,7 @@ from mazebench.mazebench import (
     record_maze_action,
     run_blocking,
     slim_status,
+    target_text_for_row,
     write_live_actions,
 )
 
@@ -117,9 +118,18 @@ def _tool_prompt(task: MazeBenchTaskData) -> str:
         else "Quit is disabled; recover with undo or reset after a death and keep playing."
     )
     mode = "structured JSON" if task.observation_mode == "json" else "ASCII"
+    objective = target_text_for_row(
+        {
+            "game_won_gem_count": task.game_won_gem_count,
+            "target_gems": task.target_gems,
+        }
+    )
     kimi_observe_policy = (
-        "\n\nKimi Code compatibility rule: after five consecutive `game_action` calls, "
-        "you must call `game_observe` once before any further `game_action`. "
+        "\n\nKimi Code compatibility rule: while a result reports "
+        "`completion_allowed: false`, every response must call exactly the "
+        "`next_required_tool`; never provide a final response or substitute another tool. "
+        "After five consecutive `game_action` calls, you must call `game_observe` once "
+        "before any further `game_action`. "
         "The fifth action result reports `observe_required: true`; treat it as mandatory. "
         "`game_observe` resets the count and does not consume a game action."
         if _prime_harness_id() == "kimi_code"
@@ -132,8 +142,10 @@ Call `game_start` exactly once first. Inspect its sanitized {mode} observation, 
 current state without consuming an action. Valid actions include up, down, left, right,
 rotate camera left, rotate camera right, undo, reset, and go to level X Y.{kimi_observe_policy}
 
-Collect {int(task.target_gems)} gems and explore as many rooms as possible. {budget} {quit_policy}
-When the returned result says `ended: true`, finish with a short route summary.
+{objective} Explore as many rooms as possible. {budget} {quit_policy}
+Finish with a short route summary only after a game result says `ended: true`. A belief that
+no useful move remains is not a stop condition: while `ended: false`, never provide a final
+response and continue using the game controls.
 
 The game implementation, session, checkpoints, and scoring are evaluator-only. Do not try to
 locate or access them. Do not claim moves or scores that were not returned by the game controls."""
@@ -339,13 +351,12 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
             ),
             "ended": self._terminal(),
         }
-        if (
-            not result["ended"]
-            and self._observe_break_interval
-            and self._actions_since_observe >= self._observe_break_interval
-        ):
-            result["observe_required"] = True
-            result["next_required_tool"] = "game_observe"
+        if not result["ended"] and self._observe_break_interval:
+            result["completion_allowed"] = False
+            result["next_required_tool"] = "game_action"
+            if self._actions_since_observe >= self._observe_break_interval:
+                result["observe_required"] = True
+                result["next_required_tool"] = "game_observe"
         if error:
             result["error"] = error
         if self._auto_quit:
