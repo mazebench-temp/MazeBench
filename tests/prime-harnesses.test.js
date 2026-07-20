@@ -171,12 +171,18 @@ import mazebench_tools as module
 
 prompt_task = SimpleNamespace(
     allow_quit=False,
+    game_won_gem_count=75,
     max_actions=None,
     observation_mode="ascii",
     target_gems=0,
 )
 os.environ["MAZEBENCH_PRIME_HARNESS"] = "kimi-code"
-assert "Kimi Code compatibility rule" in module._tool_prompt(prompt_task)
+prompt = module._tool_prompt(prompt_task)
+assert "Kimi Code compatibility rule" in prompt
+assert "Collect 75 unique gems to win." in prompt
+assert "Collect 0 gems" not in prompt
+assert "never provide a final" in prompt
+assert "completion_allowed: false" in prompt
 os.environ["MAZEBENCH_PRIME_HARNESS"] = "codex"
 assert "Kimi Code compatibility rule" not in module._tool_prompt(prompt_task)
 
@@ -226,8 +232,11 @@ async def probe():
 
     module.run_blocking = fake_run_blocking
 
-    for _ in range(5):
+    for index in range(5):
         fifth = await toolset.action("up")
+        assert fifth["completion_allowed"] is False
+        if index < 4:
+            assert fifth["next_required_tool"] == "game_action"
     assert fifth["actions_used"] == 5
     assert fifth["observe_required"] is True
     assert fifth["next_required_tool"] == "game_observe"
@@ -238,6 +247,8 @@ async def probe():
 
     observed = await toolset.observe()
     assert "observe_required" not in observed
+    assert observed["completion_allowed"] is False
+    assert observed["next_required_tool"] == "game_action"
     resumed = await toolset.action("up")
     assert resumed["actions_used"] == 6
 
