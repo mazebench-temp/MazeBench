@@ -838,6 +838,7 @@ function createMazeLevelService({
       },
       initialLevel,
       previewApiBaseUrl: `/api/author/${encodeURIComponent(game.id)}`,
+      roomSwapApiUrl: `/api/world-map/${encodeURIComponent(game.id)}/swap`,
       solutionExportApiUrl: `/api/author/${encodeURIComponent(game.id)}`,
       worldColumns: config.worldColumns,
       worldRows: config.worldRows,

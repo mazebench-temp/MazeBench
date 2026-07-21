@@ -932,6 +932,42 @@ function createRequestRouter({
       return;
     }
 
+    if (
+      segments.length === 4 &&
+      segments[0] === "api" &&
+      segments[1] === "world-map" &&
+      segments[3] === "swap"
+    ) {
+      const game = getGame(segments[2]);
+      if (!game || !game.worldMap) {
+        sendHtml(response, 404, renderNotFound());
+        return;
+      }
+
+      if (request.method === "POST") {
+        const payload = await readJsonBody(request);
+        const entries = worldMaps.swapMazeWorldRooms(
+          game,
+          String(payload?.firstLevelId || ""),
+          String(payload?.secondLevelId || "")
+        );
+        worldMaps.writeMazeWorldMap(game.id, entries);
+        buildWorlds.touchLocalWorld(game.id);
+        sendJson(
+          response,
+          200,
+          buildMazeWorldMapEditorData(getGame(game.id), {
+            message: `Swapped ${payload.firstLevelId} and ${payload.secondLevelId}.`
+          })
+        );
+        return;
+      }
+
+      response.writeHead(405, { Allow: "POST" });
+      response.end();
+      return;
+    }
+
     if (segments.length === 3 && segments[0] === "api" && segments[1] === "world-map") {
       const game = getGame(segments[2]);
       if (!game || !game.worldMap) {

@@ -137,6 +137,31 @@ assert.equal(roundtripAxA.height, 3);
 const roundtripCxB = exported.levels.find((level) => level.id === "level_CxB");
 assert.deepEqual(roundtripCxB.cells[1], [".", "i+G", "."]);
 
+// --- swapping two occupied world positions preserves both room files ---
+const importedAxAFile = imported.worldMap.byPosition.get("level_AxA").fileName;
+const importedCxBFile = imported.worldMap.byPosition.get("level_CxB").fileName;
+const swappedEntries = worldMaps.swapMazeWorldRooms(
+  imported,
+  "level_AxA",
+  "level_CxB"
+);
+assert.equal(
+  swappedEntries.find((entry) => entry.levelId === "level_AxA").fileName,
+  importedCxBFile
+);
+assert.equal(
+  swappedEntries.find((entry) => entry.levelId === "level_CxB").fileName,
+  importedAxAFile
+);
+assert.throws(
+  () => worldMaps.swapMazeWorldRooms(imported, "level_AxA", "level_AxA"),
+  /two different rooms/
+);
+assert.throws(
+  () => worldMaps.swapMazeWorldRooms(imported, "level_AxA", "level_BxA"),
+  /two built rooms/
+);
+
 // --- world play state uses the draft's own world axes ---
 const playState = levelService.getLevelState(imported, imported.worldMap.byPosition.get("level_AxA"));
 assert.deepEqual(playState.worldColumns, ["A", "B", "C"]);

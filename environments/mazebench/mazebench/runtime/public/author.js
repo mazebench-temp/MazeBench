@@ -18,6 +18,8 @@
     currentFileName: document.getElementById("current-file-name"),
     currentLevelName: document.getElementById("current-level-name"),
     existingLevels: document.getElementById("existing-levels"),
+    worldMapSwap: document.getElementById("author-world-map-swap"),
+    worldMapSwapStatus: document.getElementById("author-world-map-swap-status"),
     flipHorizontal: document.getElementById("flip-horizontal"),
     flipVertical: document.getElementById("flip-vertical"),
     frameLevel: document.getElementById("frame-level"),
@@ -537,7 +539,11 @@
     solverSolutionCellsKey: null,
     solverSolutionPath: null,
     undoStack: [],
-    width: authorData.initialLevel.width
+    width: authorData.initialLevel.width,
+    worldMapSwapBusy: false,
+    worldMapSwapFirstLevelId: null,
+    worldMapSwapMessage: "Choose Swap rooms, then select two built rooms.",
+    worldMapSwapMode: false
   };
 
   function editorSnapshot() {
@@ -4597,6 +4603,9 @@
           '<a class="author-level-pill' +
           (isActive ? " is-active" : "") +
           (exists || isActive ? "" : " is-empty") +
+          (state.worldMapSwapMode && state.worldMapSwapFirstLevelId === levelId
+            ? " is-swap-source"
+            : "") +
           '" href="?level=' +
           encodeURIComponent(levelId) +
           '" data-level-id="' +
@@ -4613,7 +4622,127 @@
     });
 
     elements.existingLevels.innerHTML = tiles.join("");
+    renderWorldMapSwapControls();
     renderStartRoomGrid();
+  }
+
+  function renderWorldMapSwapControls() {
+    if (!elements.worldMapSwap || !elements.worldMapSwapStatus) {
+      return;
+    }
+
+    const panel = elements.worldMapSwap.closest(".author-world-map-panel");
+    elements.worldMapSwap.disabled = state.worldMapSwapBusy;
+    elements.worldMapSwap.setAttribute("aria-pressed", state.worldMapSwapMode ? "true" : "false");
+    elements.worldMapSwap.textContent = state.worldMapSwapMode ? "Cancel swap" : "Swap rooms";
+    elements.worldMapSwapStatus.textContent = state.worldMapSwapMessage;
+    panel?.classList.toggle("is-swapping", state.worldMapSwapMode);
+    panel?.setAttribute("aria-busy", state.worldMapSwapBusy ? "true" : "false");
+  }
+
+  function setWorldMapSwapMode(active, message) {
+    if (state.worldMapSwapBusy) {
+      return;
+    }
+
+    state.worldMapSwapMode = Boolean(active);
+    state.worldMapSwapFirstLevelId = null;
+    state.worldMapSwapMessage =
+      message ||
+      (state.worldMapSwapMode
+        ? "Select the first built room."
+        : "Choose Swap rooms, then select two built rooms.");
+    renderExistingLevels();
+  }
+
+  async function swapWorldRooms(firstLevelId, secondLevelId) {
+    state.worldMapSwapBusy = true;
+    state.worldMapSwapMessage = "Saving and swapping rooms...";
+    state.isLevelSwitching = true;
+    finishPainting();
+    renderWorldMapSwapControls();
+    renderStatus();
+
+    try {
+      if (state.isDirty) {
+        await saveLevel({
+          refreshPreview: true,
+          renderAfterSave: false,
+          throwOnError: true,
+          updateStatus: false
+        });
+      }
+
+      if (!authorData.roomSwapApiUrl) {
+        throw new Error("Room swapping is not available for this world.");
+      }
+
+      const response = await fetch(authorData.roomSwapApiUrl, {
+        body: JSON.stringify({ firstLevelId, secondLevelId }),
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Could not swap those rooms.");
+      }
+
+      const nextLevelId =
+        state.levelId === firstLevelId
+          ? secondLevelId
+          : state.levelId === secondLevelId
+            ? firstLevelId
+            : state.levelId;
+      allowDirtyUnload = true;
+      window.location.assign(authorUrlForLevel(nextLevelId));
+      return true;
+    } catch (error) {
+      state.isLevelSwitching = false;
+      state.worldMapSwapBusy = false;
+      state.worldMapSwapFirstLevelId = null;
+      state.worldMapSwapMessage =
+        error instanceof Error ? error.message : "Could not swap those rooms.";
+      setStatus(state.worldMapSwapMessage, "error");
+      renderExistingLevels();
+      return false;
+    }
+  }
+
+  function handleWorldMapSwapSelection(levelId) {
+    if (!state.worldMapSwapMode) {
+      return false;
+    }
+
+    if (state.worldMapSwapBusy) {
+      return true;
+    }
+
+    const roomExists = authorData.existingLevels.some((level) => level.id === levelId);
+
+    if (!roomExists) {
+      state.worldMapSwapMessage = "That slot is empty. Choose a built room.";
+      renderWorldMapSwapControls();
+      return true;
+    }
+
+    if (!state.worldMapSwapFirstLevelId) {
+      state.worldMapSwapFirstLevelId = levelId;
+      state.worldMapSwapMessage =
+        "Selected " + levelId.replace("level_", "") + ". Choose the second room.";
+      renderExistingLevels();
+      return true;
+    }
+
+    if (state.worldMapSwapFirstLevelId === levelId) {
+      state.worldMapSwapFirstLevelId = null;
+      state.worldMapSwapMessage = "First room deselected. Select a built room.";
+      renderExistingLevels();
+      return true;
+    }
+
+    swapWorldRooms(state.worldMapSwapFirstLevelId, levelId).catch(() => {});
+    return true;
   }
 
   function renderAll(options = {}) {
@@ -8898,6 +9027,10 @@
       event.preventDefault();
       const nextLevelId = link.dataset.levelId;
 
+      if (handleWorldMapSwapSelection(nextLevelId)) {
+        return;
+      }
+
       if (nextLevelId !== state.levelId) {
         if (elements.levelColumn && elements.levelRow) {
           const coordinates = parseLevelCoordinates(nextLevelId);
@@ -8911,6 +9044,13 @@
       }
     });
   }
+
+  elements.worldMapSwap?.addEventListener("click", function () {
+    setWorldMapSwapMode(!state.worldMapSwapMode);
+  });
+  window.addEventListener("mazebench:author-world-map-closed", function () {
+    setWorldMapSwapMode(false);
+  });
 
   window.addEventListener("beforeunload", function (event) {
     if (!state.isDirty || allowDirtyUnload) {

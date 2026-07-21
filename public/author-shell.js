@@ -132,6 +132,10 @@
                   <div class="author-world-map-stage">
                     <div id="existing-levels" class="author-level-tray" aria-label="Existing levels"></div>
                   </div>
+                  <footer class="author-world-map-actions">
+                    <button id="author-world-map-swap" class="tool-button author-world-map-swap" type="button" aria-pressed="false">Swap rooms</button>
+                    <p id="author-world-map-swap-status" class="author-world-map-swap-status" role="status" aria-live="polite">Choose Swap rooms, then select two built rooms.</p>
+                  </footer>
                 </div>
               </section>
               <div id="author-cam-pad" class="control-pad camera-pad" aria-label="Camera controls">
@@ -361,16 +365,26 @@
     const button = document.getElementById("author-world-map-toggle");
     const overlay = document.getElementById("author-world-map-overlay");
     const closeButton = document.getElementById("author-world-map-close");
+    const swapButton = document.getElementById("author-world-map-swap");
     const tray = document.getElementById("existing-levels");
-    if (!button || !overlay || !closeButton || !tray) return;
+    if (!button || !overlay || !closeButton || !swapButton || !tray) return;
     let closeTimer = null;
 
     function fitMap() {
       const columns = Math.max(1, authorData.worldColumns?.length || 1);
       const rows = Math.max(1, authorData.worldRows?.length || 1);
-      const availableWidth = Math.min(980, Math.max(280, window.innerWidth - 96));
-      const availableHeight = Math.max(280, window.innerHeight - 180);
-      const tileSize = Math.max(28, Math.floor(Math.min(82, availableWidth / columns, availableHeight / rows)));
+      const viewportWidth = window.visualViewport?.width || window.innerWidth || 980;
+      const viewportHeight = window.visualViewport?.height || window.innerHeight || 720;
+      const topbarHeight =
+        Number.parseFloat(
+          window.getComputedStyle(document.documentElement).getPropertyValue("--build-topbar-height")
+        ) || 64;
+      const availableWidth = Math.max(80, Math.min(980, viewportWidth - 80));
+      const availableHeight = Math.max(80, viewportHeight - topbarHeight - 200);
+      const tileSize = Math.max(
+        8,
+        Math.floor(Math.min(82, availableWidth / columns, availableHeight / rows))
+      );
       tray.style.setProperty("--author-world-map-tile-size", tileSize + "px");
     }
 
@@ -394,6 +408,7 @@
         overlay.hidden = true;
         overlay.classList.remove("is-closing");
       }, 190);
+      window.dispatchEvent(new CustomEvent("mazebench:author-world-map-closed"));
       if (restoreFocus) button.focus({ preventScroll: true });
     }
 
@@ -404,7 +419,12 @@
     closeButton.addEventListener("click", () => closeMap());
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) closeMap();
-      if (event.target.closest("[data-level-id]")) closeMap({ restoreFocus: false });
+      if (
+        event.target.closest("[data-level-id]") &&
+        swapButton.getAttribute("aria-pressed") !== "true"
+      ) {
+        closeMap({ restoreFocus: false });
+      }
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !overlay.hidden) {
@@ -413,6 +433,7 @@
       }
     });
     window.addEventListener("resize", fitMap);
+    window.visualViewport?.addEventListener("resize", fitMap);
   }
 
   function installBootReveal() {
