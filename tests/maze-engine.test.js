@@ -271,8 +271,12 @@ function createState(playData) {
 
   const result = engine.move(state, 1, 0);
 
-  assert.equal(result.moved, false);
-  assert.deepEqual([state.actorX[0], state.actorElevation[0]], [0, 0]);
+  assert.equal(result.moved, true);
+  assert.deepEqual(
+    [state.actorX[0], state.actorElevation[0], state.actorRemoved[0]],
+    [1, -1, 1]
+  );
+  assert.equal(result.moves[0].toRemoved, true);
 }
 
 {

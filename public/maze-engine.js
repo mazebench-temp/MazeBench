@@ -6812,7 +6812,7 @@
             gateState,
             orangeButtonsPressed,
             predictedSupports,
-            { allowEmptyPitEntry: carriedRiders.length > 0 }
+            { allowEmptyPitEntry: true }
           )
         ) {
           break;
