@@ -1754,7 +1754,7 @@
       );
     }
 
-    function terminalPlayerMoveForWorldAction(moveResult) {
+    function mainPlayerMoveForWorldAction(moveResult) {
       if (!moveResult?.moved || !Array.isArray(moveResult.moves)) {
         return null;
       }
@@ -1766,9 +1766,7 @@
         moveResult.moves.find(
           (move) =>
             move?.visualOnly !== true &&
-            move?.toRemoved === true &&
-            isTransitionPlayer(move.actor) &&
-            (move.iceSlide === true || move.punchSlide === true || move.levelExit === true)
+            isTransitionPlayer(move.actor)
         ) || null
       );
     }
@@ -1873,9 +1871,11 @@
     }
 
     function shouldContinuePlayerMoveAcrossEdge(moveResult, edgeTransition) {
-      const playerMove = playerSlideMoveForContinuation(moveResult);
+      const playerMove =
+        playerSlideMoveForContinuation(moveResult) ||
+        mainPlayerMoveForWorldAction(moveResult);
 
-      if (!playerMove || !edgeTransition) {
+      if (!playerMove || playerMove.toRemoved === true || !edgeTransition) {
         return false;
       }
 
@@ -1944,7 +1944,9 @@
     }
 
     function edgeTransitionForMoveResult(moveResult, dx, dy) {
-      const playerMove = playerSlideMoveForContinuation(moveResult);
+      const playerMove =
+        playerSlideMoveForContinuation(moveResult) ||
+        mainPlayerMoveForWorldAction(moveResult);
 
       if (
         !playerMove ||
@@ -2698,7 +2700,7 @@
           const playerMove =
             playerLevelExitMoveForContinuation(moveResult) ||
             playerSlideMoveForContinuation(moveResult) ||
-            (crossedLevel ? terminalPlayerMoveForWorldAction(moveResult) : null);
+            mainPlayerMoveForWorldAction(moveResult);
 
           if (!playerMove) {
             return null;
