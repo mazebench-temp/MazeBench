@@ -133,6 +133,7 @@ assert.equal(catalogWeightless.description, "Catalog description.");
 assert.deepEqual(catalogWeightless.demo, { layout: ["p $ ."], moves: "R" });
 assert.equal(authorPageData.palette.find((tool) => tool.token === "Sr#").styleKey, "wall");
 assert.equal(authorPageData.toolboxCatalog.format, 1);
+assert.equal(authorPageData.roomSwapApiUrl, "/api/world-map/maze/swap");
 
 assert.deepEqual(editorState.cells[0].slice(0, 3), ["+", ".", "+++#"]);
 

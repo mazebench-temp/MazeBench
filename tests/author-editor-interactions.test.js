@@ -557,6 +557,13 @@ const worldMapClickSection = sourceSection(
   'if (elements.existingLevels) {',
   'window.addEventListener("beforeunload"'
 );
+assert.match(worldMapClickSection, /handleWorldMapSwapSelection\(nextLevelId\)/);
+assertBefore(
+  worldMapClickSection,
+  "handleWorldMapSwapSelection(nextLevelId)",
+  "switchToLevelId(nextLevelId)",
+  "swap mode must consume room clicks before normal world-map navigation"
+);
 assert.match(worldMapClickSection, /switchToLevelId\(nextLevelId\)/);
 assert.doesNotMatch(worldMapClickSection, /loadLevel\(nextLevelId\)/);
 assert.equal(
@@ -566,6 +573,20 @@ assert.equal(
   false,
   "incoming editor state must not be committed before the transition callback"
 );
+
+const roomSwapSection = sourceSection(
+  authorSource,
+  "async function swapWorldRooms",
+  "function handleWorldMapSwapSelection"
+);
+assertBefore(
+  roomSwapSection,
+  "await saveLevel(",
+  "fetch(authorData.roomSwapApiUrl",
+  "unsaved room edits must be persisted before the world mapping changes"
+);
+assert.match(roomSwapSection, /firstLevelId, secondLevelId/);
+assert.match(roomSwapSection, /window\.location\.assign\(authorUrlForLevel\(nextLevelId\)\)/);
 
 const pointerSchedulerSection = sourceSection(
   authorSource,

@@ -14,6 +14,8 @@ for (const id of [
   "author-world-map-toggle",
   "author-world-map-overlay",
   "author-world-map-close",
+  "author-world-map-swap",
+  "author-world-map-swap-status",
   "author-grid",
   "author-canvas",
   "author-cam-pad",
@@ -66,6 +68,10 @@ assert.match(theme, /\.author-layout\.is-sidebar-collapsed/);
 assert.match(theme, /\.author-inventory__democanvas \{/);
 assert.match(theme, /\.author-tool-icon--eraser \{/);
 assert.match(theme, /\.author-world-map-overlay\.is-open/);
+assert.match(theme, /\.author-world-map-swap\[aria-pressed="true"\]/);
+assert.match(theme, /\.author-world-map-stage \.author-level-pill\.is-swap-source/);
+assert.match(shell, /Math\.max\(\s*8,[\s\S]*availableWidth \/ columns[\s\S]*availableHeight \/ rows/);
+assert.match(shell, /mazebench:author-world-map-closed/);
 assert.match(theme, /\.author-start-room-grid \{/);
 assert.match(theme, /\.author-start-room-pixel\.is-start \{/);
 assert.match(theme, /\.author-info-popover\.is-open/);

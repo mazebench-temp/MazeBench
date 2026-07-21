@@ -383,6 +383,33 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     );
   }
 
+  function swapMazeWorldRooms(game, firstLevelId, secondLevelId) {
+    if (!game?.worldMap || firstLevelId === secondLevelId) {
+      throw new Error("Choose two different rooms to swap.");
+    }
+
+    const firstRoom = game.worldMap.byPosition.get(firstLevelId);
+    const secondRoom = game.worldMap.byPosition.get(secondLevelId);
+
+    if (!firstRoom || !secondRoom) {
+      throw new Error("Choose two built rooms to swap.");
+    }
+
+    return validateMazeWorldMapEntries(
+      game.id,
+      game.levelFiles,
+      game.worldMap.entries.map((entry) => {
+        if (entry.fileName === firstRoom.fileName) {
+          return { fileName: entry.fileName, position: secondRoom.position.slice(0, 2) };
+        }
+        if (entry.fileName === secondRoom.fileName) {
+          return { fileName: entry.fileName, position: firstRoom.position.slice(0, 2) };
+        }
+        return { fileName: entry.fileName, position: entry.position.slice(0, 2) };
+      })
+    );
+  }
+
   function buildMazeWorldLevel(gameId, levelId, options = {}) {
     const coordinates = parseMazeWorldLevelId(gameId, levelId);
 
@@ -530,6 +557,7 @@ function createMazeWorldMapService({ buildMazePreviewData, listTopLevelFiles, lo
     mazeLevelLabel,
     normalizeMazeWorldPosition,
     parseMazeWorldLevelId,
+    swapMazeWorldRooms,
     validateMazeWorldMapEntries,
     worldConfigForGame,
     writeMazeWorldMap
