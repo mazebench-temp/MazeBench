@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Drive MazeBench with a LOCAL coding agent (Codex CLI or Claude Code) instead
+// Drive MazeBench with a LOCAL coding agent (Codex CLI, Claude Code, or Kimi Code) instead
 // of Prime Intellect Verifiers. The agent plays the maze by shelling out to
 // scripts/codex-play.js (a stateful CLI over scripts/maze-bridge.js). When the
 // agent is done we make sure a scorecard exists and then render a replay video
@@ -9,14 +9,16 @@
 // Usage:
 //   node scripts/maze-agent-local.js --model codex [options]
 //   node scripts/maze-agent-local.js model=claude moves=10 level=HxI
+//   node scripts/maze-agent-local.js model=kimi moves=10 level=HxI container=false
 //
 // Options accept either "--flag value" or "key=value" form:
-//   model        codex | claude                              (required)
+//   model        codex | claude | kimi                       (required)
 //   container    true (run inside docker, host FS isolated)  (default true)
 //                | false (run on host with the CLI sandbox)
 //   image        container image tag                         (default mazebench-agent)
 //   docker_bin   container runtime                           (default docker)
 //   codex_auth / claude_auth   host auth dir to mount read-only (subscription logins)
+//   kimi_auth    host Kimi Code data dir                     (default $KIMI_CODE_HOME or ~/.kimi-code)
 //   tool_use     read-only (game controls only) | offline (isolated Python)
 //                                                            (default read-only)
 //   tools        legacy boolean alias (false=game-only, true=offline)
@@ -47,6 +49,7 @@
 //   session_id   Claude: id assigned to the forked conversation
 //   codex_bin    codex executable                             (default codex)
 //   claude_bin   claude executable                            (default claude)
+//   kimi_bin     kimi executable                              (default kimi)
 //   fast|draft   forwarded to the video renderer for speed
 //   width|height|fps  forwarded to the video renderer
 //   dry_run      print the agent command + prompt and exit (no run)
@@ -64,6 +67,7 @@ const {
   preflightPythonSandbox
 } = require("./maze-python-sandbox");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
+const SUPPORTED_KIMI_CODE_VERSIONS = new Set(["0.28.1"]);
 
 // Claude Code discovers MCP tools only when its default tool registry is
 // enabled. Keep that registry on, then explicitly remove every non-game tool
@@ -75,12 +79,14 @@ const CLAUDE_RESTRICTED_BUILTIN_TOOLS = [
   "CronCreate",
   "CronDelete",
   "CronList",
+  "CreateGoal",
   "DesignSync",
   "Edit",
   "EnterWorktree",
   "ExitWorktree",
   "Glob",
   "Grep",
+  "GetGoal",
   "Monitor",
   "NotebookEdit",
   "PushNotification",
@@ -90,6 +96,7 @@ const CLAUDE_RESTRICTED_BUILTIN_TOOLS = [
   "ScheduleWakeup",
   "SendMessage",
   "Skill",
+  "SetGoalBudget",
   "Task",
   "TaskCreate",
   "TaskGet",
@@ -101,6 +108,39 @@ const CLAUDE_RESTRICTED_BUILTIN_TOOLS = [
   "WebFetch",
   "WebSearch",
   "Workflow",
+  "Write"
+];
+
+// Kimi Code evaluates deny policies before allow policies, so an overlapping
+// catch-all deny would also block MazeBench MCP. Deny every built-in exposed by
+// the certified CLI version instead, allow exact MCP tools, and reject any
+// unreviewed Kimi version before launch. mcp.json also pins the exact tool list.
+const KIMI_RESTRICTED_BUILTIN_TOOLS = [
+  "Agent",
+  "AgentSwarm",
+  "AskUserQuestion",
+  "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "CreateGoal",
+  "Edit",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "Glob",
+  "Grep",
+  "GetGoal",
+  "Read",
+  "ReadMediaFile",
+  "Skill",
+  "SetGoalBudget",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TodoList",
+  "UpdateGoal",
+  "WebSearch",
+  "FetchURL",
   "Write"
 ];
 
@@ -739,6 +779,166 @@ function claudeAgents(config) {
   return JSON.stringify({ "maze-worker": worker });
 }
 
+function kimiAllowedTools(config) {
+  const restricted = config.toolUse === "read-only";
+  return restricted
+    ? [
+        "mcp__game__game_start",
+        "mcp__game__game_observe",
+        "mcp__game__game_action"
+      ]
+    : [
+        "mcp__mazebench__maze_start",
+        "mcp__mazebench__maze_observe",
+        "mcp__mazebench__maze_action",
+        "mcp__mazebench__python_exec"
+      ];
+}
+
+function sanitizeKimiConfig(source, config) {
+  const unsafeTopLevel = new Set([
+    "default_permission_mode",
+    "default_plan_mode",
+    "extra_skill_dirs",
+    "merge_all_available_skills",
+    "telemetry"
+  ]);
+  const unsafeSections = /^(?:permission|hooks|services|workspace|background|subagent|loop_control)(?:\.|$)/;
+  const preamble = [];
+  const blocks = [];
+  let block = null;
+  let keepBlock = true;
+
+  for (const line of String(source || "").split(/\r?\n/)) {
+    const header = line.match(/^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$/);
+    if (header) {
+      if (block && keepBlock) blocks.push(block.join("\n"));
+      block = [line];
+      const section = String(header[1] || "").trim().replace(/^['"]|['"]$/g, "");
+      keepBlock = !unsafeSections.test(section);
+      continue;
+    }
+    if (block) {
+      block.push(line);
+      continue;
+    }
+    const assignment = line.match(/^\s*([A-Za-z_][\w-]*)\s*=/);
+    if (!assignment || !unsafeTopLevel.has(assignment[1])) preamble.push(line);
+  }
+  if (block && keepBlock) blocks.push(block.join("\n"));
+
+  const maxSteps = config.unlimited
+    ? 1000
+    : Math.max(12, Number(config.moves || 0) + 10);
+  const rules = kimiAllowedTools(config).flatMap((tool) => [
+    "[[permission.rules]]",
+    'decision = "allow"',
+    `pattern = ${tomlString(tool)}`,
+    'reason = "MazeBench isolated MCP tool"',
+    ""
+  ]);
+  for (const tool of KIMI_RESTRICTED_BUILTIN_TOOLS) {
+    rules.push(
+      "[[permission.rules]]",
+      'decision = "deny"',
+      `pattern = ${tomlString(tool)}`,
+      'reason = "Disabled by MazeBench isolation"',
+      ""
+    );
+  }
+  return [
+    ...preamble,
+    'default_permission_mode = "auto"',
+    "default_plan_mode = false",
+    "merge_all_available_skills = false",
+    "extra_skill_dirs = []",
+    "telemetry = false",
+    "",
+    ...blocks,
+    "",
+    "[loop_control]",
+    `max_steps_per_turn = ${maxSteps}`,
+    "max_retries_per_step = 2",
+    "",
+    ...rules
+  ].join("\n").replace(/\n{4,}/g, "\n\n\n").trim() + "\n";
+}
+
+function verifyKimiCliCompatibility(config) {
+  const probe = spawnSync(config.kimiBin, ["--version"], {
+    encoding: "utf8",
+    timeout: 5000
+  });
+  const version = String(probe.stdout || probe.stderr || "").trim().match(/\d+\.\d+\.\d+/)?.[0] || "";
+  if (probe.status !== 0 || !SUPPORTED_KIMI_CODE_VERSIONS.has(version)) {
+    throw new Error(
+      `Kimi Code ${version || "unknown"} has not passed MazeBench's built-in tool isolation review. ` +
+      `Supported version: ${[...SUPPORTED_KIMI_CODE_VERSIONS].join(", ")}.`
+    );
+  }
+  return version;
+}
+
+function kimiMcpConfig(config) {
+  if (!config.mcpUrl) {
+    throw new Error("Kimi Code requires the private MazeBench MCP endpoint.");
+  }
+  const restricted = config.toolUse === "read-only";
+  const name = restricted ? "game" : "mazebench";
+  const enabledTools = restricted
+    ? ["game_start", "game_observe", "game_action"]
+    : ["maze_start", "maze_observe", "maze_action", "python_exec"];
+  return JSON.stringify({
+    mcpServers: {
+      [name]: {
+        url: config.mcpUrl,
+        enabled: true,
+        enabledTools,
+        toolTimeoutMs: 300_000,
+        startupTimeoutMs: 15_000
+      }
+    }
+  }, null, 2) + "\n";
+}
+
+function prepareKimiRuntime(config) {
+  const sourceHome = config.kimiAuthDir || process.env.KIMI_CODE_HOME || path.join(os.homedir(), ".kimi-code");
+  const sourceConfig = path.join(sourceHome, "config.toml");
+  if (!fs.existsSync(sourceConfig)) {
+    throw new Error(`Kimi Code is not configured at ${sourceConfig}. Run \`kimi login\` first.`);
+  }
+
+  fs.mkdirSync(config.kimiRuntimeDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(config.kimiRuntimeDir, 0o700);
+  fs.mkdirSync(config.kimiSkillsDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(config.kimiRuntimeDir, "config.toml"),
+    sanitizeKimiConfig(fs.readFileSync(sourceConfig, "utf8"), config),
+    { mode: 0o600 }
+  );
+  fs.writeFileSync(path.join(config.kimiRuntimeDir, "mcp.json"), kimiMcpConfig(config), { mode: 0o600 });
+
+  const sourceCredentials = path.join(sourceHome, "credentials");
+  const runtimeCredentials = path.join(config.kimiRuntimeDir, "credentials");
+  fs.rmSync(runtimeCredentials, { recursive: true, force: true });
+  if (fs.existsSync(sourceCredentials)) {
+    fs.cpSync(sourceCredentials, runtimeCredentials, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
+    fs.chmodSync(runtimeCredentials, 0o700);
+  }
+  const sourceDeviceId = path.join(sourceHome, "device_id");
+  if (fs.existsSync(sourceDeviceId)) {
+    fs.copyFileSync(sourceDeviceId, path.join(config.kimiRuntimeDir, "device_id"));
+    fs.chmodSync(path.join(config.kimiRuntimeDir, "device_id"), 0o600);
+  }
+}
+
+function scrubKimiRuntimeSecrets(config) {
+  if (config.model !== "kimi" || !config.kimiRuntimeDir) return;
+  for (const entry of ["config.toml", "mcp.json", "credentials", "device_id"]) {
+    fs.rmSync(path.join(config.kimiRuntimeDir, entry), { recursive: true, force: true });
+  }
+}
+
 function prepareAgentRuntime(config) {
   if (!config.mcpEnabled) return;
   fs.mkdirSync(config.workspaceDir, { recursive: true });
@@ -807,7 +1007,7 @@ async function startPrivateMcpServer(config) {
 }
 
 function needsPrivateMcpServer(config) {
-  return Boolean(config.mcpEnabled && (config.inContainer || config.model === "claude"));
+  return Boolean(config.mcpEnabled && (config.inContainer || ["claude", "kimi"].includes(config.model)));
 }
 
 function isolatedDockerAgentCommand(config, command) {
@@ -1064,7 +1264,33 @@ function agentCommand(config, prompt) {
     return { bin: config.claudeBin, argv };
   }
 
-  throw new Error(`Unknown model: ${config.model} (expected "codex" or "claude")`);
+  if (config.model === "kimi") {
+    const argv = [];
+    if (config.resume) argv.push("--session", config.resume);
+    if (config.modelName) argv.push("--model", config.modelName);
+    argv.push(
+      "--prompt", prompt,
+      "--output-format", "stream-json",
+      "--skills-dir", config.agentKimiSkillsDir
+    );
+    return {
+      bin: config.kimiBin,
+      argv,
+      env: {
+        KIMI_CODE_HOME: config.agentKimiRuntimeDir,
+        KIMI_DISABLE_TELEMETRY: "1",
+        KIMI_CODE_NO_AUTO_UPDATE: "1",
+        KIMI_DISABLE_CRON: "1",
+        KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT: "0",
+        KIMI_LOG_LEVEL: "warn",
+        NO_COLOR: "1",
+        CI: "1",
+        ...(config.reasoning ? { KIMI_MODEL_THINKING_EFFORT: config.reasoning } : {})
+      }
+    };
+  }
+
+  throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", or "kimi")`);
 }
 
 function ensureAgentAvailable(bin) {
@@ -1072,7 +1298,7 @@ function ensureAgentAvailable(bin) {
   if (probe.status !== 0) {
     throw new Error(
       `Agent CLI not found on PATH: ${bin}\n` +
-        `Install it (or pass ${bin === "codex" ? "codex_bin=" : "claude_bin="}<path>) and try again.`
+        `Install it (or pass ${bin === "codex" ? "codex_bin=" : bin === "claude" ? "claude_bin=" : "kimi_bin="}<path>) and try again.`
     );
   }
 }
@@ -1370,6 +1596,82 @@ function distillClaudeEvents(raw) {
   return { entries, transcript: transcript.join("\n\n"), finalMessage };
 }
 
+// Kimi Code's stream-json format uses OpenAI-style Assistant/Tool messages.
+// Match each MCP action call to its following Tool result so the live page has
+// the same per-move reasoning shape as Codex and Claude Code runs.
+function distillKimiEvents(raw) {
+  const entries = [];
+  const transcript = [];
+  const pending = new Map();
+  let commentary = "";
+  let move = 0;
+  let finalMessage = "";
+
+  for (const line of String(raw || "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch (_error) {
+      continue;
+    }
+
+    if (event.role === "assistant") {
+      const text = toolResultText(event.content).trim();
+      if (text) {
+        commentary = [commentary, text].filter(Boolean).join("\n\n");
+        finalMessage = text;
+        transcript.push(`[agent] ${text}`);
+      }
+      for (const call of Array.isArray(event.tool_calls) ? event.tool_calls : []) {
+        const fn = call.function || call;
+        const name = fn.name || call.name || "";
+        let input = fn.arguments ?? call.arguments ?? call.input ?? {};
+        if (typeof input === "string") {
+          try {
+            input = JSON.parse(input);
+          } catch (_error) {
+            input = {};
+          }
+        }
+        const actions = actionsFromToolCall(name, input);
+        transcript.push(`[tool] ${name || "mcp"} ${JSON.stringify(input)}`);
+        if (actions.length && call.id) {
+          pending.set(call.id, {
+            actions,
+            reasoning: commentary.trim(),
+            timestamp: event._mazebench_received_at || event.timestamp || null
+          });
+          commentary = "";
+        }
+      }
+      continue;
+    }
+
+    if (event.role === "tool") {
+      const id = event.tool_call_id || event.id;
+      const batch = pending.get(id);
+      if (!batch) continue;
+      const output = toolResultText(event.content ?? event.output ?? event.result);
+      const failed = event.is_error === true || event.error;
+      if (!failed) {
+        const results = resultsFromOutput(output);
+        const executed = results.length ? batch.actions.slice(0, results.length) : batch.actions;
+        const timestamp = event._mazebench_received_at || event.timestamp || batch.timestamp || null;
+        executed.forEach((action, index) => {
+          move += 1;
+          entries.push({ move, action, reasoning: batch.reasoning, timestamp, ...(results[index] || {}) });
+        });
+      }
+      if (output) transcript.push(`${failed ? "[tool error] " : ""}${output.split("\n").slice(0, 3).join("\n")}`);
+      pending.delete(id);
+    }
+  }
+
+  return { entries, transcript: transcript.join("\n\n"), finalMessage };
+}
+
 function writeReasoningArtifacts(config, raw, distilled, options = {}) {
   try {
     // When the caller already streamed agent-events.jsonl live, don't rewrite it.
@@ -1435,6 +1737,14 @@ function providerFailureFromEvents(raw, provider) {
       };
     }
     if (provider === "codex" && ["turn.completed", "thread.started"].includes(event.type)) return null;
+    if (provider === "kimi" && event.role === "meta" && /(?:error|failed)/i.test(String(event.type || ""))) {
+      return {
+        provider,
+        status: Number(event.status || event.status_code) || null,
+        message: String(event.content || event.message || event.error || "Kimi Code request failed.").trim().slice(0, 500)
+      };
+    }
+    if (provider === "kimi" && ["assistant", "tool"].includes(event.role)) return null;
   }
   return null;
 }
@@ -1479,7 +1789,7 @@ function recordNoMoveIfIdle(config, actionCountBefore) {
 }
 
 function runAgent(config, prompt) {
-  const { bin, argv } = isolatedDockerAgentCommand(config, agentCommand(config, prompt));
+  const { bin, argv, env: commandEnv = {} } = isolatedDockerAgentCommand(config, agentCommand(config, prompt));
   ensureAgentAvailable(bin);
 
   console.log(`\n=== Launching local ${config.model} agent (${bin}) ===`);
@@ -1490,14 +1800,18 @@ function runAgent(config, prompt) {
       `Game ${config.gameId} | Level ${config.levelId} | view ${config.view} | yaw ${config.yaw} | budget ${config.unlimited ? "unlimited" : `${config.moves} moves`}\n`
   );
 
-  // Both agents emit a structured JSONL event stream on stdout (codex --json /
-  // claude --output-format stream-json). Append it to agent-events.jsonl AS IT
+  // All local agents emit a structured JSONL event stream on stdout. Append it
+  // to agent-events.jsonl AS IT
   // ARRIVES so the web UI can distill live per-move reasoning while the agent is
   // still playing. We use synchronous appends (not a buffered WriteStream) so
   // the on-disk file the web UI tails never lags behind — important for Codex,
   // whose events are sparse (one short message per move) and would otherwise
   // sit unflushed in a stream buffer until the very end.
-  const distill = config.model === "codex" ? distillCodexEvents : distillClaudeEvents;
+  const distill = config.model === "codex"
+    ? distillCodexEvents
+    : config.model === "claude"
+      ? distillClaudeEvents
+      : distillKimiEvents;
   const eventsPath = path.join(config.outDir, "agent-events.jsonl");
   // On a resume we keep the prior run's events and append the new turns, so the
   // reasoning feed shows the whole journey. A fresh run starts the file empty.
@@ -1507,7 +1821,15 @@ function runAgent(config, prompt) {
   fs.rmSync(path.join(config.outDir, "provider-failure.json"), { force: true });
 
   return new Promise((resolve) => {
-    const env = { ...process.env };
+    const env = config.model === "kimi"
+      ? {
+          PATH: process.env.PATH || "",
+          HOME: process.env.HOME || os.homedir(),
+          TMPDIR: process.env.TMPDIR || os.tmpdir(),
+          LANG: process.env.LANG || "C.UTF-8",
+          ...commandEnv
+        }
+      : { ...process.env, ...commandEnv };
     if (config.model === "claude" && config.mcpEnabled) {
       if (config.swarm && config.modelName) env.CLAUDE_CODE_SUBAGENT_MODEL = config.modelName;
     }
@@ -1956,11 +2278,12 @@ async function runWizard(raw) {
 
   out.model = await promptSelect("Which agent?", [
     { label: "Codex CLI", value: "codex", hint: "uses your OpenAI/ChatGPT login" },
-    { label: "Claude Code", value: "claude", hint: "uses your Claude subscription" }
+    { label: "Claude Code", value: "claude", hint: "uses your Claude subscription" },
+    { label: "Kimi Code", value: "kimi", hint: "uses your configured Kimi account" }
   ]);
 
   const topModel = await promptSelect("Which model?", [
-    { label: "Default", value: "__default__", hint: out.model === "claude" ? "subscription default" : "codex default" },
+    { label: "Default", value: "__default__", hint: out.model === "codex" ? "codex default" : "account default" },
     { label: "Custom…", value: "__custom__", hint: "pick from the full list" }
   ]);
   let selectedModelInfo = null;
@@ -1971,17 +2294,32 @@ async function runWizard(raw) {
     if (out.model === "codex") {
       modelInfos = loadCodexModels();
       listOptions = modelInfos.map((m) => ({ label: m.displayName, value: m.slug, hint: m.description }));
-    } else {
+    } else if (out.model === "claude") {
       listOptions = [
         { label: "Opus", value: "opus" },
         { label: "Sonnet", value: "sonnet" },
         { label: "Haiku", value: "haiku" }
       ];
+    } else {
+      const result = spawnSync(out.kimi_bin || "kimi", ["provider", "list", "--json"], {
+        encoding: "utf8",
+        timeout: 5000
+      });
+      try {
+        const payload = JSON.parse(String(result.stdout || "{}"));
+        listOptions = Object.entries(payload.models || {}).map(([id, model]) => ({
+          label: String(model?.displayName || id),
+          value: id,
+          hint: String(model?.model || "")
+        }));
+      } catch (_error) {
+        listOptions = [];
+      }
     }
     listOptions.push({ label: "Type an id manually…", value: "__type__" });
     let picked = await promptSelect("Choose a model", listOptions);
     if (picked === "__type__") {
-      picked = await promptText("Model id", out.model === "claude" ? "opus" : "gpt-5.5");
+      picked = await promptText("Model id", out.model === "claude" ? "opus" : out.model === "kimi" ? "kimi/k3" : "gpt-5.5");
     } else if (out.model === "codex") {
       selectedModelInfo = modelInfos.find((m) => m.slug === picked) || null;
     }
@@ -2011,6 +2349,12 @@ async function runWizard(raw) {
         { label: "Yes", value: "true" }
       ]);
     }
+  } else if (out.model === "kimi") {
+    out.reasoning = await promptSelect("Reasoning effort?", [
+      { label: "low", value: "low" },
+      { label: "high", value: "high" },
+      { label: "max", value: "max" }
+    ]);
   }
 
   let moves = await promptSelect("Action budget (moves)?", [
@@ -2050,17 +2394,19 @@ async function runWizard(raw) {
     }
   }
 
-  out.container = await promptSelect("Access?", [
-    { label: "Container", value: "true", hint: "isolated from your files — recommended" },
-    { label: "Host", value: "false", hint: "native OS sandbox with launch-time verification" }
-  ]);
+  out.container = out.model === "kimi"
+    ? "false"
+    : await promptSelect("Access?", [
+        { label: "Container", value: "true", hint: "isolated from your files — recommended" },
+        { label: "Host", value: "false", hint: "native OS sandbox with launch-time verification" }
+      ]);
 
   out.tool_use = await promptSelect("Tool use?", [
     { label: "No Tools", value: "read-only", hint: "game controls only; no files, shell, web, memory, or workers" },
     { label: "[PY] Tools", value: "offline", hint: "isolated Python scratchpad; no host files or network" }
   ]);
 
-  if (out.tool_use === "offline") {
+  if (out.tool_use === "offline" && out.model !== "kimi") {
     out.swarm = await promptSelect("Orchestration?", [
       { label: "Single", value: "false", hint: "one lead agent" },
       { label: "Swarm", value: "true", hint: "lead controls identical-model workers" }
@@ -2114,9 +2460,9 @@ async function main() {
 
   const model = String(raw.model || "").toLowerCase();
 
-  if (!model || !["codex", "claude"].includes(model)) {
+  if (!model || !["codex", "claude", "kimi"].includes(model)) {
     console.error(
-      "Usage: node scripts/maze-agent-local.js --model <codex|claude> [moves=N level=HxI ...]"
+      "Usage: node scripts/maze-agent-local.js --model <codex|claude|kimi> [moves=N level=HxI ...]"
     );
     process.exit(2);
   }
@@ -2134,7 +2480,11 @@ async function main() {
     : isTruthy(raw.tools, false)
       ? "offline"
       : "read-only";
-  const swarm = toolUse === "offline" && isTruthy(raw.swarm, false);
+  const requestedSwarm = toolUse === "offline" && isTruthy(raw.swarm, false);
+  if (model === "kimi" && requestedSwarm) {
+    throw new Error("Kimi Code local runs currently support a single isolated agent, not swarm workers.");
+  }
+  const swarm = requestedSwarm;
   const unlimited = isTruthy(raw.unlimited, false);
   const hostAccess = !wantsContainer && !inContainer;
   const agentHomeStat = inContainer ? fs.statSync("/home/pwuser") : null;
@@ -2145,6 +2495,8 @@ async function main() {
   const swarmWorkspaceDir = path.join(workspaceRoot, "swarm-workspaces");
   const codexRuntimeDir = path.join(outDir, ".codex-runtime");
   const pythonSandboxStateDir = path.join(outDir, ".python-sandbox");
+  const kimiRuntimeDir = path.join(workspaceRoot, "kimi-home");
+  const kimiSkillsDir = path.join(kimiRuntimeDir, "empty-skills");
 
   const requestedMode = String(raw.mode || raw.observation || "text").toLowerCase();
   const mode = ["json", "vision"].includes(requestedMode) ? requestedMode : "text";
@@ -2152,6 +2504,8 @@ async function main() {
     claudeBin: raw.claude_bin || "claude",
     claudeAllowedTools: raw.claude_allowed_tools || "",
     codexBin: raw.codex_bin || "codex",
+    kimiBin: raw.kimi_bin || "kimi",
+    kimiAuthDir: raw.kimi_auth ? path.resolve(expandTilde(raw.kimi_auth)) : "",
     pythonBin: raw.python_bin || "",
     container: wantsContainer,
     dockerBin: raw.docker_bin || "docker",
@@ -2192,10 +2546,14 @@ async function main() {
     swarmDir,
     swarmWorkspaceDir,
     codexRuntimeDir,
+    kimiRuntimeDir,
+    kimiSkillsDir,
     pythonSandboxStateDir,
     agentWorkspaceDir: inContainer ? "/app/workspace" : workspaceDir,
     agentSwarmWorkspaceDir: inContainer ? "/app/swarm-workspaces" : swarmWorkspaceDir,
     agentCodexRuntimeDir: inContainer ? "/run/mazebench-codex-runtime" : codexRuntimeDir,
+    agentKimiRuntimeDir: kimiRuntimeDir,
+    agentKimiSkillsDir: kimiSkillsDir,
     // The outer Docker launcher re-execs before starting an agent. Actual host
     // and in-container agents both use MCP so maze persistence stays outside
     // their file/tool sandbox.
@@ -2218,6 +2576,11 @@ async function main() {
     width: raw.width ? positiveInt(raw.width, undefined) : undefined,
     yaw: ((positiveInt(raw.yaw, 0) % 4) + 4) % 4
   };
+
+  if (config.model === "kimi" && (config.container || inContainer)) {
+    throw new Error("Kimi Code local runs use the verified host permission boundary; pass container=false.");
+  }
+  if (config.model === "kimi") verifyKimiCliCompatibility(config);
 
   // Default: isolate the whole run inside a container. `container=false` (or the
   // in-container re-exec, flagged by MAZEBENCH_IN_CONTAINER) runs on the host.
@@ -2244,6 +2607,14 @@ async function main() {
   const privateMcp = needsPrivateMcpServer(config)
     ? await startPrivateMcpServer(config)
     : null;
+  if (config.model === "kimi") {
+    try {
+      prepareKimiRuntime(config);
+    } catch (error) {
+      privateMcp?.stop();
+      throw error;
+    }
+  }
 
   const prompt = buildPrompt(config);
 
@@ -2254,6 +2625,7 @@ async function main() {
     console.log([bin, ...shown].join(" "));
     console.log(`# with <prompt>:\n${prompt}`);
     console.log(`\n# artifacts would land in: ${config.outDir}`);
+    scrubKimiRuntimeSecrets(config);
     privateMcp?.stop();
     return;
   }
@@ -2277,6 +2649,7 @@ async function main() {
     }
     recordNoMoveIfIdle(config, actionCountBefore);
   } finally {
+    scrubKimiRuntimeSecrets(config);
     privateMcp?.stop();
   }
 
@@ -2329,13 +2702,17 @@ module.exports = {
   containerRuntimeMountArgs,
   distillClaudeEvents,
   distillCodexEvents,
+  distillKimiEvents,
+  kimiAllowedTools,
+  kimiMcpConfig,
   loadCodexModels,
   migrateSeedSessionObservation,
   needsPrivateMcpServer,
   providerFailureFromEvents,
   recordNoMoveIfIdle,
   resultFromOutput,
-  resultsFromOutput
+  resultsFromOutput,
+  sanitizeKimiConfig
 };
 
 if (require.main === module) {

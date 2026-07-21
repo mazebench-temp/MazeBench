@@ -30,6 +30,11 @@
       logo: '<img src="/logos/claude.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     },
     {
+      id: "kimi-code",
+      name: "Kimi Code",
+      logo: '<svg viewBox="0 0 128 128" fill="none" aria-hidden="true"><circle cx="64" cy="64" r="52" fill="currentColor" opacity=".12"></circle><path d="M38 26v76M39 66l48-40M39 65l51 38" stroke="currentColor" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></path></svg>'
+    },
+    {
       id: "custom",
       name: "Custom",
       logo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 9 5 12l3 3"></path><path d="m16 9 3 3-3 3"></path><path d="m14 5-4 14"></path></svg>'
@@ -45,6 +50,11 @@
       docs: "https://docs.anthropic.com/en/docs/claude-code/getting-started",
       install: "npm install -g @anthropic-ai/claude-code\nclaude auth login",
       login: "claude auth login"
+    },
+    "kimi-code": {
+      docs: "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html",
+      install: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash\nkimi login",
+      login: "kimi login"
     }
   };
   const PRIME_SETUP = {
@@ -62,6 +72,7 @@
   const RUN_COMPANY_NAMES = {
     codex: "OpenAI",
     claude: "Anthropic",
+    kimi: "Moonshot AI",
     prime: "Prime Intellect"
   };
   const RUN_STATUS_LABELS = {
@@ -445,6 +456,7 @@
   function effectiveHarnessId(harnessId = state.harness) {
     if (harnessId === "custom") return state.customHarnessId;
     if (harnessId === "claude-code") return "claude_code";
+    if (harnessId === "kimi-code") return "kimi_code";
     return harnessId;
   }
 
@@ -452,12 +464,13 @@
     const harnessId = effectiveHarnessId();
     if (harnessId === "none") return true;
     const definition = state.customHarnesses.find((entry) => entry.id === harnessId);
-    return definition ? Boolean(definition.launchable) : ["codex", "claude_code"].includes(harnessId);
+    return definition ? Boolean(definition.launchable) : ["codex", "claude_code", "kimi_code"].includes(harnessId);
   }
 
   function localProviderId(harnessId = state.harness) {
     if (harnessId === "codex") return "codex";
     if (harnessId === "claude-code") return "claude";
+    if (harnessId === "kimi-code") return "kimi";
     return "";
   }
 
@@ -497,10 +510,10 @@
       note.textContent = state.harness === "custom"
         ? "Prime harnesses run in disposable sandboxes while game state and scoring stay on the trusted evaluator."
         : state.harness && state.harness !== "none" && state.execution === "prime"
-        ? `${state.harness === "codex" ? "Codex" : "Claude Code"} is hosted by Prime and connected to MazeBench's isolated game controls.`
+        ? `${HARNESSES.find((entry) => entry.id === state.harness)?.name || "This harness"} is hosted by Prime and connected to MazeBench's isolated game controls.`
         : state.execution === "prime"
           ? "Prime supplies inference through the isolated Verifiers environment."
-          : "This run uses the signed-in CLI and your local subscription limits.";
+          : "This run uses the signed-in CLI and your configured local account.";
     }
   }
 
@@ -713,12 +726,12 @@
         ? `${harness?.name} is installed. Sign in once from your terminal, then try Local Run again.`
         : `Finish ${harness?.name} setup in your terminal, then try Local Run again.`;
     const command = wrongLocalAuth
-      ? `${harnessId === "codex" ? "codex logout" : "claude auth logout"}\n${setup.login}`
+      ? `${harnessId === "codex" ? "codex logout\ncodex login" : harnessId === "claude-code" ? "claude auth logout\nclaude auth login" : setup.login}`
       : availability.installed ? setup.login : setup.install;
 
     presentProviderSetup({
       logo: harness?.logo || "",
-      title: `${harness?.name || "Local CLI"} subscription is inactive`,
+      title: `${harness?.name || "Local CLI"} account is unavailable`,
       message,
       command,
       docs: setup.docs
@@ -790,7 +803,7 @@
     state.localAvailability = "checking";
     renderExecutionPicker();
     const harnessName = HARNESSES.find((entry) => entry.id === harnessId)?.name || "Local";
-    setStatus(`Checking ${harnessName} subscription…`);
+    setStatus(`Checking ${harnessName} account…`);
 
     try {
       const env = await refreshEnvironment();
@@ -806,7 +819,7 @@
 
       state.localAvailability = "active";
       renderExecutionPicker();
-      setStatus(`${harnessName} local subscription is active.`);
+      setStatus(`${harnessName} local account is active.`);
       return availability;
     } catch (error) {
       if (requestId !== localAvailabilityRequest || state.harness !== harnessId) return;
@@ -1169,6 +1182,11 @@
     if (state.harness === "claude-code") {
       return model && Array.isArray(model.reasoning_levels) ? model.reasoning_levels : [];
     }
+    if (state.harness === "kimi-code") {
+      return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
+        ? model.reasoning_levels
+        : ["high"];
+    }
     return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
       ? model.reasoning_levels
       : ["low", "medium", "high", "xhigh"];
@@ -1362,7 +1380,10 @@
     };
 
     setCardVisibility(localSettings?.querySelector(".setting-card--tool-use"), hasObservation);
-    setCardVisibility(localSettings?.querySelector(".setting-card--orchestration"), hasObservation && state.toolUse === "offline");
+    setCardVisibility(
+      localSettings?.querySelector(".setting-card--orchestration"),
+      hasObservation && state.toolUse === "offline" && state.harness !== "kimi-code"
+    );
     setCardVisibility(localSettings?.querySelector(".setting-card--budget"), localBudgetReady);
     setCardVisibility(localSettings?.querySelector(".setting-card--give-up"), localBudgetReady && hasBudget);
     setCardVisibility(localSettings?.querySelector(".setting-card--auto-quit"), localBudgetReady && hasBudget && state.allowQuit !== null);
@@ -1489,7 +1510,7 @@
   function setToolUse(value, syncSteps = true) {
     const next = value === "read-only" || value === "offline" ? value : null;
     if (state.toolUse !== next) {
-      state.orchestration = next === "read-only" ? "single" : null;
+      state.orchestration = next === "read-only" || state.harness === "kimi-code" ? "single" : null;
     }
     state.toolUse = next;
     syncToolUsePicker();
@@ -1511,7 +1532,7 @@
 
   function setOrchestration(value, syncSteps = true) {
     if (!state.toolUse) return;
-    state.orchestration = state.toolUse === "read-only"
+    state.orchestration = state.toolUse === "read-only" || state.harness === "kimi-code"
       ? "single"
       : value === "single" || value === "swarm" ? value : null;
     syncOrchestrationPicker();
@@ -1708,7 +1729,7 @@
           video: false,
           tools: state.toolUse === "offline",
           tool_use: state.toolUse,
-          swarm: state.orchestration === "swarm"
+          swarm: state.harness !== "kimi-code" && state.orchestration === "swarm"
         };
 
     body.count = 1;
@@ -1801,7 +1822,7 @@
       ? (run.harness || "none") === "none"
         ? "Prime Intellect"
         : `${harnessName || "Prime Intellect"} via Prime`
-      : ({ codex: "Codex", claude: "Claude Code" }[run.provider || run.model] || run.model);
+      : ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[run.provider || run.model] || run.model);
     const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
     const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");

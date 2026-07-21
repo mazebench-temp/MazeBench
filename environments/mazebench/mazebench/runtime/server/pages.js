@@ -204,7 +204,7 @@ function createPageRenderer({
       title: "Maze Bench",
       main: `<div class="world-grid home-mode-grid">
           ${modeCard("/build", "build", "Build and Play", "Create, edit, and play the official Maze Bench environment or your local drafts.")}
-          ${modeCard("/agent", "agent", "Agent", "Run Codex, Claude Code, or Prime Verifiers on any world and watch live.")}
+          ${modeCard("/agent", "agent", "Agent", "Run Codex, Claude Code, Kimi Code, or Prime Verifiers on any world and watch live.")}
           ${modeCard("/train", "train", "Train", "Train models on Maze Bench with Prime Verifiers.")}
         </div>
         ${otherGamesSection}`

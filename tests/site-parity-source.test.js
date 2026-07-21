@@ -114,7 +114,13 @@ assert.match(agentScript, /run-card__badge--mode[^\n]*runModeLabel\(run\.mode\)/
 assert.match(agentScript, /id: "none",\s*name: "Prime Intellect",\s*logo: '<img src="\/logos\/prime\.png"/);
 assert.match(agentScript, /id: "codex",\s*name: "Codex"/);
 assert.match(agentScript, /id: "claude-code",\s*name: "Claude Code"/);
+assert.match(agentScript, /id: "kimi-code",\s*name: "Kimi Code"/);
 assert.match(agentScript, /id: "custom",\s*name: "Custom"/);
+assert.ok(
+  agentScript.indexOf('id: "claude-code"') < agentScript.indexOf('id: "kimi-code"') &&
+    agentScript.indexOf('id: "kimi-code"') < agentScript.indexOf('id: "custom"'),
+  "Kimi Code must appear immediately after Claude Code and before Custom"
+);
 assert.match(agentScript, /kind: "prime",\s*harness: effectiveHarnessId\(\)/);
 assert.match(agentScript, /kind: "local",\s*subscription: true/);
 assert.match(pages, /id="custom-harness-panel"/);
