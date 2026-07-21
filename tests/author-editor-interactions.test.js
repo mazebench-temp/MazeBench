@@ -112,6 +112,111 @@ assert.equal(
   "a clone in the room must not disqualify the main player from smooth cross-room movement"
 );
 
+const mainPlayerMoveForWorldActionSource = sourceSection(
+  gameplaySource,
+  "function mainPlayerMoveForWorldAction",
+  "function playerLevelExitMoveForContinuation"
+);
+const ordinaryPlayerMove = {
+  actor: worldActionPlayer,
+  fromX: 0,
+  fromY: 2,
+  toX: 1,
+  toY: 2,
+  visualOnly: false
+};
+const groupedCloneMoves = [
+  { actor: { type: "clone", groupId: "c0" }, fromX: 6, toX: 7, visualOnly: false },
+  { actor: { type: "clone", groupId: "c0" }, fromX: 6, toX: 7, visualOnly: false },
+  {
+    actor: { type: "clone", groupId: "c1", shape: "slope", direction: "left" },
+    fromX: 6,
+    toX: 6,
+    visualOnly: false
+  }
+];
+const mainPlayerMoveForWorldAction = vm.runInNewContext(
+  `(${mainPlayerMoveForWorldActionSource.trim()})`,
+  {
+    app: {
+      isMainPlayerActor: (actor) => actor.type === "player",
+      isPlayerActor: (actor) => actor.type === "player" || actor.type === "clone"
+    }
+  }
+);
+assert.equal(
+  mainPlayerMoveForWorldAction({
+    moved: true,
+    moves: [...groupedCloneMoves, ordinaryPlayerMove]
+  }),
+  ordinaryPlayerMove,
+  "a settled cross-room step must select the main player instead of a member of a multiblock clone group"
+);
+
+const shouldContinuePlayerMoveAcrossEdgeSource = sourceSection(
+  gameplaySource,
+  "function shouldContinuePlayerMoveAcrossEdge",
+  "function withContinuationModeForPlayerMove"
+);
+const shouldContinuePlayerMoveAcrossEdge = vm.runInNewContext(
+  `(${shouldContinuePlayerMoveAcrossEdgeSource.trim()})`,
+  {
+    isSlideContinuationSurface: (type) =>
+      type === "ice" || type === "ice_block" || type === "ice_slope",
+    mainPlayerMoveForWorldAction: () => ordinaryPlayerMove,
+    playerSlideMoveForContinuation: () => null
+  }
+);
+assert.equal(
+  shouldContinuePlayerMoveAcrossEdge(
+    { moved: true, moves: [...groupedCloneMoves, ordinaryPlayerMove] },
+    { sourceType: "ice" }
+  ),
+  true,
+  "entering an ice tile on a room edge must continue without a second keypress"
+);
+assert.equal(
+  shouldContinuePlayerMoveAcrossEdge(
+    { moved: true, moves: [...groupedCloneMoves, ordinaryPlayerMove] },
+    { sourceType: "floor" }
+  ),
+  false,
+  "an ordinary step onto an edge floor must not turn into an ice continuation"
+);
+
+const supportsWorldActionMoveResultSource = sourceSection(
+  gameplaySource,
+  "function supportsWorldActionMoveResult",
+  "function restorePlannedWorldActionStart"
+);
+const supportsWorldActionMoveResult = vm.runInNewContext(
+  `(${supportsWorldActionMoveResultSource.trim()})`,
+  {
+    app: {
+      isPlayerActor: (actor) => actor.type === "player" || actor.type === "clone"
+    }
+  }
+);
+assert.equal(
+  supportsWorldActionMoveResult({
+    moved: true,
+    moves: [ordinaryPlayerMove, ...groupedCloneMoves]
+  }),
+  true,
+  "continuous world actions must support every cube and ice-slope member of a clone group"
+);
+
+const continuousWorldActionPlanSource = sourceSection(
+  gameplaySource,
+  "async function planContinuousWorldAction",
+  "function worldActionPointAt"
+);
+assert.match(
+  continuousWorldActionPlanSource,
+  /playerLevelExitMoveForContinuation\(moveResult\) \|\|[\s\S]*playerSlideMoveForContinuation\(moveResult\) \|\|[\s\S]*mainPlayerMoveForWorldAction\(moveResult\)/,
+  "the planner must keep an ordinary landing step so it does not fall back and replay clone input in every room"
+);
+
 const restoreCrossRoomUndoStateSource = sourceSection(
   gameplaySource,
   "function restoreCrossRoomUndoState",
