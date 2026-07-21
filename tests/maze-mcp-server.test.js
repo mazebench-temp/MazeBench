@@ -42,8 +42,10 @@ try {
   assert.equal(result.status, 0, result.stderr);
   const responses = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   const firstObservation = responses.find((response) => response.id === 2)?.result?.structuredContent;
-  assert.deepEqual(Object.keys(firstObservation || {}), ["level"]);
+  assert.deepEqual(Object.keys(firstObservation || {}), ["level", "visited_levels"]);
   assert.match(firstObservation.level, /P|p/);
+  assert.equal(firstObservation.visited_levels.length, 1);
+  assert.match(firstObservation.visited_levels[0], /^level_[A-P]x[A-P]$/);
   assert.equal(Object.prototype.hasOwnProperty.call(firstObservation, "player"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(firstObservation, "scorecard"), false);
   const listedTools = responses.find((response) => response.id === 10)?.result?.tools || [];
@@ -162,8 +164,10 @@ try {
   );
   assert.doesNotMatch(JSON.stringify(restrictedTools), /MazeBench|clone_id|worker/i);
   const restrictedObservation = restrictedResponses.find((response) => response.id === 92)?.result?.structuredContent;
-  assert.deepEqual(Object.keys(restrictedObservation || {}), ["level"]);
+  assert.deepEqual(Object.keys(restrictedObservation || {}), ["level", "visited_levels"]);
   assert.match(restrictedObservation.level, /P|p/);
+  assert.equal(restrictedObservation.visited_levels.length, 1);
+  assert.match(restrictedObservation.visited_levels[0], /^level_[A-P]x[A-P]$/);
   for (const id of [93, 94, 95, 96]) {
     assert(restrictedResponses.find((response) => response.id === id)?.error, `restricted request ${id} must fail closed`);
   }
@@ -391,9 +395,10 @@ try {
   );
   assert.equal(asciiStatusProbe.status, 0, asciiStatusProbe.stderr);
   const asciiStatuses = JSON.parse(asciiStatusProbe.stdout);
-  assert.deepEqual(asciiStatuses.alive, { level: "P" });
+  assert.deepEqual(asciiStatuses.alive, { level: "P", visited_levels: ["level_HxH"] });
   assert.deepEqual(asciiStatuses.dead, {
     level: ".",
+    visited_levels: ["level_HxH", "level_HxI"],
     player_dead: true,
     death_message: "The player died, you must now undo or reset or go to a level.",
     allowed_commands: ["undo", "reset", "go to level X Y"]

@@ -714,7 +714,12 @@ function publicToolValue(value) {
       ? status.level || status.observation
       : "";
     if (typeof level === "string" && level.length > 0) {
-      const printable = { level };
+      const printable = {
+        level,
+        visited_levels: Array.isArray(status.visited_levels)
+          ? status.visited_levels.map(String)
+          : []
+      };
       if (status.player_dead === true) {
         printable.player_dead = true;
         printable.death_message = String(
