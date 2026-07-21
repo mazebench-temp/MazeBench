@@ -396,7 +396,7 @@ try {
       id: primeVideoId,
       kind: "prime",
       created_at: new Date().toISOString(),
-      status: "finished",
+      status: "failed",
       model: "prime",
       model_name: "video-test",
       game_id: "maze",
@@ -411,6 +411,7 @@ try {
     `${JSON.stringify({ turn: 1, command_text: "up", status: {} })}\n`
   );
   const primeVideo = service.generateRunVideo(primeVideoId);
+  assert.equal(primeVideo.status, "failed");
   assert.equal(primeVideo.video_status, "rendering");
   const primeVideoArgsDeadline = Date.now() + 3000;
   while (!fs.existsSync(path.join(primeVideoDir, "video-args.json")) && Date.now() < primeVideoArgsDeadline) {
