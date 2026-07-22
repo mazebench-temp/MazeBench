@@ -48,6 +48,12 @@ def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, An
             "adapter": "kimi_mcp",
             "runtime_harness_id": "mazebench_kimi_harness",
         }
+    if harness_id == "pi":
+        return {
+            "adapter": "cli_gateway",
+            "runtime_harness_id": "mazebench_cli_harness",
+            "upstream_id": harness_id,
+        }
     if harness_type.SUPPORTS_MCP:
         return {"adapter": "native_mcp", "runtime_harness_id": harness_id}
     return {
@@ -59,7 +65,9 @@ def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, An
 
 def discover() -> dict[str, Any]:
     harnesses: list[dict[str, Any]] = []
-    for module in sorted(pkgutil.iter_modules(builtin_harnesses.__path__), key=lambda item: item.name):
+    for module in sorted(
+        pkgutil.iter_modules(builtin_harnesses.__path__), key=lambda item: item.name
+    ):
         harness_id = module.name
         try:
             harness_type = harness_class(harness_id)
@@ -69,7 +77,9 @@ def discover() -> dict[str, Any]:
             harnesses.append(
                 {
                     "id": harness_id,
-                    "label": LABELS.get(harness_id, harness_id.replace("_", " ").title()),
+                    "label": LABELS.get(
+                        harness_id, harness_id.replace("_", " ").title()
+                    ),
                     "launchable": False,
                     "status": "catalog_error",
                     "reason": str(error).splitlines()[0][:500],
@@ -105,9 +115,7 @@ def discover() -> dict[str, Any]:
                 "configurable": configurable,
                 "default_config": defaults,
                 "config_schema": {
-                    "properties": {
-                        name: properties[name] for name in configurable
-                    },
+                    "properties": {name: properties[name] for name in configurable},
                 },
                 **adapter,
             }

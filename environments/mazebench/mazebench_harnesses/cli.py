@@ -102,7 +102,7 @@ class MazeBenchCLIHarness(Harness[MazeBenchCLIHarnessConfig]):
 
         delegate.resolve_prompt = resolve_prompt
         try:
-            return await delegate.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
+            return await delegate.launch(ctx, trace, runtime, endpoint, secret, {})
         finally:
             delegate.resolve_prompt = original_resolve
 

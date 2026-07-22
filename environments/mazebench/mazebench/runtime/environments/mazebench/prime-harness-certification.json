@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_fingerprint": "8a39b95ad663a65af65eb4e2cca271f8461d0ea7d7075d88b7ee04e09e8ca565",
+  "catalog_fingerprint": "45482b168037bc27dcfc1842be4dd63eaafeb0fad674818fb1d75eb6e9cfb7e6",
   "verifiers_version": "0.2.1.dev62",
   "verifiers_revision": "653bb14003b87e39588bde308fa8626d1038ce15",
   "boundary": {
@@ -97,13 +97,14 @@
     },
     {
       "id": "pi",
-      "adapter": "native_mcp",
-      "runtime_harness_id": "pi",
+      "adapter": "cli_gateway",
+      "runtime_harness_id": "mazebench_cli_harness",
       "checks": [
         "upstream-load",
         "effective-mcp-pairing",
         "external-task-boundary",
-        "config-validation"
+        "config-validation",
+        "capability-cli-protocol"
       ],
       "status": "certified"
     },

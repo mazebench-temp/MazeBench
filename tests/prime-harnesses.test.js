@@ -44,6 +44,10 @@ try {
     path.join(root, "environments", "mazebench", "mazebench_harnesses", "codex.py"),
     "utf8"
   );
+  const cliHarnessSource = fs.readFileSync(
+    path.join(root, "environments", "mazebench", "mazebench_harnesses", "cli.py"),
+    "utf8"
+  );
   const commonHarnessSource = fs.readFileSync(
     path.join(root, "environments", "mazebench", "mazebench_harnesses", "common.py"),
     "utf8"
@@ -174,8 +178,15 @@ try {
   assert.match(toolsTasksetSource, /`json_observation` field/);
   assert.match(codexHarnessSource, /"start", "observe", "action", "action_sequence"/);
   assert.match(codexHarnessSource, /enabled_tools=\["start","observe","action","action_sequence"\]/);
+  assert.match(codexHarnessSource, /model_catalog_json=/);
+  assert.match(codexHarnessSource, /"supports_search_tool": False/);
+  assert.match(codexHarnessSource, /GAME_ONLY_DISABLED_FEATURES[\s\S]*?"tool_suggest"/);
+  assert.doesNotMatch(codexHarnessSource, /allowed_tools = \["tool_search"/);
+  assert.match(cliHarnessSource, /delegate\.launch\(ctx, trace, runtime, endpoint, secret, \{\}\)/);
   assert.match(commonHarnessSource, /observations\/current\.json/);
   assert.match(commonHarnessSource, /observations\/history\.jsonl/);
+  assert.match(commonHarnessSource, /value\?\.result && typeof value\.result === "object"/);
+  assert.match(commonHarnessSource, /it does not include the CLI output's `result` envelope/);
   assert.match(commonHarnessSource, /action-sequence route\.json --all-frames/);
   assert.match(commonHarnessSource, /there is no route-length cap/);
   assert.match(kimiHarnessSource, /KIMI_MODEL_CAPABILITIES/);
@@ -185,6 +196,10 @@ try {
   assert.equal(kimiCatalogEntry.adapter, "kimi_mcp");
   assert.equal(kimiCatalogEntry.runtime_harness_id, "mazebench_kimi_harness");
   assert.equal(kimiCatalogEntry.observation_modes.includes("vision"), true);
+  const piCatalogEntry = harnessCatalog.harnesses.find((harness) => harness.id === "pi");
+  assert.equal(piCatalogEntry.adapter, "cli_gateway");
+  assert.equal(piCatalogEntry.runtime_harness_id, "mazebench_cli_harness");
+  assert.equal(piCatalogEntry.upstream_id, "pi");
   assert.equal(
     harnessCatalog.harnesses.find((harness) => harness.id === "rlm").observation_modes.includes("vision"),
     false
