@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 
-CLI_SOURCE = r'''#!/usr/bin/env node
+CLI_SOURCE = r"""#!/usr/bin/env node
 "use strict";
 
 const fs = require("node:fs");
@@ -66,6 +66,7 @@ function toolValue(result) {
 }
 
 function observationRecords(value) {
+  if (value?.result && typeof value.result === "object") value = value.result;
   if (value?.observation?.observation_mode === "json") {
     return [{ observation: value.observation, revision: Number(value.actions_used) || 0 }];
   }
@@ -164,7 +165,7 @@ main().catch((error) => {
   process.stderr.write(`${error?.stack || error}\n`);
   process.exitCode = 1;
 });
-'''
+"""
 
 
 def cli_source(mcp_url: str) -> bytes:
@@ -197,8 +198,10 @@ Run `start` exactly once. When the task prompt mentions `game_start`, `game_obse
 `game_action`, or `game_action_sequence`, use the corresponding CLI command above.
 In JSON mode, every delivered sanitized observation is automatically saved to
 `observations/current.json`, with append-only copies in `observations/history.jsonl`.
-Programs should read that file directly rather than copying tool output. A saved solver can
-write `route.json` as either an action array or
+`current.json` is the observation object itself, so read its top-level
+`json_observation` field; it does not include the CLI output's `result` envelope. Programs
+should read that file directly rather than copying tool output. A saved solver can write
+`route.json` as either an action array or
 `{{"observation_revision": observation["observation_revision"], "actions": [...]}}`, then
 submit the full route with `action-sequence`; there is no route-length cap. Add
 `--all-frames` to receive and save every intermediate JSON observation. Without it, the

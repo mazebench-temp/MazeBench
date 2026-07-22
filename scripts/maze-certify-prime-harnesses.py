@@ -51,9 +51,7 @@ class RecordingRuntime:
         del argv, env
         return ProgramResult(0, "", "")
 
-    async def run_program(
-        self, argv: list[str], env: dict[str, str]
-    ) -> ProgramResult:
+    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         self.argv = list(argv)
         self.env = dict(env)
         return ProgramResult(0, "", "")
@@ -90,7 +88,17 @@ def certify_cli_protocol() -> None:
                 assert body.get("params", {}).get("name") == "start"
                 result = {
                     "content": [{"type": "text", "text": '{"ok":true}'}],
-                    "structuredContent": {"ok": True},
+                    "structuredContent": {
+                        "result": {
+                            "observation": {
+                                "observation_mode": "json",
+                                "json_observation": {
+                                    "objects": {"player": [[1, 2, 0]]}
+                                },
+                            },
+                            "actions_used": 0,
+                        }
+                    },
                 }
             else:
                 self.send_error(400)
@@ -121,9 +129,17 @@ def certify_cli_protocol() -> None:
                 text=True,
                 capture_output=True,
                 timeout=15,
+                cwd=directory,
             )
             assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout) == {"ok": True}
+            assert json.loads(result.stdout)["result"]["actions_used"] == 0
+            current = json.loads(
+                (Path(directory) / "observations" / "current.json").read_text()
+            )
+            assert current["observation_revision"] == 0
+            assert current["json_observation"]["objects"]["player"] == [[1, 2, 0]]
+            history = (Path(directory) / "observations" / "history.jsonl").read_text()
+            assert len(history.splitlines()) == 1
         assert [method for _, method, _ in calls] == [
             "initialize",
             "notifications/initialized",
@@ -134,6 +150,7 @@ def certify_cli_protocol() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
 
 def effective_harness(entry: dict) -> vf.Harness:
     route = entry["adapter"]
@@ -204,15 +221,25 @@ async def certify() -> dict:
                     "effective-mcp-pairing",
                     "external-task-boundary",
                     "config-validation",
-                    *(["capability-cli-protocol"] if entry["adapter"] == "cli_gateway" else []),
+                    *(
+                        ["capability-cli-protocol"]
+                        if entry["adapter"] == "cli_gateway"
+                        else []
+                    ),
                     *(["codex-mcp-argv"] if entry["adapter"] == "codex_mcp" else []),
-                    *(["kimi-image-capability"] if entry["adapter"] == "kimi_mcp" else []),
+                    *(
+                        ["kimi-image-capability"]
+                        if entry["adapter"] == "kimi_mcp"
+                        else []
+                    ),
                 ],
                 "status": "certified",
             }
         )
 
-    codex = effective_harness(next(h for h in catalog["harnesses"] if h["id"] == "codex"))
+    codex = effective_harness(
+        next(h for h in catalog["harnesses"] if h["id"] == "codex")
+    )
     runtime = RecordingRuntime()
     trace = vf.Trace(task=vf.TraceTask(type="MazeBenchToolTask", data=task.data))
     await codex.launch(
@@ -260,7 +287,18 @@ async def certify() -> dict:
     assert "mcp__mazebench__observe" in guard_source
     assert "mcp__mazebench__action" in guard_source
     assert "mcp__mazebench__action_sequence" in guard_source
+    assert '"tool_search"' not in guard_source
     assert "External tools are disabled" in guard_source
+    model_catalog = json.loads(
+        next(
+            data.decode()
+            for path, data in runtime.writes.items()
+            if path.startswith(".vf-codex-models-")
+        )
+    )
+    assert model_catalog["models"][0]["slug"] == "openai/gpt-5"
+    assert model_catalog["models"][0]["supports_search_tool"] is False
+    assert any("model_catalog_json" in value for value in runtime.argv)
     assert str(ROOT) not in command
 
     kimi_entry = next(h for h in catalog["harnesses"] if h["id"] == "kimi_code")
@@ -307,7 +345,9 @@ def main() -> None:
     args = parser.parse_args()
     payload = asyncio.run(certify())
     if args.write:
-        args.write.resolve().write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        args.write.resolve().write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
     if args.self_test:
         print(
             f"Prime harness certification ready: {len(payload['harnesses'])} harnesses"

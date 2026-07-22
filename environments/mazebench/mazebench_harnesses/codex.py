@@ -39,6 +39,39 @@ GAME_ONLY_DISABLED_FEATURES = (
 )
 
 
+def _direct_mcp_model_catalog(model: str) -> bytes:
+    return json.dumps(
+        {
+            "models": [
+                {
+                    "slug": model,
+                    "display_name": model,
+                    "description": "MazeBench game-only Codex runtime",
+                    "supported_reasoning_levels": [],
+                    "shell_type": "shell_command",
+                    "visibility": "list",
+                    "supported_in_api": True,
+                    "priority": 1,
+                    "availability_nux": None,
+                    "upgrade": None,
+                    "base_instructions": (
+                        "You are Codex. Follow the user's instructions and use only the "
+                        "supplied game tools."
+                    ),
+                    "supports_reasoning_summaries": False,
+                    "support_verbosity": False,
+                    "default_verbosity": None,
+                    "apply_patch_tool_type": None,
+                    "truncation_policy": {"mode": "bytes", "limit": 10_000},
+                    "supports_parallel_tool_calls": False,
+                    "experimental_supported_tools": [],
+                    "supports_search_tool": False,
+                }
+            ]
+        }
+    ).encode()
+
+
 class MazeBenchCodexHarness(CodexHarness):
     SUPPORTS_MCP = True
 
@@ -81,7 +114,9 @@ class MazeBenchCodexHarness(CodexHarness):
                         or not metadata.startswith("data:image/")
                         or not any(p.lower() == "base64" for p in parameters)
                     ):
-                        raise ValueError("codex image prompts require base64 data:image URLs")
+                        raise ValueError(
+                            "codex image prompts require base64 data:image URLs"
+                        )
                     extension = re.sub(
                         r"[^a-zA-Z0-9]+", "_", media_type.removeprefix("image/")
                     ).strip("_")
@@ -102,6 +137,7 @@ class MazeBenchCodexHarness(CodexHarness):
             for tool in ("start", "observe", "action", "action_sequence")
         ]
         guard_path = f".vf-codex-game-only-{trace.id}.js"
+        model_catalog_path = f".vf-codex-models-{trace.id}.json"
         guard_source = f"""const allowed = new Set({json.dumps(allowed_tools)});
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -120,6 +156,7 @@ process.stdin.on("end", () => {{
 }});
 """
         await runtime.write(guard_path, guard_source.encode())
+        await runtime.write(model_catalog_path, _direct_mcp_model_catalog(ctx.model))
         guard_command = json.dumps(f"node {guard_path}")
         tool_config = [
             arg
@@ -162,6 +199,8 @@ process.stdin.on("end", () => {{
             "-c",
             "tools.web_search=false",
             "-c",
+            f"model_catalog_json={json.dumps(model_catalog_path)}",
+            "-c",
             f'hooks.PreToolUse=[{{ matcher=".*", hooks=[{{ type="command", command={guard_command}, timeout=5, statusMessage="Enforcing game-only mode" }}] }}]',
             *restricted_features,
             "-c",
@@ -190,14 +229,16 @@ process.stdin.on("end", () => {{
             return await runtime.run_program(argv, env)
         finally:
             try:
-                await runtime.run(["rm", "-f", guard_path], {})
+                await runtime.run(["rm", "-f", guard_path, model_catalog_path], {})
             except Exception:
                 logger.warning("failed to clean up Codex tool guard", exc_info=True)
             if image_args:
                 try:
                     await runtime.run(["rm", "-rf", image_dir], {})
                 except Exception:
-                    logger.warning("failed to clean up Codex prompt images", exc_info=True)
+                    logger.warning(
+                        "failed to clean up Codex prompt images", exc_info=True
+                    )
 
 
 __all__ = ["MazeBenchCodexHarness"]
