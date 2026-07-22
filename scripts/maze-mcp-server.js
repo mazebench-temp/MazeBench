@@ -58,6 +58,7 @@ const WORKER_ONLY = process.env.MAZEBENCH_WORKER_ONLY === "1";
 const SWARM_REQUIRED = process.env.MAZEBENCH_SWARM === "1";
 const MAX_SWARM_WORKERS = Math.min(32, positiveInt(process.env.MAZEBENCH_MAX_SWARM_WORKERS, 8));
 const RESTRICTED_MODE = process.env.MAZEBENCH_RESTRICTED_MODE === "1";
+const AUTO_RUN_TOOLS = !RESTRICTED_MODE && process.env.MAZEBENCH_AUTO_RUN_TOOLS === "1";
 const KIMI_OBSERVE_BREAK_ENABLED = process.env.MAZEBENCH_PROVIDER === "kimi";
 const KIMI_IDENTICAL_ACTION_INTERVAL = 5;
 const HTTP_TOKEN = String(process.env.MAZEBENCH_MCP_HTTP_TOKEN || "");
@@ -606,6 +607,28 @@ const LEAD_TOOLS = [
     }
   },
   {
+    name: "maze_action_sequence",
+    description: "Apply a solver-generated action sequence in order. Returns compact per-step summaries and the final observation by default; optionally returns every intermediate observation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        actions: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+          description: "An ordered action list produced by the saved solver."
+        },
+        include_intermediate_observations: {
+          type: "boolean",
+          default: false,
+          description: "When true, also return every intermediate ASCII board, JSON observation, or vision frame."
+        }
+      },
+      required: ["actions"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "maze_workers",
     description: "List the private maze instances assigned to swarm workers during this run.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
@@ -650,6 +673,23 @@ const WORKER_TOOLS = [
         }
       },
       required: ["action"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "maze_action_sequence",
+    description: "Apply a solver-generated action sequence in order to this worker's private maze. Returns compact summaries and the final observation unless intermediate observations are requested.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        actions: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 }
+        },
+        include_intermediate_observations: { type: "boolean", default: false }
+      },
+      required: ["actions"],
       additionalProperties: false
     }
   },
@@ -735,7 +775,8 @@ function kimiToolName(kind) {
 }
 
 function kimiResultIsTerminal(value, input) {
-  const status = value?.status && typeof value.status === "object" ? value.status : value;
+  const candidate = value?.final_observation || value;
+  const status = candidate?.status && typeof candidate.status === "object" ? candidate.status : candidate;
   if (
     status?.game_won ||
     status?.game_lost ||
@@ -756,7 +797,7 @@ function kimiResultIsTerminal(value, input) {
 function kimiLoopControl(name, value, input, context) {
   if (
     !KIMI_OBSERVE_BREAK_ENABLED ||
-    !["maze_start", "maze_observe", "maze_action"].includes(name) ||
+    !["maze_start", "maze_observe", "maze_action", "maze_action_sequence"].includes(name) ||
     kimiResultIsTerminal(value, input)
   ) {
     return null;
@@ -787,17 +828,43 @@ function ensureWorkerAssignment(context) {
 function normalizedToolCall(name, input = {}, { workerOnly = false } = {}) {
   if (!RESTRICTED_MODE) {
     const allowedNames = new Set(
-      (workerOnly ? WORKER_TOOLS : LEAD_TOOLS).map((tool) => tool.name)
+      toolsFor(workerOnly).map((tool) => tool.name)
     );
     if (!allowedNames.has(name)) throw new Error(`Unknown game control "${name}".`);
     const allowedKeys = name === "maze_action"
       ? new Set(["action"])
+      : name === "maze_action_sequence"
+        ? new Set(["actions", "include_intermediate_observations"])
       : name === "python_exec"
         ? new Set(["code", "timeout_seconds"])
         : new Set();
     const extraKey = Object.keys(input).find((key) => !allowedKeys.has(key));
     if (extraKey) throw new Error(`Unsupported argument "${extraKey}" for ${name}.`);
     if (name === "maze_action") return { name, input: { action: input.action } };
+    if (name === "maze_action_sequence") {
+      if (!Array.isArray(input.actions) || input.actions.length < 1) {
+        throw new Error("actions must contain at least one item.");
+      }
+      const actions = input.actions.map((action, index) => {
+        if (typeof action !== "string" || !action.trim()) {
+          throw new Error(`actions[${index}] must be a non-empty string.`);
+        }
+        return action.trim();
+      });
+      if (
+        input.include_intermediate_observations !== undefined &&
+        typeof input.include_intermediate_observations !== "boolean"
+      ) {
+        throw new Error("include_intermediate_observations must be a boolean.");
+      }
+      return {
+        name,
+        input: {
+          actions,
+          include_intermediate_observations: input.include_intermediate_observations === true
+        }
+      };
+    }
     if (name === "python_exec") {
       const timeoutSeconds = input.timeout_seconds === undefined ? 10 : Number(input.timeout_seconds);
       if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60) {
@@ -819,6 +886,93 @@ function normalizedToolCall(name, input = {}, { workerOnly = false } = {}) {
   };
 }
 
+function sequenceStopReason(value, effectiveInput) {
+  const status = value?.status && typeof value.status === "object" ? value.status : value;
+  if (status?.user_pause_requested || (!effectiveInput?.clone_id && primaryPauseBoundary())) {
+    return "user_paused";
+  }
+  if (status?.game_won || status?.solved) return "game_won";
+  if (status?.game_lost || status?.player_dead) return "player_dead";
+  if (status?.quit) return "quit";
+  if (
+    PRIMARY_MOVE_BUDGET != null &&
+    !effectiveInput?.clone_id &&
+    sessionActionCount(PRIMARY_SESSION) - PRIMARY_INITIAL_ACTION_COUNT >= PRIMARY_MOVE_BUDGET
+  ) {
+    return "move_budget_exhausted";
+  }
+  return "";
+}
+
+function runActionSequence(input, context) {
+  if (!AUTO_RUN_TOOLS) throw new Error("Auto-run tools are not enabled for this run.");
+  const workerOnly = Boolean(context?.workerOnly);
+  const cloneId = workerOnly ? ensureWorkerAssignment(context) : "";
+  const effectiveInput = cloneId ? { ...input, clone_id: cloneId } : input;
+  const observations = [];
+  const steps = [];
+  let attemptedCount = 0;
+  let stopReason = "completed";
+
+  for (let index = 0; index < input.actions.length; index += 1) {
+    const action = input.actions[index];
+    const before = actionCountForInput(effectiveInput);
+    attemptedCount += 1;
+    try {
+      const observation = callTool("maze_action", { action }, context);
+      const after = actionCountForInput(effectiveInput);
+      observations.push(observation);
+      steps.push({
+        index: index + 1,
+        action,
+        recorded: after > before,
+        action_count_before: before,
+        action_count_after: after,
+        status: compactStatus(observation)
+      });
+      const terminalReason = sequenceStopReason(observation, effectiveInput);
+      if (terminalReason) {
+        stopReason = terminalReason;
+        break;
+      }
+    } catch (error) {
+      const after = actionCountForInput(effectiveInput);
+      stopReason = "error";
+      steps.push({
+        index: index + 1,
+        action,
+        recorded: after > before,
+        action_count_before: before,
+        action_count_after: after,
+        error: safeErrorMessage(error),
+        status: after > before ? lastStatusForInput(effectiveInput) : null
+      });
+      break;
+    }
+  }
+
+  const completedCount = observations.length;
+  const finalObservation = observations.at(-1) || null;
+  return {
+    requested_count: input.actions.length,
+    attempted_count: attemptedCount,
+    completed_count: completedCount,
+    stopped_early: completedCount < input.actions.length,
+    stop_reason: stopReason,
+    steps,
+    ...(input.include_intermediate_observations
+      ? {
+          intermediate_observations: observations.slice(0, -1).map((observation, index) => ({
+            index: index + 1,
+            action: input.actions[index],
+            observation
+          }))
+        }
+      : {}),
+    final_observation: finalObservation
+  };
+}
+
 function callTool(name, input = {}, context = createRequestContext({ workerOnly: WORKER_ONLY })) {
   const workerOnly = Boolean(context?.workerOnly);
   const cloneId = workerOnly ? ensureWorkerAssignment(context) : "";
@@ -831,6 +985,9 @@ function callTool(name, input = {}, context = createRequestContext({ workerOnly:
   }
   if (name === "maze_observe") {
     return runHelper(["observe", "--state", sessionFor(effectiveInput.clone_id)]);
+  }
+  if (name === "maze_action_sequence") {
+    return runActionSequence(input, context);
   }
   if (name === "maze_action") {
     if (!String(input.action || "").trim()) throw new Error("action is required.");
@@ -908,10 +1065,15 @@ function failure(send, id, error) {
 
 function toolsFor(workerOnly) {
   if (RESTRICTED_MODE) return RESTRICTED_TOOLS;
-  if (workerOnly) return SWARM_REQUIRED ? WORKER_TOOLS : [];
-  return SWARM_REQUIRED
+  if (workerOnly) {
+    return SWARM_REQUIRED
+      ? WORKER_TOOLS.filter((tool) => AUTO_RUN_TOOLS || tool.name !== "maze_action_sequence")
+      : [];
+  }
+  const tools = SWARM_REQUIRED
     ? LEAD_TOOLS
     : LEAD_TOOLS.filter((tool) => tool.name !== "maze_workers");
+  return tools.filter((tool) => AUTO_RUN_TOOLS || tool.name !== "maze_action_sequence");
 }
 
 function publicToolValue(value) {
@@ -942,16 +1104,41 @@ function publicToolValue(value) {
   return printable;
 }
 
+function observationFramePath(value) {
+  if (!value || typeof value !== "object") return "";
+  const status = value.status && typeof value.status === "object" ? value.status : value;
+  return String(status.frame_image || value.frame_image || "");
+}
+
+function frameEntries(value) {
+  if (!value || typeof value !== "object") return [];
+  if (Object.prototype.hasOwnProperty.call(value, "final_observation")) {
+    const entries = Array.isArray(value.intermediate_observations)
+      ? value.intermediate_observations.map((entry) => ({
+          framePath: observationFramePath(entry.observation)
+        }))
+      : [];
+    entries.push({
+      framePath: observationFramePath(value.final_observation)
+    });
+    return entries;
+  }
+  return [{ framePath: observationFramePath(value) }];
+}
+
 function toolContent(value, control = null) {
   const printable = publicToolValue(value);
   if (control && printable && typeof printable === "object" && !Array.isArray(printable)) {
     Object.assign(printable, control);
   }
   const content = [{ type: "text", text: JSON.stringify(printable, null, 2) }];
-  const framePath = value && typeof value === "object" ? String(value.frame_image || "") : "";
-  if (framePath) {
-    const resolved = path.resolve(framePath);
+  const seen = new Set();
+  for (const entry of frameEntries(value)) {
+    if (!entry.framePath) continue;
+    const resolved = path.resolve(entry.framePath);
     if (resolved.startsWith(`${RUN_DIR}${path.sep}`) && fs.existsSync(resolved)) {
+      if (seen.has(resolved)) continue;
+      seen.add(resolved);
       content.push({
         type: "image",
         data: fs.readFileSync(resolved).toString("base64"),
@@ -1051,6 +1238,7 @@ async function handle(
       actor: workerOnly ? "worker" : "lead",
       clone_id: String(effectiveInput.clone_id || ""),
       action: String(input.action || ""),
+      ...(name === "maze_action_sequence" ? { actions: input.actions } : {}),
       started_at: startedAt.toISOString(),
       status: "running",
       move_calls: 0,
@@ -1072,6 +1260,8 @@ async function handle(
         resetKimiActionStreak(context);
       } else if (KIMI_OBSERVE_BREAK_ENABLED && name === "maze_action") {
         noteKimiAction(context, input.action);
+      } else if (KIMI_OBSERVE_BREAK_ENABLED && name === "maze_action_sequence") {
+        resetKimiActionStreak(context);
       }
       const value = callTool(name, input, context);
       success(
@@ -1090,11 +1280,16 @@ async function handle(
         actor: workerOnly ? "worker" : "lead",
         clone_id: String(effectiveInput.clone_id || ""),
         action: String(input.action || ""),
+        ...(name === "maze_action_sequence" ? { actions: input.actions } : {}),
         started_at: startedAt.toISOString(),
         completed_at: completedAt.toISOString(),
         duration_ms: completedAt.getTime() - startedAt.getTime(),
         status: "completed",
-        move_calls: name === "maze_action" ? 1 : 0,
+        move_calls: name === "maze_action"
+          ? 1
+          : name === "maze_action_sequence"
+            ? Math.max(0, Number(value.attempted_count) || 0)
+            : 0,
         moves_before: movesBefore,
         moves_after: movesAfter,
         ...(name === "python_exec"
@@ -1132,6 +1327,30 @@ async function handle(
         };
         appendJsonLine(INSTANCE_EVENTS_LOG, instanceEvent);
         updateInstanceTelemetry(effectiveInput, instanceEvent);
+      } else if (name === "maze_action_sequence" && (!effectiveInput.clone_id || instanceMetadata)) {
+        for (const step of value.steps || []) {
+          const instanceEvent = {
+            type: "instance.action",
+            id: `${activityId}:${step.index}`,
+            at: completedAt.toISOString(),
+            instance_id: instanceId,
+            parent_instance_id: instanceMetadata?.parent_instance_id || null,
+            owner_kind: instanceMetadata?.owner_kind || (workerOnly ? "subagent" : "lead"),
+            owner_agent_id: instanceMetadata?.owner_agent_id || "",
+            action: String(step.action || ""),
+            attempted: true,
+            applied: Boolean(step.recorded),
+            action_count_before: Math.max(0, Number(step.action_count_before) || 0),
+            action_count_after: Math.max(0, Number(step.action_count_after) || 0),
+            own_action_count: effectiveInput.clone_id
+              ? Math.max(0, Number(step.action_count_after) - Number(instanceMetadata?.fork_action_count || 0))
+              : Math.max(0, Number(step.action_count_after) || 0),
+            ...(step.error ? { error: String(step.error) } : {}),
+            status: step.status || null
+          };
+          appendJsonLine(INSTANCE_EVENTS_LOG, instanceEvent);
+          updateInstanceTelemetry(effectiveInput, instanceEvent);
+        }
       }
     } catch (error) {
       const errorMessage = safeErrorMessage(error);
@@ -1156,11 +1375,16 @@ async function handle(
         actor: workerOnly ? "worker" : "lead",
         clone_id: String(effectiveInput.clone_id || ""),
         action: String(input.action || ""),
+        ...(name === "maze_action_sequence" ? { actions: input.actions } : {}),
         started_at: startedAt.toISOString(),
         completed_at: completedAt.toISOString(),
         duration_ms: completedAt.getTime() - startedAt.getTime(),
         status: "failed",
-        move_calls: name === "maze_action" ? 1 : 0,
+        move_calls: name === "maze_action"
+          ? 1
+          : name === "maze_action_sequence"
+            ? Math.max(0, movesAfter - movesBefore)
+            : 0,
         moves_before: movesBefore,
         moves_after: movesAfter,
         error: errorMessage,

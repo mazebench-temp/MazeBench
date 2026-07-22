@@ -116,7 +116,7 @@
     hideNames: true,
     hideNamesSeed: "1",
     toolUse: null,
-    reverseEngineering: false,
+    autoRunTools: false,
     orchestration: null,
     unlimited: false,
     allowQuit: null,
@@ -1501,12 +1501,12 @@
     const picker = document.getElementById("tool-use-picker");
     picker?.classList.toggle("has-selection", Boolean(state.toolUse));
     picker?.classList.toggle("is-second", state.toolUse === "offline");
-    const reverseOption = document.getElementById("reverse-engineering-option");
-    const reverseInput = document.getElementById("run-reverse-engineering");
-    if (reverseOption) reverseOption.hidden = state.toolUse !== "offline";
-    if (reverseInput) {
-      reverseInput.disabled = state.toolUse !== "offline";
-      reverseInput.checked = state.toolUse === "offline" && state.reverseEngineering;
+    const autoRunOption = document.getElementById("auto-run-tools-option");
+    const autoRunInput = document.getElementById("run-auto-run-tools");
+    if (autoRunOption) autoRunOption.hidden = state.toolUse !== "offline";
+    if (autoRunInput) {
+      autoRunInput.disabled = state.toolUse !== "offline";
+      autoRunInput.checked = state.toolUse === "offline" && state.autoRunTools;
     }
   }
 
@@ -1516,7 +1516,7 @@
       state.orchestration = next === "read-only" || state.harness === "kimi-code" ? "single" : null;
     }
     state.toolUse = next;
-    if (next !== "offline") state.reverseEngineering = false;
+    if (next !== "offline") state.autoRunTools = false;
     syncToolUsePicker();
     syncOrchestrationPicker();
     syncRunSettingCards();
@@ -1733,7 +1733,7 @@
           video: false,
           tools: state.toolUse === "offline",
           tool_use: state.toolUse,
-          reverse_engineering: state.toolUse === "offline" && state.reverseEngineering,
+          auto_run_tools: state.toolUse === "offline" && state.autoRunTools,
           swarm: state.harness !== "kimi-code" && state.orchestration === "swarm"
         };
 
@@ -2210,8 +2210,8 @@
   document.querySelectorAll(".segmented__option[data-tool-use]").forEach((option) => {
     option.addEventListener("click", () => setToolUse(option.dataset.toolUse));
   });
-  document.getElementById("run-reverse-engineering")?.addEventListener("change", (event) => {
-    state.reverseEngineering = state.toolUse === "offline" && event.currentTarget.checked;
+  document.getElementById("run-auto-run-tools")?.addEventListener("change", (event) => {
+    state.autoRunTools = state.toolUse === "offline" && event.currentTarget.checked;
     syncToolUsePicker();
   });
   document.querySelectorAll(".segmented__option[data-orchestration]").forEach((option) => {

@@ -22,7 +22,7 @@
 //   tool_use     read-only (game controls only) | offline (isolated Python)
 //                                                            (default read-only)
 //   tools        legacy boolean alias (false=game-only, true=offline)
-//   reverse_engineering  require versioned simulator + BFS/A* planning (tools only)
+//   auto_run_tools      allow saved solvers to submit action sequences (tools only)
 //   swarm        true lets an offline lead spawn identical-model workers
 //   max_swarm_workers  hard cap on workers/private instances   (default 8)
 //   mode         text (ASCII) | json (structured room) | vision (PNG) (default text)
@@ -267,49 +267,29 @@ function timestampSlug() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
 }
 
-function reverseEngineeringInstructions(config) {
-  if (config.toolUse !== "offline" || !config.reverseEngineering) return "";
-  const gameId = String(config.gameId || "game")
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "") || "game";
-  const versionsDirectory = `${gameId}_versions`;
-  return `REVERSE ENGINEERING HARNESS IS ENABLED. Your gameplay must be driven
-by a versioned Python simulation built only from observations and interactions
-in this run. The games are simple and should usually be solved in a few moves,
-but every visible object does something: hypothesize its behavior and encode it.
-Generalize mechanics only when the evidence supports it.
+function autoRunToolsInstructions(config) {
+  if (config.toolUse !== "offline" || !config.autoRunTools) return "";
+  return `AUTO-RUN TOOLS HARNESS IS ENABLED. You additionally have
+maze_action_sequence for quickly applying a route produced by a saved Python
+planner or solver.
 
-Development strategy:
-- Create ${versionsDirectory}/ in the persistent scratch workspace.
-- Save every simulator revision as a new file in that folder: sim_v1.py,
-  sim_v2.py, sim_v3.py, and so on. Never overwrite or delete an older version.
-- Record enough observed input/output fixtures to regression-test every version.
-- The simulator must model game state and expose a prediction function plus a
-  BFS or A* planner with stronger heuristics when they are justified.
+- Call maze_action_sequence only with an ordered action list that your saved
+  Python program actually generated. Review the route once before submitting it.
+- If that saved program produces two or more moves, use maze_action_sequence for
+  the entire remaining route instead of replaying those moves one call at a time.
+- A single call may contain the solver's full route. Each action is still validated,
+  budgeted, persisted, and logged exactly like an individual maze_action.
+- The sequence stops immediately on a terminal state, death, pause, exhausted
+  move budget, rejected action, or other error, and reports how far it got.
+- By default it returns compact per-action summaries plus only the final full
+  observation. Set include_intermediate_observations=true when you specifically
+  need every intermediate ASCII board, JSON observation, or vision frame.
+- After the call, inspect the final observation and the ordered summaries. If
+  they disagree with the solver's prediction, update and rerun the saved program
+  before submitting another route.
 
-Mandatory gameplay/modeling loop:
-1. From the current observation, update the current simulated state.
-2. Run the latest saved simulator and BFS/A* planner. Before every non-camera
-   game action, the planner MUST return that exact action as its next move.
-3. Save the simulator's predicted next board/state, then send exactly one live
-   game action through maze_action.
-4. Observe and compare the actual resulting board/frame/state with the saved
-   prediction, including animation when present. For vision, inspect the actual
-   image and compare all modeled objects, positions, and state transitions.
-5. If prediction matches, retain the current version and plan again.
-6. If prediction fails, explain the mismatch, form a mechanics hypothesis, and
-   create the next sim_vN.py. The new version must reproduce every prior fixture
-   and the newest transition before it may choose another non-camera action.
-7. If the planner finds no valid route to victory, send reset, rebuild the
-   simulated state from the reset observation, and search again.
-
-Do not test movement actions by intuition. Except for camera rotation actions,
-you MUST obey the saved program's planned move without exception. If a planned
-move seems unwise, improve the program when an observed prediction mismatch
-permits a revision; do not substitute your own move. Never create a helper that
-calls a live game API or sends game actions. Network access is blocked, and each
-live action must remain one explicit maze_action tool call.`;
+Never create a Python helper that calls a live game API or sends game actions.
+Only maze_action and maze_action_sequence may change the live game.`;
 }
 
 function buildMcpPrompt(config) {
@@ -371,7 +351,7 @@ files, do not run shell commands, and do not spawn any sub-agents. This is
 TOOLS-OFF mode. Do not access repositories, connectors, resource listings,
 prior-run memory, workers, or private branches. Use only the three game controls
 named below and your current conversation memory.`;
-  const reverseEngineering = reverseEngineeringInstructions(config);
+  const autoRunTools = autoRunToolsInstructions(config);
   const firstStep = config.resume || config.seed
     ? `Call ${controls.observe} first. This is the same primary game; do not call ${controls.start}.`
     : `Call ${controls.start} exactly once as your first game-control call.`;
@@ -431,7 +411,7 @@ session JSON directly or create, select, or branch game instances yourself.`;
 ${observation}
 ${movementFeedback}
 ${capability}
-${reverseEngineering}
+${autoRunTools}
 ${swarm}
 ${quitPolicy}
 ${kimiObservePolicy}
@@ -440,10 +420,10 @@ ${firstStep}
 
 ${budgetInstruction} Do not
 stop after the first observation while budget remains. Before every primary
-${controls.action}, write one short sentence explaining the choice. Valid action
+${controls.action}${config.autoRunTools ? " or maze_action_sequence call" : ""}, write one short sentence explaining the choice. Valid action
 strings include ${validActions}.
 
-After every action, inspect the returned ${config.mode === "vision" ? "frame and status" : config.mode === "json" ? "JSON observation and status" : "ASCII board"} before choosing the next move. Collect as many
+After every ${config.autoRunTools ? "maze_action or maze_action_sequence call" : "action"}, inspect the returned ${config.autoRunTools ? "final " : ""}${config.mode === "vision" ? "frame and status" : config.mode === "json" ? "JSON observation and status" : "ASCII board"} before choosing the next move. Collect as many
 unique gems as possible. If the player dies, recover with undo, reset, or a room
 change. Scoring is runner-only; do not attempt to access a scorecard. When done,
 give a one-line summary of the route and gems collected.`;
@@ -584,6 +564,7 @@ function mcpEnvironment(config, workerOnly = false) {
     MAZEBENCH_HIDE_NAMES_SEED: config.hideNamesSeed || "",
     MAZEBENCH_PROVIDER: config.model,
     MAZEBENCH_RESTRICTED_MODE: config.toolUse === "read-only" ? "1" : "0",
+    MAZEBENCH_AUTO_RUN_TOOLS: config.autoRunTools ? "1" : "0",
     MAZEBENCH_VISION_WIDTH: String(config.visionWidth),
     MAZEBENCH_VISION_HEIGHT: String(config.visionHeight),
     MAZEBENCH_VISION_VIEW: config.visionView || "",
@@ -622,10 +603,15 @@ function codexMcpConfigArgs(config) {
   const restricted = config.toolUse === "read-only";
   const prefix = `mcp_servers.${restricted ? "game" : "mazebench"}`;
   const enabledTools = restricted
-    ? '["game_start","game_observe","game_action"]'
-    : config.swarm
-      ? '["maze_start","maze_observe","maze_action","maze_workers","python_exec"]'
-      : '["maze_start","maze_observe","maze_action","python_exec"]';
+    ? JSON.stringify(["game_start", "game_observe", "game_action"])
+    : JSON.stringify([
+        "maze_start",
+        "maze_observe",
+        "maze_action",
+        ...(config.autoRunTools ? ["maze_action_sequence"] : []),
+        ...(config.swarm ? ["maze_workers"] : []),
+        "python_exec"
+      ]);
   if (config.mcpUrl) {
     return [
       "-c", `${prefix}.url=${tomlString(config.mcpUrl)}`,
@@ -669,7 +655,7 @@ function codexWorkerConfig(config, name) {
       (offline
         ? "Explore only your private maze, use python_exec for isolated local computation, and report findings to the lead. " +
           "Each call starts a fresh Python process but relative-path files persist. Before your first maze_action, create and execute a reusable .py program in that workspace. " +
-          (config.reverseEngineering ? `${reverseEngineeringInstructions(config)} ` : "")
+          (config.autoRunTools ? `${autoRunToolsInstructions(config)} ` : "")
         : "Explore only your private maze without writing files or executing general-purpose code, and report findings to the lead. ") +
       "Never act on the primary maze and never change your model or reasoning effort."
     )}`,
@@ -691,9 +677,13 @@ function codexWorkerConfig(config, name) {
           `env = { ${Object.entries(mcpEnvironment(config, true)).map(([key, value]) => `${key} = ${tomlString(value)}`).join(", ")} }`
         ]),
     'default_tools_approval_mode = "approve"',
-    `enabled_tools = ${offline
-      ? '["maze_start","maze_observe","maze_action","python_exec"]'
-      : '["maze_start","maze_observe","maze_action"]'}`,
+    `enabled_tools = ${JSON.stringify([
+      "maze_start",
+      "maze_observe",
+      "maze_action",
+      ...(offline && config.autoRunTools ? ["maze_action_sequence"] : []),
+      ...(offline ? ["python_exec"] : [])
+    ])}`,
     "startup_timeout_sec = 15",
     "tool_timeout_sec = 300"
   );
@@ -748,6 +738,7 @@ function claudeSandboxSettings(config) {
         "mcp__mazebench__maze_start",
         "mcp__mazebench__maze_observe",
         "mcp__mazebench__maze_action",
+        ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
         "mcp__mazebench__python_exec",
         ...(config.swarm ? ["mcp__mazebench__maze_workers"] : [])
       ]
@@ -761,6 +752,7 @@ function claudeSandboxSettings(config) {
         "mcp__mazebench_worker__maze_start",
         "mcp__mazebench_worker__maze_observe",
         "mcp__mazebench_worker__maze_action",
+        ...(offline && config.autoRunTools ? ["mcp__mazebench_worker__maze_action_sequence"] : []),
         ...(offline ? ["mcp__mazebench_worker__python_exec"] : [])
       ]
     : [];
@@ -824,7 +816,7 @@ function claudeAgents(config) {
       (offline
         ? "You may use python_exec for isolated computation in your private scratch workspace. " +
           "Each call starts a fresh Python process but relative-path files persist. Before your first maze_action, create and execute a reusable .py program in that workspace. " +
-          (config.reverseEngineering ? `${reverseEngineeringInstructions(config)} ` : "")
+          (config.autoRunTools ? `${autoRunToolsInstructions(config)} ` : "")
         : "Do not write files or execute general-purpose code. ") +
       "Never act on the primary maze and never switch model or reasoning effort.",
     model: config.modelName || "inherit",
@@ -834,6 +826,7 @@ function claudeAgents(config) {
       "mcp__mazebench_worker__maze_start",
       "mcp__mazebench_worker__maze_observe",
       "mcp__mazebench_worker__maze_action",
+      ...(offline && config.autoRunTools ? ["mcp__mazebench_worker__maze_action_sequence"] : []),
       ...(offline ? ["mcp__mazebench_worker__python_exec"] : [])
     ],
     mcpServers: [{
@@ -863,6 +856,7 @@ function kimiAllowedTools(config) {
         "mcp__mazebench__maze_start",
         "mcp__mazebench__maze_observe",
         "mcp__mazebench__maze_action",
+        ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
         "mcp__mazebench__python_exec"
       ];
 }
@@ -959,7 +953,13 @@ function kimiMcpConfig(config) {
   const name = restricted ? "game" : "mazebench";
   const enabledTools = restricted
     ? ["game_start", "game_observe", "game_action"]
-    : ["maze_start", "maze_observe", "maze_action", "python_exec"];
+    : [
+        "maze_start",
+        "maze_observe",
+        "maze_action",
+        ...(config.autoRunTools ? ["maze_action_sequence"] : []),
+        "python_exec"
+      ];
   return JSON.stringify({
     mcpServers: {
       [name]: {
@@ -1276,6 +1276,7 @@ function agentCommand(config, prompt) {
             "mcp__mazebench__maze_start",
             "mcp__mazebench__maze_observe",
             "mcp__mazebench__maze_action",
+            ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
             "mcp__mazebench__python_exec",
             ...(config.swarm ? ["mcp__mazebench__maze_workers"] : [])
           ];
@@ -1446,13 +1447,38 @@ function parsedToolInput(input) {
 }
 
 function actionsFromToolCall(name, input) {
-  if (!/(?:^|__)(?:maze|game)_action$/.test(String(name || ""))) return [];
+  const toolName = String(name || "");
+  const singleAction = /(?:^|__)(?:maze|game)_action$/.test(toolName);
+  const actionSequence = /(?:^|__)(?:maze|game)_action_sequence$/.test(toolName);
+  if (!singleAction && !actionSequence) return [];
   const args = parsedToolInput(input);
   // Private worker explorations are intentionally absent from the lead run's
   // move counter, token chart, and reasoning feed.
   if (args.clone_id) return [];
+  if (actionSequence) {
+    return Array.isArray(args.actions)
+      ? args.actions.map((action) => String(action || "").trim()).filter(Boolean)
+      : [];
+  }
   const action = String(args.action || "").trim();
   return action ? [action] : [];
+}
+
+function isActionSequenceTool(name) {
+  return /(?:^|__)(?:maze|game)_action_sequence$/.test(String(name || ""));
+}
+
+function completedSequenceCount(output) {
+  const match = String(output || "").match(/"completed_count"\s*:\s*(\d+)/);
+  return match ? Math.max(0, Number(match[1]) || 0) : null;
+}
+
+function executedToolActions(actions, results, output, sequence) {
+  if (sequence) {
+    const completedCount = completedSequenceCount(output);
+    if (completedCount != null) return actions.slice(0, completedCount);
+  }
+  return results.length ? actions.slice(0, results.length) : actions;
 }
 
 function resultShape(status) {
@@ -1493,7 +1519,14 @@ function resultsFromOutput(output) {
       depth -= 1;
       if (depth === 0 && start >= 0) {
         try {
-          values.push(resultShape(JSON.parse(raw.slice(start, index + 1))));
+          const value = JSON.parse(raw.slice(start, index + 1));
+          if (Array.isArray(value?.steps) && Number.isFinite(Number(value.completed_count))) {
+            values.push(...value.steps
+              .slice(0, Math.max(0, Number(value.completed_count) || 0))
+              .map((step) => resultShape(step?.status || {})));
+          } else {
+            values.push(resultShape(value));
+          }
         } catch (_error) {
           /* skip non-status JSON */
         }
@@ -1561,8 +1594,10 @@ function distillCodexEvents(raw) {
       transcript.push(`[tool] ${name || "mcp"} ${JSON.stringify(input)}`);
       if (actions.length && item.status !== "failed" && !item.error) {
         const reasoning = commentary.join("\n\n").trim();
-        const results = resultsFromOutput(toolResultText(item.result || item.output || item.content));
-        actions.forEach((action, index) => {
+        const output = toolResultText(item.result || item.output || item.content);
+        const results = resultsFromOutput(output);
+        const executed = executedToolActions(actions, results, output, isActionSequenceTool(name));
+        executed.forEach((action, index) => {
           move += 1;
           entries.push({ move, action, reasoning, timestamp, ...(results[index] || {}) });
         });
@@ -1633,6 +1668,7 @@ function distillClaudeEvents(raw) {
           if (reasoning) transcript.push(`[reasoning] ${reasoning}`);
           if (block.id) pending.set(block.id, {
             actions,
+            sequence: isActionSequenceTool(block.name),
             reasoning,
             timestamp: event._mazebench_received_at || event.timestamp || null
           });
@@ -1650,7 +1686,7 @@ function distillClaudeEvents(raw) {
             continue;
           }
           const results = resultsFromOutput(output);
-          const executed = results.length ? batch.actions.slice(0, results.length) : batch.actions;
+          const executed = executedToolActions(batch.actions, results, output, batch.sequence);
           const timestamp = event._mazebench_received_at || event.timestamp || batch.timestamp || null;
           executed.forEach((action, index) => {
             move += 1;
@@ -1712,6 +1748,7 @@ function distillKimiEvents(raw) {
         if (actions.length && call.id) {
           pending.set(call.id, {
             actions,
+            sequence: isActionSequenceTool(name),
             reasoning: commentary.trim(),
             timestamp: event._mazebench_received_at || event.timestamp || null
           });
@@ -1729,7 +1766,7 @@ function distillKimiEvents(raw) {
       const failed = event.is_error === true || event.error;
       if (!failed) {
         const results = resultsFromOutput(output);
-        const executed = results.length ? batch.actions.slice(0, results.length) : batch.actions;
+        const executed = executedToolActions(batch.actions, results, output, batch.sequence);
         const timestamp = event._mazebench_received_at || event.timestamp || batch.timestamp || null;
         executed.forEach((action, index) => {
           move += 1;
@@ -2102,7 +2139,7 @@ function runInContainer(config, raw) {
   // path options (out/session) are intentionally dropped; the inner run writes
   // under the mounted /app/outputs/maze-local.
   const forwardKeys = [
-    "model", "moves", "unlimited", "allow_quit", "mode", "omniscient", "hide_names", "hide_names_seed", "tools", "tool_use", "reverse_engineering", "swarm", "max_swarm_workers", "game", "level", "view", "yaw", "gems",
+    "model", "moves", "unlimited", "allow_quit", "mode", "omniscient", "hide_names", "hide_names_seed", "tools", "tool_use", "auto_run_tools", "swarm", "max_swarm_workers", "game", "level", "view", "yaw", "gems",
     "video", "no_video", "fast", "draft", "width", "height", "fps",
     "vision_width", "vision_height", "vision_view", "model_name", "llm",
     "reasoning", "effort", "codex_fast", "resume", "seed", "fork_session", "session_id",
@@ -2553,7 +2590,7 @@ async function main() {
       ? "offline"
       : "read-only";
   const requestedSwarm = toolUse === "offline" && isTruthy(raw.swarm, false);
-  const reverseEngineering = toolUse === "offline" && isTruthy(raw.reverse_engineering, false);
+  const autoRunTools = toolUse === "offline" && isTruthy(raw.auto_run_tools, false);
   if (model === "kimi" && requestedSwarm) {
     throw new Error("Kimi Code local runs currently support a single isolated agent, not swarm workers.");
   }
@@ -2598,7 +2635,7 @@ async function main() {
       : "",
     tools: toolUse !== "read-only",
     toolUse,
-    reverseEngineering,
+    autoRunTools,
     swarm,
     maxSwarmWorkers: Math.min(
       32,

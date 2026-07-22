@@ -984,9 +984,9 @@ function createPageRenderer({
                   <button type="button" class="segmented__option" data-tool-use="read-only" aria-pressed="false"><span class="segmented__icon">NO</span><span>No Tools</span></button>
                   <button type="button" class="segmented__option" data-tool-use="offline" aria-pressed="false" title="Isolated Python scratchpad; no host files or network"><span class="segmented__icon">PY</span><span>Tools</span></button>
                 </div>
-                <div id="reverse-engineering-option" class="tool-use-options" hidden>
-                  <label class="switch reverse-engineering-toggle"><input id="run-reverse-engineering" type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Reverse Engineering Harness</span></label>
-                  <p>Requires versioned Python simulators, prediction checks, and BFS/A* planning before movement.</p>
+                <div id="auto-run-tools-option" class="tool-use-options" hidden>
+                  <label class="switch auto-run-tools-toggle"><input id="run-auto-run-tools" type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Auto-run tools</span></label>
+                  <p>Lets a saved solver submit its full move sequence; returns the final observation by default.</p>
                 </div>
               </article>
               <article class="setting-card setting-card--orchestration is-gated" inert aria-hidden="true">
