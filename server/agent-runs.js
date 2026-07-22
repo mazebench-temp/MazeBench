@@ -683,7 +683,18 @@ function createAgentRunService({
   }
 
   function agentWorkspaceRootFor(runId) {
-    const key = crypto.createHash("sha256").update(runDirFor(runId)).digest("hex").slice(0, 24);
+    const runDir = runDirFor(runId);
+    let workspaceIdentity = runDir;
+    try {
+      // A development server may run from a temporary merged checkout whose
+      // outputs directory is a symlink to the canonical repository outputs.
+      // The runner hashes the canonical run directory, so the UI must do the
+      // same or it will report an empty workspace even though files still exist.
+      workspaceIdentity = fs.realpathSync(runDir);
+    } catch (_error) {
+      /* an incomplete/deleted run has no workspace to inspect */
+    }
+    const key = crypto.createHash("sha256").update(workspaceIdentity).digest("hex").slice(0, 24);
     return path.join(os.tmpdir(), "mazebench-agent-workspaces", key);
   }
 

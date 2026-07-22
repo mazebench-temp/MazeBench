@@ -8,6 +8,8 @@ const { createAgentRunService } = require("../server/agent-runs");
 
 const projectRoot = path.join(__dirname, "..");
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-tools-workspace-"));
+const serviceRootDir = `${rootDir}-symlink`;
+fs.symlinkSync(rootDir, serviceRootDir, "dir");
 const workspaceRoots = [];
 
 function loadJson(filePath, fallback) {
@@ -24,7 +26,7 @@ const service = createAgentRunService({
   getGame: () => ({ id: "maze", name: "Maze", worldMap: { levels: [] } }),
   buildWorlds: { countWorldGems: () => 0 },
   loadJson,
-  rootDir,
+  rootDir: serviceRootDir,
   worldMaps: {
     defaultLevelIdForGame: () => "level_HxI",
     isMazeWorldLevelId: () => true
@@ -54,7 +56,7 @@ function prepareRun(runId, model = "codex") {
     mode: "text",
     launch_params: { tool_use: "offline", tools: true }
   }, null, 2)}\n`);
-  const key = crypto.createHash("sha256").update(runDir).digest("hex").slice(0, 24);
+  const key = crypto.createHash("sha256").update(fs.realpathSync(runDir)).digest("hex").slice(0, 24);
   const workspaceRoot = path.join(os.tmpdir(), "mazebench-agent-workspaces", key);
   workspaceRoots.push(workspaceRoot);
   return { runDir, workspaceRoot, workspace: path.join(workspaceRoot, "workspace") };
@@ -216,6 +218,7 @@ try {
   assert.match(router, /segments\[5\] === "file"/);
 } finally {
   workspaceRoots.forEach((workspaceRoot) => fs.rmSync(workspaceRoot, { recursive: true, force: true }));
+  fs.rmSync(serviceRootDir, { force: true });
   fs.rmSync(rootDir, { recursive: true, force: true });
 }
 
