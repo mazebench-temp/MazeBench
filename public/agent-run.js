@@ -1170,14 +1170,14 @@
       }
       const container = configuredFlag(params, "container", run.container !== false);
       const toolUse = String(configuredValue(params, "tool_use", run.tool_use || "read-only"));
-      const reverseEngineering = configuredFlag(params, "reverse_engineering", run.reverse_engineering);
+      const autoRunTools = configuredFlag(params, "auto_run_tools", run.auto_run_tools);
       const swarm = configuredFlag(params, "swarm", run.swarm);
       items.push(
         ["Isolation", container ? "Docker" : "Native sandbox"],
         ["Tool use", toolUse === "offline" ? "[CLI] Tools" : "No Tools"]
       );
       if (toolUse === "offline") {
-        items.push(["Reverse engineering", reverseEngineering ? "On" : "Off", reverseEngineering]);
+        items.push(["Auto-run tools", autoRunTools ? "On" : "Off", autoRunTools]);
       }
       items.push(["Orchestration", swarm ? "Swarm" : "Single", swarm]);
     } else if (run.prime_execution) {

@@ -14,6 +14,7 @@ const {
   actionsFromToolCall,
   containerRuntimeMountArgs,
   distillClaudeEvents,
+  distillCodexEvents,
   providerFailureFromEvents,
   resultsFromOutput
 } = require("../scripts/maze-agent-local");
@@ -193,6 +194,10 @@ const codexCall = (verb) => ({
 {
   assert.deepEqual(actionsFromToolCall("mcp__mazebench__maze_action", { action: "left" }), ["left"]);
   assert.deepEqual(
+    actionsFromToolCall("mcp__mazebench__maze_action_sequence", { actions: ["up", "right", "down"] }),
+    ["up", "right", "down"]
+  );
+  assert.deepEqual(
     actionsFromToolCall("mcp__mazebench__maze_action", { action: "right", clone_id: "scout" }),
     [],
     "worker-clone moves do not belong to the lead token chart"
@@ -207,6 +212,18 @@ const codexCall = (verb) => ({
 
   const output = `${JSON.stringify({ moved: true, gem_count: 1, current_room: "level_AxI" })}\n${JSON.stringify({ moved: false, gem_count: 1, current_room: "level_AxI" })}`;
   assert.deepEqual(resultsFromOutput(output).map((result) => result.moved), [true, false]);
+
+  const sequenceOutput = JSON.stringify({
+    requested_count: 3,
+    completed_count: 2,
+    steps: [
+      { action: "up", status: { current_room: "level_HxI", gem_count: 0, game_lost: false } },
+      { action: "right", status: { current_room: "level_HxJ", gem_count: 1, game_lost: false } },
+      { action: "down", error: "budget exhausted", status: null }
+    ],
+    final_observation: { current_room: "level_HxJ", gem_count: 1 }
+  });
+  assert.deepEqual(resultsFromOutput(sequenceOutput).map((result) => result.room), ["level_HxI", "level_HxJ"]);
 
   const distilled = distillClaudeEvents(
     lines(
@@ -229,6 +246,26 @@ const codexCall = (verb) => ({
   );
   assert.deepEqual(mcpDistilled.entries.map((entry) => entry.action), ["up"]);
   assert.equal(mcpDistilled.entries[0].reasoning, "Take the open lane.");
+
+  const sequenceDistilled = distillClaudeEvents(
+    lines(
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "Run the saved route." } } },
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "mcp-sequence", name: "mcp__mazebench__maze_action_sequence", input: { actions: ["up", "right", "down"] } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "mcp-sequence", content: sequenceOutput }] } }
+    )
+  );
+  assert.deepEqual(sequenceDistilled.entries.map((entry) => entry.action), ["up", "right"]);
+  assert.deepEqual(sequenceDistilled.entries.map((entry) => entry.room), ["level_HxI", "level_HxJ"]);
+  assert(sequenceDistilled.entries.every((entry) => entry.reasoning === "Run the saved route."));
+
+  const codexSequenceDistilled = distillCodexEvents(
+    lines(
+      { type: "item.completed", item: { type: "reasoning", text: "Run the saved route." } },
+      { type: "item.completed", item: { type: "mcp_tool_call", name: "maze_action_sequence", arguments: { actions: ["up", "right", "down"] }, status: "completed", result: sequenceOutput } }
+    )
+  );
+  assert.deepEqual(codexSequenceDistilled.entries.map((entry) => entry.action), ["up", "right"]);
+  assert.deepEqual(codexSequenceDistilled.entries.map((entry) => entry.room), ["level_HxI", "level_HxJ"]);
 }
 
 {

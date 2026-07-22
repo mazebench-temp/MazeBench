@@ -49,7 +49,7 @@ const baseConfig = {
   pythonBin: "",
   pythonSandboxStateDir: path.join(workspace, "python-sandbox"),
   reasoning: "low",
-  reverseEngineering: false,
+  autoRunTools: false,
   resume: "",
   seed: false,
   sessionFile: path.join(workspace, "session.json"),
@@ -111,25 +111,23 @@ assert.doesNotMatch(toolsOnPrompt, /tool availability is not guaranteed/);
 assert.doesNotMatch(toolsOnPrompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 assert.doesNotMatch(toolsOnPrompt, /TOOLS-OFF mode/);
 assert.doesNotMatch(toolsOnPrompt, /maze_scorecard/);
-assert.doesNotMatch(toolsOnPrompt, /REVERSE ENGINEERING HARNESS IS ENABLED/);
+assert.doesNotMatch(toolsOnPrompt, /AUTO-RUN TOOLS HARNESS IS ENABLED/);
 
-const reverseEngineeringPrompt = buildMcpPrompt({
+const autoRunToolsPrompt = buildMcpPrompt({
   ...toolsOnConfig,
-  reverseEngineering: true
+  autoRunTools: true
 });
-assert.match(reverseEngineeringPrompt, /REVERSE ENGINEERING HARNESS IS ENABLED/);
-assert.match(reverseEngineeringPrompt, /maze_versions\/ in the persistent scratch workspace/);
-assert.match(reverseEngineeringPrompt, /sim_v1\.py,[\s\S]*sim_v2\.py,[\s\S]*sim_v3\.py/);
-assert.match(reverseEngineeringPrompt, /Never overwrite or delete an older version/);
-assert.match(reverseEngineeringPrompt, /prediction function plus a\s+BFS or A\* planner/);
-assert.match(reverseEngineeringPrompt, /planner MUST return that exact action/);
-assert.match(reverseEngineeringPrompt, /compare the actual resulting board\/frame\/state/);
-assert.match(reverseEngineeringPrompt, /including animation when present/);
-assert.match(reverseEngineeringPrompt, /reproduce every prior fixture\s+and the newest transition/);
-assert.match(reverseEngineeringPrompt, /planner finds no valid route to victory, send reset/);
-assert.match(reverseEngineeringPrompt, /Except for camera rotation actions/);
-assert.match(reverseEngineeringPrompt, /Never create a helper that\s+calls a live game API or sends game actions/);
-assert.doesNotMatch(reverseEngineeringPrompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+assert.match(autoRunToolsPrompt, /AUTO-RUN TOOLS HARNESS IS ENABLED/);
+assert.match(autoRunToolsPrompt, /maze_action_sequence/);
+assert.match(autoRunToolsPrompt, /ordered action list that your saved\s+Python program actually generated/);
+assert.match(autoRunToolsPrompt, /produces two or more moves[\s\S]*entire remaining route/);
+assert.match(autoRunToolsPrompt, /solver's full route/);
+assert.match(autoRunToolsPrompt, /final full\s+observation/);
+assert.match(autoRunToolsPrompt, /include_intermediate_observations=true/);
+assert.match(autoRunToolsPrompt, /every intermediate ASCII board, JSON observation, or vision frame/);
+assert.match(autoRunToolsPrompt, /stops immediately on a terminal state, death, pause, exhausted\s+move budget/);
+assert.match(autoRunToolsPrompt, /Never create a Python helper that calls a live game API/);
+assert.doesNotMatch(autoRunToolsPrompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
 const swarmPrompt = buildMcpPrompt({ ...toolsOnConfig, swarm: true });
 assert.match(swarmPrompt, /SWARM IS ENABLED/);
@@ -146,6 +144,10 @@ assert.deepEqual(
 assert.deepEqual(
   codexMcpConfigArgs({ ...toolsOnConfig, swarm: true }).filter((value) => value.includes("enabled_tools")),
   ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_observe","maze_action","maze_workers","python_exec"]']
+);
+assert.deepEqual(
+  codexMcpConfigArgs({ ...toolsOnConfig, autoRunTools: true }).filter((value) => value.includes("enabled_tools")),
+  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_observe","maze_action","maze_action_sequence","python_exec"]']
 );
 
 const codexConfig = { ...baseConfig, model: "codex" };
@@ -238,6 +240,22 @@ assert.deepEqual(claudeToolsOnAllowed, new Set([
   "mcp__mazebench__maze_action",
   "mcp__mazebench__python_exec"
 ]));
+const claudeAutoRunConfig = {
+  ...toolsOnConfig,
+  model: "claude",
+  modelName: "claude-test",
+  autoRunTools: true
+};
+const claudeAutoRun = agentCommand(claudeAutoRunConfig, autoRunToolsPrompt);
+const claudeAutoRunAllowed = new Set(
+  claudeAutoRun.argv[claudeAutoRun.argv.indexOf("--allowedTools") + 1].split(",")
+);
+assert(claudeAutoRunAllowed.has("mcp__mazebench__maze_action_sequence"));
+assert(
+  JSON.parse(claudeSandboxSettings(claudeAutoRunConfig)).permissions.allow.includes(
+    "mcp__mazebench__maze_action_sequence"
+  )
+);
 for (const builtin of ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]) {
   assert(
     claudeToolsOn.argv[claudeToolsOn.argv.indexOf("--disallowedTools") + 1].split(",").includes(builtin),
@@ -252,9 +270,9 @@ assert.match(localAgentSource, /if \(config\.model === "kimi"\) verifyKimiCliCom
 const kimiPrompt = buildMcpPrompt(kimiConfig);
 assert.match(kimiPrompt, /after five consecutive game_action[\s\S]*same normalized action/i);
 assert.match(kimiPrompt, /A different action resets the repetition[\s\S]*game_observe resets the[\s\S]*count/i);
-const kimiReversePrompt = buildMcpPrompt({ ...kimiConfig, toolUse: "offline", tools: true, reverseEngineering: true });
-assert.match(kimiReversePrompt, /REVERSE ENGINEERING HARNESS IS ENABLED/);
-assert.match(kimiReversePrompt, /after five consecutive maze_action[\s\S]*maze_observe resets the[\s\S]*count/i);
+const kimiAutoRunPrompt = buildMcpPrompt({ ...kimiConfig, toolUse: "offline", tools: true, autoRunTools: true });
+assert.match(kimiAutoRunPrompt, /AUTO-RUN TOOLS HARNESS IS ENABLED/);
+assert.match(kimiAutoRunPrompt, /after five consecutive maze_action[\s\S]*maze_observe resets the[\s\S]*count/i);
 const kimi = agentCommand(kimiConfig, kimiPrompt);
 assert.equal(kimi.bin, "kimi");
 assert.equal(kimi.argv[kimi.argv.indexOf("--model") + 1], "kimi/k3");
@@ -323,6 +341,11 @@ assert.deepEqual(
   kimiOfflineMcp.mcpServers.mazebench.enabledTools,
   ["maze_start", "maze_observe", "maze_action", "python_exec"]
 );
+const kimiAutoRunMcp = JSON.parse(kimiMcpConfig({ ...toolsOnConfig, model: "kimi", autoRunTools: true }));
+assert.deepEqual(
+  kimiAutoRunMcp.mcpServers.mazebench.enabledTools,
+  ["maze_start", "maze_observe", "maze_action", "maze_action_sequence", "python_exec"]
+);
 assert.deepEqual(Object.keys(kimiOfflineMcp.mcpServers), ["mazebench"]);
 
 const kimiEvents = [
@@ -342,6 +365,23 @@ assert.deepEqual(distillKimiEvents(kimiEvents).entries, [{
   room_changed: false,
   player_dead: false
 }]);
+const kimiSequenceEvents = [
+  { role: "assistant", content: "Run the saved route.", tool_calls: [{ id: "sequence-1", type: "function", function: { name: "mcp__mazebench__maze_action_sequence", arguments: JSON.stringify({ actions: ["up", "right", "down"] }) } }] },
+  { role: "tool", tool_call_id: "sequence-1", content: JSON.stringify({
+    requested_count: 3,
+    completed_count: 2,
+    steps: [
+      { action: "up", status: { current_room: "level_HxI", gem_count: 0, game_lost: false } },
+      { action: "right", status: { current_room: "level_HxJ", gem_count: 1, game_lost: false } },
+      { action: "down", error: "budget exhausted", status: null }
+    ],
+    final_observation: { current_room: "level_HxJ", gem_count: 1 }
+  }) }
+].map(JSON.stringify).join("\n");
+assert.deepEqual(
+  distillKimiEvents(kimiSequenceEvents).entries.map((entry) => entry.action),
+  ["up", "right"]
+);
 
 const guard = path.join(root, "scripts", "maze-codex-tool-guard.js");
 const blocked = spawnSync(process.execPath, [guard], {

@@ -85,6 +85,77 @@ try {
   assert.equal(fs.readFileSync(path.join(leadWorkspace, "notes.txt"), "utf8"), "mapped");
   assert.match(fs.readFileSync(path.join(leadWorkspace, "planner.py"), "utf8"), /def next_move/);
 
+  const sequenceDir = path.join(runDir, "sequence");
+  fs.mkdirSync(sequenceDir, { recursive: true });
+  const longRoute = Array.from({ length: 40 }, (_, index) =>
+    index % 2 === 0 ? "rotate camera left" : "rotate camera right"
+  );
+  const sequenceRequests = [
+    { jsonrpc: "2.0", id: 70, method: "tools/list", params: {} },
+    { jsonrpc: "2.0", id: 71, method: "tools/call", params: { name: "maze_start", arguments: {} } },
+    {
+      jsonrpc: "2.0",
+      id: 72,
+      method: "tools/call",
+      params: {
+        name: "maze_action_sequence",
+        arguments: { actions: ["rotate camera left", "rotate camera right"] }
+      }
+    },
+    {
+      jsonrpc: "2.0",
+      id: 73,
+      method: "tools/call",
+      params: {
+        name: "maze_action_sequence",
+        arguments: { actions: longRoute, include_intermediate_observations: true }
+      }
+    }
+  ];
+  const sequenceResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
+    cwd: rootDir,
+    encoding: "utf8",
+    input: `${sequenceRequests.map((request) => JSON.stringify(request)).join("\n")}\n`,
+    env: {
+      ...process.env,
+      MAZEBENCH_REPO_ROOT: rootDir,
+      MAZEBENCH_RUN_DIR: sequenceDir,
+      MAZEBENCH_SESSION_FILE: path.join(sequenceDir, "session.json"),
+      MAZEBENCH_AUTO_RUN_TOOLS: "1",
+      MAZEBENCH_MOVE_BUDGET: "5"
+    },
+    timeout: 240000
+  });
+  assert.equal(sequenceResult.status, 0, sequenceResult.stderr);
+  const sequenceResponses = sequenceResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  const sequenceTools = sequenceResponses.find((response) => response.id === 70)?.result?.tools || [];
+  assert(sequenceTools.some((tool) => tool.name === "maze_action_sequence"));
+  assert.equal(
+    sequenceTools.find((tool) => tool.name === "maze_action_sequence")?.inputSchema?.properties?.actions?.maxItems,
+    undefined,
+    "solver routes must not have an arbitrary action-count ceiling"
+  );
+  const compactSequence = sequenceResponses.find((response) => response.id === 72)?.result?.structuredContent;
+  assert.equal(compactSequence.requested_count, 2);
+  assert.equal(compactSequence.completed_count, 2);
+  assert.equal(compactSequence.intermediate_observations, undefined);
+  assert.match(compactSequence.final_observation.level, /P|p/);
+  const auditedSequence = sequenceResponses.find((response) => response.id === 73)?.result?.structuredContent;
+  assert.equal(auditedSequence.requested_count, 40, "routes longer than the former 32-move cap are accepted");
+  assert.equal(auditedSequence.completed_count, 3);
+  assert.equal(auditedSequence.stopped_early, true);
+  assert.equal(auditedSequence.stop_reason, "move_budget_exhausted");
+  assert.equal(auditedSequence.intermediate_observations.length, 2);
+  assert.match(auditedSequence.final_observation.level, /P|p/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(sequenceDir, "session.json"), "utf8")).actions.length, 5);
+  const sequenceActivity = fs.readFileSync(path.join(sequenceDir, "tool-activity.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line))
+    .filter((entry) => entry.tool === "maze_action_sequence" && entry.status === "completed");
+  assert.deepEqual(sequenceActivity.map((entry) => entry.move_calls), [2, 3]);
+  const sequenceEvents = fs.readFileSync(path.join(sequenceDir, "maze-instance-events.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(sequenceEvents.length, 5, "every batched move remains individually visible in telemetry");
+
   const workerRequests = [
     { jsonrpc: "2.0", id: 100, method: "initialize", params: { protocolVersion: "2024-11-05" } },
     { jsonrpc: "2.0", method: "notifications/initialized" },
@@ -525,6 +596,29 @@ try {
   assert.equal(imageResult.structuredContent.workspace, undefined);
   assert.equal(imageResult.content[1].type, "image");
   assert.equal(imageResult.content[1].mimeType, "image/png");
+
+  const sequenceFramePaths = [1, 2, 3].map((index) => path.join(runDir, "frames", `sequence-${index}.png`));
+  for (const sequenceFramePath of sequenceFramePaths) {
+    fs.writeFileSync(sequenceFramePath, Buffer.from("89504e470d0a1a0a", "hex"));
+  }
+  const sequenceImageProbe = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `process.env.MAZEBENCH_RUN_DIR=${JSON.stringify(runDir)};` +
+        `process.env.MAZEBENCH_MODE="vision";` +
+        `const {toolContent}=require(${JSON.stringify(path.join(rootDir, "scripts", "maze-mcp-server.js"))});` +
+        `const status=(frame_image)=>({status:{frame_image,current_room:"level_HxI",current_view:"top-diagonal",yaw:0,gem_count:0,player_dead:false,game_won:false,game_lost:false,visited_levels:["level_HxI"]}});` +
+        `const compact=toolContent({steps:[],final_observation:status(${JSON.stringify(sequenceFramePaths[2])})});` +
+        `const audited=toolContent({steps:[],intermediate_observations:[{index:1,action:"up",observation:status(${JSON.stringify(sequenceFramePaths[0])})},{index:2,action:"right",observation:status(${JSON.stringify(sequenceFramePaths[1])})}],final_observation:status(${JSON.stringify(sequenceFramePaths[2])})});` +
+        `process.stdout.write(JSON.stringify({compact,audited}));`
+    ],
+    { cwd: rootDir, encoding: "utf8" }
+  );
+  assert.equal(sequenceImageProbe.status, 0, sequenceImageProbe.stderr);
+  const sequenceImages = JSON.parse(sequenceImageProbe.stdout);
+  assert.equal(sequenceImages.compact.content.filter((item) => item.type === "image").length, 1);
+  assert.equal(sequenceImages.audited.content.filter((item) => item.type === "image").length, 3);
 
   const asciiStatusProbe = spawnSync(
     process.execPath,

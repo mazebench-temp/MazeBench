@@ -902,7 +902,7 @@ try {
     mode: "text",
     container: false,
     tools: true,
-    reverse_engineering: true,
+    auto_run_tools: true,
     video: false,
     count: 3
   });
@@ -913,9 +913,9 @@ try {
 
   const secondMeta = loadJson(path.join(rootDir, "outputs", "maze-local", "site", runs[1].id, "run.json"));
   const thirdMeta = loadJson(path.join(rootDir, "outputs", "maze-local", "site", runs[2].id, "run.json"));
-  assert.equal(secondMeta.reverse_engineering, true);
-  assert.equal(secondMeta.launch_params.reverse_engineering, true);
-  assert.match(secondMeta.command, /reverse_engineering=true/);
+  assert.equal(secondMeta.auto_run_tools, true);
+  assert.equal(secondMeta.launch_params.auto_run_tools, true);
+  assert.match(secondMeta.command, /auto_run_tools=true/);
   assert.equal(secondMeta.queue_order, undefined);
   assert.equal(thirdMeta.queue_order, undefined);
 
