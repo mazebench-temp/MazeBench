@@ -6,6 +6,7 @@ const { spawn, spawnSync } = require("child_process");
 
 const rootDir = path.resolve(__dirname, "..");
 const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-mcp-test-"));
+const leadWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-mcp-workspace-"));
 let httpChild = null;
 
 try {
@@ -19,6 +20,7 @@ try {
     { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "maze_start", arguments: {} } },
     { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "maze_action", arguments: { action: "right" } } },
     { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "maze_action", arguments: { action: "down" } } },
+    { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "python_exec", arguments: { code: "from pathlib import Path\nimport runpy\nPath('notes.txt').write_text('mapped', encoding='utf-8')\nPath('planner.py').write_text('def next_move():\\n    return \\\"up\\\"\\n', encoding='utf-8')\nplanner = runpy.run_path('planner.py')\nprint(planner['next_move']())" } } },
     { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "maze_clone", arguments: {} } },
     { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "maze_action", arguments: { clone_id: "guessed-worker", action: "up" } } },
     { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "maze_workers", arguments: {} } }
@@ -33,6 +35,7 @@ try {
       MAZEBENCH_RUN_DIR: runDir,
       MAZEBENCH_SESSION_FILE: path.join(runDir, "session.json"),
       MAZEBENCH_SWARM_DIR: path.join(runDir, "swarm"),
+      MAZEBENCH_AGENT_WORKSPACE_DIR: leadWorkspace,
       MAZEBENCH_SWARM: "1",
       MAZEBENCH_MAX_SWARM_WORKERS: "2",
       MAZEBENCH_MOVE_BUDGET: "1"
@@ -62,6 +65,9 @@ try {
   assert.equal(Object.prototype.hasOwnProperty.call(firstObservation, "scorecard"), false);
   const listedTools = responses.find((response) => response.id === 10)?.result?.tools || [];
   assert.deepEqual(listedTools.map((tool) => tool.name), ["maze_start", "maze_observe", "maze_action", "maze_workers", "python_exec"]);
+  const listedPython = listedTools.find((tool) => tool.name === "python_exec");
+  assert.match(listedPython?.description || "", /writable persistent isolated scratch workspace/);
+  assert.match(listedPython?.description || "", /relative-path files[\s\S]*persist for the run/);
   assert.doesNotMatch(JSON.stringify(listedTools), /clone_id|maze_clone/i);
   assert.equal(listedTools.some((tool) => /scorecard/i.test(tool.name)), false);
   assert(responses.find((response) => response.id === 3)?.error, "the lead cannot call maze_clone");
@@ -75,6 +81,9 @@ try {
   assert(fs.existsSync(path.join(runDir, "initial-status.json")));
   assert.equal(fs.existsSync(path.join(runDir, "current-render-state.json")), false);
   assert.equal(responses.find((response) => response.id === 6)?.result?.isError, true, "the MCP boundary enforces the lead budget");
+  assert.equal(responses.find((response) => response.id === 7)?.result?.structuredContent?.stdout, "up\n");
+  assert.equal(fs.readFileSync(path.join(leadWorkspace, "notes.txt"), "utf8"), "mapped");
+  assert.match(fs.readFileSync(path.join(leadWorkspace, "planner.py"), "utf8"), /def next_move/);
 
   const workerRequests = [
     { jsonrpc: "2.0", id: 100, method: "initialize", params: { protocolVersion: "2024-11-05" } },
@@ -133,6 +142,12 @@ try {
     .map((line) => JSON.parse(line));
   assert(activity.some((entry) => entry.tool === "maze_action" && entry.clone_id === "scout"));
   assert(activity.some((entry) => entry.status === "running"));
+  const pythonStarted = activity.find((entry) => entry.tool === "python_exec" && entry.status === "running");
+  const pythonCompleted = activity.find((entry) => entry.tool === "python_exec" && entry.status === "completed");
+  assert.match(pythonStarted.python_code, /Path\('notes\.txt'\)/);
+  assert.match(pythonStarted.python_code_hash, /^[a-f0-9]{64}$/);
+  assert.equal(pythonCompleted.python_result.stdout, "up\n");
+  assert.deepEqual(new Set(pythonCompleted.workspace_changes.created), new Set(["notes.txt", "planner.py"]));
   const instanceEvents = fs.readFileSync(path.join(runDir, "maze-instance-events.jsonl"), "utf8")
     .trim()
     .split("\n")
@@ -786,6 +801,7 @@ try {
   assert(Number.isFinite(Date.parse(httpWorkerMetadata.finished_at)));
 } finally {
   if (httpChild) httpChild.kill("SIGTERM");
+  fs.rmSync(leadWorkspace, { recursive: true, force: true });
   fs.rmSync(runDir, { recursive: true, force: true });
 }
 
