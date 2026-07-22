@@ -354,10 +354,11 @@ general-purpose computation tool: python_exec. It runs Python in a fresh,
 persistent scratch workspace. Each python_exec call starts a fresh Python
 process, but its current working directory is writable and persists for this
 entire run. Use relative paths to create and reuse .py, .json, and other scratch
-files. Before your first primary game action, you MUST use python_exec to create
-and execute at least one reusable Python program that helps parse observations,
-track state, model mechanics, or plan moves. Keep reusable logic in files instead
-of repeatedly sending the same logic inline. For example, Python can call
+files. Before your first primary game action—or before your next one when
+resuming without a saved program—you MUST use python_exec to create and execute
+at least one reusable Python program that helps parse observations, track state,
+model mechanics, or plan moves. Keep reusable logic in files instead of
+repeatedly sending the same logic inline. For example, Python can call
 Path("planner.py").write_text(...), then runpy.run_path("planner.py"). There is no
 separate editor or shell; create, revise, and execute files through python_exec.
 It cannot read MazeBench source, repositories, run artifacts, host files,

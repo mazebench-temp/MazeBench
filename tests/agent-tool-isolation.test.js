@@ -102,7 +102,7 @@ const toolsOnPrompt = buildMcpPrompt(toolsOnConfig);
 assert.match(toolsOnPrompt, /TOOLS mode/);
 assert.match(toolsOnPrompt, /python_exec/);
 assert.match(toolsOnPrompt, /current working directory is writable and persists/);
-assert.match(toolsOnPrompt, /MUST use python_exec to create\s+and execute at least one reusable Python program/);
+assert.match(toolsOnPrompt, /resuming without a saved program[\s\S]*MUST use python_exec to create and execute[\s\S]*at least one reusable Python program/);
 assert.match(toolsOnPrompt, /Path\("planner\.py"\)\.write_text/);
 assert.match(toolsOnPrompt, /runpy\.run_path\("planner\.py"\)/);
 assert.match(toolsOnPrompt, /cannot read MazeBench source, repositories/);
